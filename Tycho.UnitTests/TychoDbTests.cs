@@ -240,17 +240,17 @@ namespace Tycho.UnitTests
                     .ToList ();
 
 
-            await db.WriteObjectAsync (testObjs, x => x.GetHashCode().ToString()).ConfigureAwait (false);
+            await db.WriteObjectAsync (testObjs, x => x.GetHashCode()).ConfigureAwait (false);
 
             var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
 
-            var objs = await db.ReadObjectsAsync<List<TestClassA>> ().ConfigureAwait (false);
+            var obj = await db.ReadObjectAsync<List<TestClassA>> (testObjs.GetHashCode()).ConfigureAwait (false);
 
             stopWatch.Stop ();
 
             Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-            objs.Count ().Should ().Be (expected);
+            obj.Count ().Should ().Be (expected);
         }
 
         [TestMethod]

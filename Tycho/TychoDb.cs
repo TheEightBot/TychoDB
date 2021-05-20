@@ -139,7 +139,7 @@ namespace Tycho
                     });         
         }
 
-        public ValueTask<T> ReadObjectAsync<T> (string key, string category = null, CancellationToken cancellationToken = default)
+        public ValueTask<T> ReadObjectAsync<T> (object key, string category = null, CancellationToken cancellationToken = default)
         {
             return _connection
                 .WithConnectionBlock (

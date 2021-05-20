@@ -6,7 +6,7 @@ using System.Runtime.Serialization;
 using System.Runtime.CompilerServices;
 
 [assembly: InternalsVisibleTo("EightBot.Orbit.Tests")]
-namespace EightBot.Orbit.Client
+namespace Tycho
 {
     internal class ProcessingQueue
     {
@@ -24,7 +24,7 @@ namespace EightBot.Orbit.Client
                     });
         }
 
-        public async Task Queue(Action processingTask, CancellationToken cancellationToken = default(CancellationToken))
+        public async ValueTask Queue(Action processingTask, CancellationToken cancellationToken = default(CancellationToken))
         {
             var queuedTask =
                 new QueuedTask
@@ -33,7 +33,7 @@ namespace EightBot.Orbit.Client
                         _ =>
                         {
                             processingTask.Invoke();
-                            return Task.FromResult(_);
+                            return new ValueTask<object> ();
                         }
                 };
 
@@ -54,7 +54,7 @@ namespace EightBot.Orbit.Client
             cancellationToken.CheckIfCancelled();
         }
 
-        public async Task<T> Queue<T>(Func<T> processingTask, CancellationToken cancellationToken = default(CancellationToken))
+        public async ValueTask<T> Queue<T>(Func<T> processingTask, CancellationToken cancellationToken = default(CancellationToken))
         {
             var queuedTask =
                 new QueuedTask
@@ -63,7 +63,7 @@ namespace EightBot.Orbit.Client
                         _ =>
                         {
                             var processingResult = processingTask.Invoke();
-                            return Task.FromResult((object)processingResult);
+                            return new ValueTask<object>(processingResult);
                         }
                 };
 
@@ -86,7 +86,7 @@ namespace EightBot.Orbit.Client
             return (T)result;
         }
 
-        public async Task<T> Queue<T>(Func<Task<T>> processingTask, CancellationToken cancellationToken = default(CancellationToken))
+        public async ValueTask<T> Queue<T>(Func<ValueTask<T>> processingTask, CancellationToken cancellationToken = default(CancellationToken))
         {
             var queuedTask =
                 new QueuedTask
@@ -117,7 +117,7 @@ namespace EightBot.Orbit.Client
             return (T)result;
         }
 
-        public async Task Queue<T>(T input, Func<T, Task> processingTask, CancellationToken cancellationToken = default(CancellationToken))
+        public async ValueTask Queue<T>(T input, Func<T, ValueTask> processingTask, CancellationToken cancellationToken = default(CancellationToken))
         {
             var queuedTask =
                 new QueuedTask
@@ -148,7 +148,7 @@ namespace EightBot.Orbit.Client
             cancellationToken.CheckIfCancelled();
         }
 
-        public async Task<TResult> Queue<TInput, TResult>(TInput input, Func<TInput, Task<TResult>> processingTask, CancellationToken cancellationToken = default(CancellationToken))
+        public async ValueTask<TResult> Queue<TInput, TResult>(TInput input, Func<TInput, ValueTask<TResult>> processingTask, CancellationToken cancellationToken = default(CancellationToken))
         {
             var queuedTask =
                 new QueuedTask
@@ -215,7 +215,7 @@ namespace EightBot.Orbit.Client
         public object Input { get; set; }
         public object Output { get; set; }
 
-        public Func<object, Task<object>> TaskRunner { get; set; }
+        public Func<object, ValueTask<object>> TaskRunner { get; set; }
     }
 
     public class QueueFailureException : Exception

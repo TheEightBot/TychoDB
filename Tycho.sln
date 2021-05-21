@@ -13,6 +13,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tycho", "Tycho\Tycho.csproj
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tycho.UnitTests", "Tycho.UnitTests\Tycho.UnitTests.csproj", "{464BA0EF-67B9-4551-9507-A2ED7041C0D1}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "MobileTestApp", "MobileTestApp", "{BE07F912-D96B-4583-9FBB-1E06E2D7079F}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -89,5 +91,10 @@ Global
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {3E57D156-945E-4CDD-A3A1-C3ECAD8AF4C2}
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{0D6B3CCB-DFA5-4429-BA4E-B6D40D270DB9} = {BE07F912-D96B-4583-9FBB-1E06E2D7079F}
+		{61108774-02A4-4F47-9B1F-59F56F4A576B} = {BE07F912-D96B-4583-9FBB-1E06E2D7079F}
+		{554646F4-835F-4937-922B-CFCE943F171D} = {BE07F912-D96B-4583-9FBB-1E06E2D7079F}
 	EndGlobalSection
 EndGlobal

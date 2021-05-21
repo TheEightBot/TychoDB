@@ -21,7 +21,9 @@ namespace SqliteJson
         {
             base.OnAppearing ();
 
-            var db = new TychoDb (FileSystem.AppDataDirectory);
+            using var db =
+                await new TychoDb (FileSystem.AppDataDirectory)
+                    .ConnectAsync();
 
             var testObj =
                 new TestClassA
@@ -31,9 +33,9 @@ namespace SqliteJson
                     TimestampMillis = 123451234,
                 };
 
-            var writeResult = db.WriteObjectAsync (testObj, x => x.StringProperty);
+            var writeResult = await db.WriteObjectAsync (testObj, x => x.StringProperty);
 
-            var readResult = db.ReadObjectAsync<TestClassA> (testObj.StringProperty);
+            var readResult = await db.ReadObjectAsync<TestClassA> (testObj.StringProperty);
 
             System.Diagnostics.Debug.WriteLine ($"{readResult}");
         }

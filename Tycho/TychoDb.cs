@@ -101,14 +101,14 @@ namespace Tycho
                                 using var insertCommand = conn.CreateCommand ();
                                 insertCommand.CommandText =
                                     @"
-                                    INSERT OR REPLACE INTO JsonValue(Key, FullTypeName, Data, Category)
-                                    VALUES ($key, $fullTypeName, json($json), $category);
+                                    INSERT OR REPLACE INTO JsonValue(Key, FullTypeName, Data, Partition)
+                                    VALUES ($key, $fullTypeName, json($json), $partition);
 
                                     SELECT last_insert_rowid();
                                     ";
 
                                 insertCommand.Parameters.Add ("$key", SqliteType.Text).Value = keySelector (obj);
-                                insertCommand.Parameters.Add ("$category", SqliteType.Text).Value = category.AsValueOrDbNull();
+                                insertCommand.Parameters.Add ("$partition", SqliteType.Text).Value = partition.AsValueOrDbNull();
                                 insertCommand.Parameters.Add ("$fullTypeName", SqliteType.Text).Value = typeof (T).FullName;
 
                                 var jsonBytes = JsonSerializer.SerializeToUtf8Bytes (obj, _jsonSerializerOptions);
@@ -139,7 +139,7 @@ namespace Tycho
                     });         
         }
 
-        public ValueTask<T> ReadObjectAsync<T> (object key, string category = null, CancellationToken cancellationToken = default)
+        public ValueTask<T> ReadObjectAsync<T> (object key, string partition = null, CancellationToken cancellationToken = default)
         {
             return _connection
                 .WithConnectionBlock (
@@ -165,15 +165,15 @@ namespace Tycho
                             selectCommand.Parameters.Add ("$key", SqliteType.Text).Value = key;
                             selectCommand.Parameters.Add ("$fullTypeName", SqliteType.Text).Value = typeof (T).FullName;
 
-                            if (!string.IsNullOrEmpty(category))
+                            if (!string.IsNullOrEmpty(partition))
                             {
                                 selectCommand.CommandText +=
                                     @"
                                         AND
-                                        Category = $category
+                                        Partition = $partition
                                     ";
 
-                                selectCommand.Parameters.Add ("$category", SqliteType.Text).Value = category.AsValueOrDbNull ();
+                                selectCommand.Parameters.Add ("$partition", SqliteType.Text).Value = partition.AsValueOrDbNull ();
                             }
 
                             using var reader = await selectCommand.ExecuteReaderAsync (cancellationToken).ConfigureAwait (false);
@@ -197,9 +197,9 @@ namespace Tycho
                     });
         }
 
-        public async ValueTask<T> ReadObjectAsync<T> (FilterBuilder<T> filter, string category = null, CancellationToken cancellationToken = default)
+        public async ValueTask<T> ReadObjectAsync<T> (FilterBuilder<T> filter, string partition = null, CancellationToken cancellationToken = default)
         {
-            var result = await ReadObjectsAsync (category: category, filter: filter, cancellationToken: cancellationToken).ConfigureAwait(false);
+            var result = await ReadObjectsAsync (partition: partition, filter: filter, cancellationToken: cancellationToken).ConfigureAwait(false);
 
             if(result?.Count() > 1)
             {
@@ -209,7 +209,7 @@ namespace Tycho
             return result.FirstOrDefault ();
         }
 
-
+        public ValueTask<IEnumerable<T>> ReadObjectsAsync<T> (string partition = null, FilterBuilder<T> filter = null, CancellationToken cancellationToken = default)
         public ValueTask<IEnumerable<T>> ReadObjectsAsync<T> (string category = null, FilterBuilder<T> filter = null, CancellationToken cancellationToken = default)
         {
             return _connection
@@ -233,15 +233,15 @@ namespace Tycho
 
                             selectCommand.Parameters.Add ("$fullTypeName", SqliteType.Text).Value = typeof (T).FullName;
 
-                            if (!string.IsNullOrEmpty (category))
+                            if (!string.IsNullOrEmpty (partition))
                             {
                                 selectCommand.CommandText +=
                                 @"
                                 AND
-                                Category = $category
+                                Partition = $partition
                                 ";
 
-                                selectCommand.Parameters.Add ("$category", SqliteType.Text).Value = category.AsValueOrDbNull ();
+                                selectCommand.Parameters.Add ("$partition", SqliteType.Text).Value = partition.AsValueOrDbNull ();
                             }
 
                             if(filter != null)
@@ -274,7 +274,7 @@ namespace Tycho
                     });
         }
 
-        public ValueTask<IEnumerable<TOut>> ReadObjectsAsync<TIn, TOut> (Expression<Func<TIn,TOut>> innerObjectSelection, string category = null, FilterBuilder<TIn> filter = null, CancellationToken cancellationToken = default)
+        public ValueTask<IEnumerable<TOut>> ReadObjectsAsync<TIn, TOut> (Expression<Func<TIn,TOut>> innerObjectSelection, string partition = null, FilterBuilder<TIn> filter = null, CancellationToken cancellationToken = default)
         {
             return _connection
                 .WithConnectionBlock (
@@ -299,15 +299,15 @@ namespace Tycho
 
                             selectCommand.Parameters.Add ("$fullTypeName", SqliteType.Text).Value = typeof (TIn).FullName;
 
-                            if (!string.IsNullOrEmpty (category))
+                            if (!string.IsNullOrEmpty (partition))
                             {
                                 selectCommand.CommandText +=
                                 @"
                                     AND
-                                    Category = $category
+                                    Partition = $partition
                                 ";
 
-                                selectCommand.Parameters.Add ("$category", SqliteType.Text).Value = category.AsValueOrDbNull ();
+                                selectCommand.Parameters.Add ("$partition", SqliteType.Text).Value = partition.AsValueOrDbNull ();
                             }
 
                             if (filter != null)
@@ -388,20 +388,20 @@ namespace Tycho
                             Key             TEXT PRIMARY KEY,
                             FullTypeName    TEXT NOT NULL,
                             Data            JSON NOT NULL,
-                            Category        TEXT
+                            Partition       TEXT
                         );
 
                         CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename 
                         ON JsonValue (FullTypeName);
 
-                        CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename_category 
-                        ON JsonValue (FullTypeName, Category);
+                        CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename_partition 
+                        ON JsonValue (FullTypeName, Partition);
 
                         CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename 
                         ON JsonValue (Key, FullTypeName);
 
-                        CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename_category 
-                        ON JsonValue (Key, FullTypeName, Category);";
+                        CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename_partition 
+                        ON JsonValue (Key, FullTypeName, Partition);";
 
                     command.ExecuteNonQuery ();
                 }

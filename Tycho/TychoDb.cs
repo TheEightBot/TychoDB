@@ -28,11 +28,13 @@ namespace Tycho
 
         private readonly JsonSerializerOptions _jsonSerializerOptions;
 
+        private readonly Dictionary<Type, RegisteredTypeInformation> _registeredTypeInformation = new Dictionary<Type, RegisteredTypeInformation>();
+
+        private readonly ProcessingQueue _processingQueue = new ProcessingQueue();
+
         private SqliteConnection _connection;
 
         private bool _isDisposed;
-
-        private ProcessingQueue _processingQueue;
 
         public TychoDb (string dbPath, string dbName = "tycho_cache.db", string password = null, JsonSerializerOptions jsonSerializerOptions = null, bool rebuildCache = false)
         {
@@ -68,18 +70,74 @@ namespace Tycho
                     NumberHandling = JsonNumberHandling.AllowReadingFromString | JsonNumberHandling.WriteAsString,
                     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
                 };
-
-            _processingQueue = new ProcessingQueue ();
-
-            _connection = BuildConnection ();
         }
 
-        public ValueTask<bool> WriteObjectAsync<T> (T obj, Func<T, object> keySelector, string category = null, CancellationToken cancellationToken = default)
+        public TychoDb AddTypeRegistration<T> (Expression<Func<T, object>> idSelector)
+            where T : class
         {
-            return WriteObjectsAsync (new[] { obj }, keySelector, category, cancellationToken);
+            var rti = RegisteredTypeInformation.Create (idSelector);
+
+            _registeredTypeInformation[rti.ObjectType] = rti;
+
+            return this;
         }
 
-        public ValueTask<bool> WriteObjectsAsync<T>(IEnumerable<T> objs, Func<T, object> keySelector, string category = null, CancellationToken cancellationToken = default)
+        public TychoDb Connect ()
+        {
+
+            if(_connection == null)
+            {
+                _connection = BuildConnection ();
+            }
+
+            return this;
+        }
+
+        public async ValueTask<TychoDb> ConnectAsync ()
+        {
+
+            if (_connection == null)
+            {
+                _connection = await BuildConnectionAsync ().ConfigureAwait(false);
+            }
+
+            return this;
+        }
+
+        public void Disconnect ()
+        {
+            lock(_connectionLock)
+            {
+                _connection?.Dispose ();
+            }
+        }
+
+        public ValueTask DisconnectAsync ()
+        {
+            if(_connection == null)
+            {
+                return new ValueTask (Task.CompletedTask);
+            }
+
+            return _connection.DisposeAsync ();
+        }
+
+        public ValueTask<bool> WriteObjectAsync<T> (T obj, string partition = null, CancellationToken cancellationToken = default)
+        {
+            return WriteObjectsAsync (new[] { obj }, GetIdFor<T>(), partition, cancellationToken);
+        }
+
+        public ValueTask<bool> WriteObjectAsync<T> (T obj, Func<T, object> keySelector, string partition = null, CancellationToken cancellationToken = default)
+        {
+            return WriteObjectsAsync (new[] { obj }, keySelector, partition, cancellationToken);
+        }
+
+        public ValueTask<bool> WriteObjectsAsync<T> (IEnumerable<T> objs, string partition = null, CancellationToken cancellationToken = default)
+        {
+            return WriteObjectsAsync (objs, GetIdFor<T>(), partition, cancellationToken);
+        }
+
+        public ValueTask<bool> WriteObjectsAsync<T>(IEnumerable<T> objs, Func<T, object> keySelector, string partition = null, CancellationToken cancellationToken = default)
         {
             return _connection
                 .WithConnectionBlock (
@@ -101,14 +159,14 @@ namespace Tycho
                                 using var insertCommand = conn.CreateCommand ();
                                 insertCommand.CommandText =
                                     @"
-                                    INSERT OR REPLACE INTO JsonValue(Key, FullTypeName, Data, Category)
-                                    VALUES ($key, $fullTypeName, json($json), $category);
+                                    INSERT OR REPLACE INTO JsonValue(Key, FullTypeName, Data, Partition)
+                                    VALUES ($key, $fullTypeName, json($json), $partition);
 
                                     SELECT last_insert_rowid();
                                     ";
 
                                 insertCommand.Parameters.Add ("$key", SqliteType.Text).Value = keySelector (obj);
-                                insertCommand.Parameters.Add ("$category", SqliteType.Text).Value = category.AsValueOrDbNull();
+                                insertCommand.Parameters.Add ("$partition", SqliteType.Text).Value = partition.AsValueOrDbNull();
                                 insertCommand.Parameters.Add ("$fullTypeName", SqliteType.Text).Value = typeof (T).FullName;
 
                                 var jsonBytes = JsonSerializer.SerializeToUtf8Bytes (obj, _jsonSerializerOptions);
@@ -139,7 +197,7 @@ namespace Tycho
                     });         
         }
 
-        public ValueTask<T> ReadObjectAsync<T> (object key, string category = null, CancellationToken cancellationToken = default)
+        public ValueTask<T> ReadObjectAsync<T> (object key, string partition = null, CancellationToken cancellationToken = default)
         {
             return _connection
                 .WithConnectionBlock (
@@ -165,15 +223,15 @@ namespace Tycho
                             selectCommand.Parameters.Add ("$key", SqliteType.Text).Value = key;
                             selectCommand.Parameters.Add ("$fullTypeName", SqliteType.Text).Value = typeof (T).FullName;
 
-                            if (!string.IsNullOrEmpty(category))
+                            if (!string.IsNullOrEmpty(partition))
                             {
                                 selectCommand.CommandText +=
                                     @"
                                         AND
-                                        Category = $category
+                                        Partition = $partition
                                     ";
 
-                                selectCommand.Parameters.Add ("$category", SqliteType.Text).Value = category.AsValueOrDbNull ();
+                                selectCommand.Parameters.Add ("$partition", SqliteType.Text).Value = partition.AsValueOrDbNull ();
                             }
 
                             using var reader = await selectCommand.ExecuteReaderAsync (cancellationToken).ConfigureAwait (false);
@@ -197,9 +255,9 @@ namespace Tycho
                     });
         }
 
-        public async ValueTask<T> ReadObjectAsync<T> (FilterBuilder<T> filter, string category = null, CancellationToken cancellationToken = default)
+        public async ValueTask<T> ReadObjectAsync<T> (FilterBuilder<T> filter, string partition = null, CancellationToken cancellationToken = default)
         {
-            var result = await ReadObjectsAsync (category: category, filter: filter, cancellationToken: cancellationToken).ConfigureAwait(false);
+            var result = await ReadObjectsAsync (partition: partition, filter: filter, cancellationToken: cancellationToken).ConfigureAwait(false);
 
             if(result?.Count() > 1)
             {
@@ -209,8 +267,7 @@ namespace Tycho
             return result.FirstOrDefault ();
         }
 
-
-        public ValueTask<IEnumerable<T>> ReadObjectsAsync<T> (string category = null, FilterBuilder<T> filter = null, CancellationToken cancellationToken = default)
+        public ValueTask<IEnumerable<T>> ReadObjectsAsync<T> (string partition = null, FilterBuilder<T> filter = null, CancellationToken cancellationToken = default)
         {
             return _connection
                 .WithConnectionBlock (
@@ -233,15 +290,15 @@ namespace Tycho
 
                             selectCommand.Parameters.Add ("$fullTypeName", SqliteType.Text).Value = typeof (T).FullName;
 
-                            if (!string.IsNullOrEmpty (category))
+                            if (!string.IsNullOrEmpty (partition))
                             {
                                 selectCommand.CommandText +=
                                 @"
                                 AND
-                                Category = $category
+                                Partition = $partition
                                 ";
 
-                                selectCommand.Parameters.Add ("$category", SqliteType.Text).Value = category.AsValueOrDbNull ();
+                                selectCommand.Parameters.Add ("$partition", SqliteType.Text).Value = partition.AsValueOrDbNull ();
                             }
 
                             if(filter != null)
@@ -274,14 +331,16 @@ namespace Tycho
                     });
         }
 
-        public ValueTask<IEnumerable<TOut>> ReadObjectsAsync<TIn, TOut> (Expression<Func<TIn,TOut>> innerObjectSelection, string category = null, FilterBuilder<TIn> filter = null, CancellationToken cancellationToken = default)
+        public ValueTask<IEnumerable<TOut>> ReadObjectsAsync<TIn, TOut> (Expression<Func<TIn,TOut>> innerObjectSelection, string partition = null, FilterBuilder<TIn> filter = null, CancellationToken cancellationToken = default)
         {
             return _connection
-                .WithConnectionBlock (
+                .WithConnectionBlock<IEnumerable<TOut>> (
                     _processingQueue,
                     async conn =>
                     {
                         var transaction = await conn.BeginTransactionAsync (IsolationLevel.RepeatableRead, cancellationToken).ConfigureAwait (false);
+
+                        var objects = new List<TOut> ();
 
                         try
                         {
@@ -291,7 +350,7 @@ namespace Tycho
 
                             selectCommand.CommandText =
                                 @$"
-                                    SELECT JSON_EXTRACT(DATA, '{selectionPath}') AS Data
+                                    SELECT JSON_EXTRACT(Data, '{selectionPath}') AS Data
                                     FROM JsonValue
                                     Where
                                     FullTypeName = $fullTypeName
@@ -299,15 +358,15 @@ namespace Tycho
 
                             selectCommand.Parameters.Add ("$fullTypeName", SqliteType.Text).Value = typeof (TIn).FullName;
 
-                            if (!string.IsNullOrEmpty (category))
+                            if (!string.IsNullOrEmpty (partition))
                             {
                                 selectCommand.CommandText +=
                                 @"
                                     AND
-                                    Category = $category
+                                    Partition = $partition
                                 ";
 
-                                selectCommand.Parameters.Add ("$category", SqliteType.Text).Value = category.AsValueOrDbNull ();
+                                selectCommand.Parameters.Add ("$partition", SqliteType.Text).Value = partition.AsValueOrDbNull ();
                             }
 
                             if (filter != null)
@@ -317,27 +376,148 @@ namespace Tycho
 
                             using var reader = await selectCommand.ExecuteReaderAsync (cancellationToken).ConfigureAwait (false);
 
-                            var objects = new List<TOut> ();
-
                             while (await reader.ReadAsync (cancellationToken).ConfigureAwait (false))
                             {
                                 using var stream = reader.GetStream (0);
                                 objects.Add (await JsonSerializer.DeserializeAsync<TOut> (stream, _jsonSerializerOptions, cancellationToken).ConfigureAwait (false));
                             }
 
-                            return objects;
                         }
                         catch (Exception ex)
                         {
-                            System.Diagnostics.Debug.WriteLine ($"{ex}");
+                            throw new TychoDbException ("Failed Reading Objects", ex);
                         }
                         finally
                         {
                             await transaction.CommitAsync ().ConfigureAwait (false);
                         }
 
-                        return Enumerable.Empty<TOut> ();
+                        return objects;
                     });
+        }
+
+        public TychoDb CreateIndex<TObj> (Expression<Func<TObj, object>> propertyPath, string indexName)
+        {
+            lock (_connectionLock)
+            {
+                try
+                {
+                    _connection.Open ();
+
+                    var transaction = _connection.BeginTransaction (IsolationLevel.Serializable);
+
+                    var propertyPathString = QueryPropertyPath.BuildPath (propertyPath);
+
+                    var isNumeric = QueryPropertyPath.IsNumeric (propertyPath);
+
+                    var fullIndexName = $"idx_{indexName}_{typeof (TObj).Name}";
+
+                    try
+                    {
+                        using var createIndexCommand = _connection.CreateCommand ();
+
+                        if (isNumeric)
+                        {
+                            createIndexCommand.CommandText =
+                            @$" CREATE INDEX IF NOT EXISTS {fullIndexName}
+                                ON JsonValue(FullTypeName, CAST(JSON_EXTRACT(Data, '{propertyPathString}') as NUMERIC));";
+                        }
+                        else
+                        {
+                            createIndexCommand.CommandText =
+                            @$" CREATE INDEX IF NOT EXISTS {fullIndexName}
+                                ON JsonValue(FullTypeName, JSON_EXTRACT(Data, '{propertyPathString}'));";
+                        }
+
+                        createIndexCommand.ExecuteNonQuery ();
+                    }
+                    catch (Exception ex)
+                    {
+                        throw new TychoDbException ($"Failed to Create Index: {fullIndexName}", ex);
+                    }
+                    finally
+                    {
+                        transaction.Commit ();
+                    }
+
+                }
+                finally
+                {
+                    _connection.Close();
+                }
+            }
+
+            return this;
+        }
+
+        public ValueTask<bool> CreateIndexAsync<TObj>(Expression<Func<TObj, object>> propertyPath, string indexName, CancellationToken cancellationToken = default)
+        {
+            return _connection
+                .WithConnectionBlock (
+                    _processingQueue,
+                    async conn =>
+                    {
+                        var transaction = await conn.BeginTransactionAsync (IsolationLevel.Serializable, cancellationToken).ConfigureAwait (false);
+
+                        var result = false;
+
+                        var propertyPathString = QueryPropertyPath.BuildPath (propertyPath);
+
+                        var fullIndexName = $"idx_{indexName}_{typeof(TObj).Name}";
+
+                        var isNumeric = QueryPropertyPath.IsNumeric (propertyPath);
+
+                        try
+                        {
+                            using var createIndexCommand = conn.CreateCommand ();
+
+                            if (isNumeric)
+                            {
+                                createIndexCommand.CommandText =
+                                    @$" CREATE INDEX IF NOT EXISTS {fullIndexName}
+                                        ON JsonValue(FullTypeName, CAST(JSON_EXTRACT(Data, '{propertyPathString}') as NUMERIC));";
+                            }
+                            else
+                            {
+                                createIndexCommand.CommandText =
+                                    @$" CREATE INDEX IF NOT EXISTS {fullIndexName}
+                                        ON JsonValue(FullTypeName, JSON_EXTRACT(Data, '{propertyPathString}'));";
+                            }
+
+                            await createIndexCommand.ExecuteNonQueryAsync ().ConfigureAwait(false);
+                            result = true;
+                        }
+                        catch (Exception ex)
+                        {
+                            throw new TychoDbException ($"Failed to Create Index: {fullIndexName}", ex);
+                        }
+                        finally
+                        {
+                            await transaction.CommitAsync ().ConfigureAwait (false);
+                        }
+
+                        return result;
+                    });
+        }
+
+        protected virtual void Dispose (bool disposing)
+        {
+            if (!_isDisposed)
+            {
+                if (disposing)
+                {
+                    _connection?.Dispose ();
+                }
+
+                _isDisposed = true;
+            }
+        }
+
+        public void Dispose ()
+        {
+            // Do not change this code. Put cleanup code in 'Dispose(bool disposing)' method
+            Dispose (disposing: true);
+            GC.SuppressFinalize (this);
         }
 
         private SqliteConnection BuildConnection ()
@@ -368,40 +548,37 @@ namespace Tycho
 
                     if (!supportsJson)
                     {
-                        throw new NotSupportedException ("JSON support is not available for this platform");
+                        throw new TychoDbException ("JSON support is not available for this platform");
                     }
 
-                    // Enable write-ahead logging and normal synchronous mode
-                    using var walCommand = _connection.CreateCommand ();
-                    walCommand.CommandText =
-                        @"
-                        PRAGMA journal_mode = WAL;
-                        PRAGMA synchronous = normal;";
-                    walCommand.ExecuteNonQuery ();
 
                     using var command = _connection.CreateCommand ();
 
+                    // Enable write-ahead logging and normal synchronous mode
                     command.CommandText =
                         @"
+                        PRAGMA journal_mode = WAL;
+                        PRAGMA synchronous = normal;
+
                         CREATE TABLE IF NOT EXISTS JsonValue
                         (
                             Key             TEXT PRIMARY KEY,
                             FullTypeName    TEXT NOT NULL,
                             Data            JSON NOT NULL,
-                            Category        TEXT
+                            Partition       TEXT
                         );
 
                         CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename 
                         ON JsonValue (FullTypeName);
 
-                        CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename_category 
-                        ON JsonValue (FullTypeName, Category);
+                        CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename_partition 
+                        ON JsonValue (FullTypeName, Partition);
 
                         CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename 
                         ON JsonValue (Key, FullTypeName);
 
-                        CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename_category 
-                        ON JsonValue (Key, FullTypeName, Category);";
+                        CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename_partition 
+                        ON JsonValue (Key, FullTypeName, Partition);";
 
                     command.ExecuteNonQuery ();
                 }
@@ -414,51 +591,100 @@ namespace Tycho
             }
         }
 
-        protected virtual void Dispose (bool disposing)
+        private ValueTask<SqliteConnection> BuildConnectionAsync (CancellationToken cancellationToken = default)
         {
-            if (!_isDisposed)
-            {
-                if (disposing)
-                {
-                    _connection?.Dispose ();
-                }
+            return
+                _processingQueue
+                    .Queue (
+                        async () =>
+                        {
+                            _connection = new SqliteConnection (_dbConnectionString);
 
-                _isDisposed = true;
-            }
+                            try
+                            {
+                                await _connection.OpenAsync (cancellationToken).ConfigureAwait (false);
+
+                                var supportsJson = false;
+
+                                // Enable write-ahead logging
+                                using var hasJsonCommand = _connection.CreateCommand ();
+                                hasJsonCommand.CommandText = @" PRAGMA compile_options; ";
+                                using var reader = await hasJsonCommand.ExecuteReaderAsync (cancellationToken).ConfigureAwait (false);
+
+                                while (await reader.ReadAsync (cancellationToken).ConfigureAwait(false))
+                                {
+                                    if (reader.GetString (0)?.Equals ("ENABLE_JSON1") ?? false)
+                                    {
+                                        supportsJson = true;
+                                        break;
+                                    }
+                                }
+
+                                if (!supportsJson)
+                                {
+                                    throw new TychoDbException ("JSON support is not available for this platform");
+                                }
+
+                                using var command = _connection.CreateCommand ();
+
+                                // Enable write-ahead logging and normal synchronous mode
+                                command.CommandText =
+                                    @"
+                                        PRAGMA journal_mode = WAL;
+                                        PRAGMA synchronous = normal;
+
+                                        CREATE TABLE IF NOT EXISTS JsonValue
+                                        (
+                                            Key             TEXT PRIMARY KEY,
+                                            FullTypeName    TEXT NOT NULL,
+                                            Data            JSON NOT NULL,
+                                            Partition       TEXT
+                                        );
+
+                                        CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename 
+                                        ON JsonValue (FullTypeName);
+
+                                        CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename_partition 
+                                        ON JsonValue (FullTypeName, Partition);
+
+                                        CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename 
+                                        ON JsonValue (Key, FullTypeName);
+
+                                        CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename_partition 
+                                        ON JsonValue (Key, FullTypeName, Partition);";
+
+                                await command.ExecuteNonQueryAsync (cancellationToken).ConfigureAwait (false);
+                            }
+                            finally
+                            {
+                                await _connection.CloseAsync ().ConfigureAwait(false);
+                            }
+
+                            return _connection;
+                        });
         }
 
-        public void Dispose ()
+        private Func<T, object> GetIdFor<T>()
         {
-            // Do not change this code. Put cleanup code in 'Dispose(bool disposing)' method
-            Dispose (disposing: true);
-            GC.SuppressFinalize (this);
+            var type = typeof (T);
+            if (!_registeredTypeInformation.ContainsKey (type))
+            {
+                throw new TychoDbException ($"Registration missing for type: {type}");
+            }
+
+            return _registeredTypeInformation[type].GetId<T> ();
         }
     }
 
     internal static class SqliteExtensions
     {
-        //public static ValueTask WithConnectionBlock(this SqliteConnection connection, ProcessingQueue processingQueue, Action<SqliteConnection> action)
-        //{
-        //    return processingQueue
-        //        .Queue (
-        //            async () =>
-        //            {
-        //                try
-        //                {
-        //                    await connection.OpenAsync ().ConfigureAwait(false);
-        //                    action.Invoke (connection);
-        //                }
-        //                finally
-        //                {
-        //                    await connection.CloseAsync ().ConfigureAwait (false);
-        //                }
-
-        //                return new ValueTask<object> ();
-        //            });
-        //}
-
         public static ValueTask<T> WithConnectionBlock<T> (this SqliteConnection connection, ProcessingQueue processingQueue, Func<SqliteConnection, T> func)
         {
+            if (connection == null)
+            {
+                throw new TychoDbException ("Please call 'Connect' before performing an operation");
+            }
+
             return processingQueue
                 .Queue (
                     async () =>
@@ -477,6 +703,11 @@ namespace Tycho
 
         public static ValueTask<T> WithConnectionBlock<T> (this SqliteConnection connection, ProcessingQueue processingQueue, Func<SqliteConnection, ValueTask<T>> func)
         {
+            if (connection == null)
+            {
+                throw new TychoDbException ("Please call 'Connect' before performing an operation");
+            }
+
             return processingQueue
                 .Queue (
                     async () =>

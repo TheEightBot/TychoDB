@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.Data;
@@ -28,11 +28,11 @@ namespace Tycho
 
         private readonly JsonSerializerOptions _jsonSerializerOptions;
 
+        private readonly ProcessingQueue _processingQueue = new ProcessingQueue();
+
         private SqliteConnection _connection;
 
         private bool _isDisposed;
-
-        private ProcessingQueue _processingQueue;
 
         public TychoDb (string dbPath, string dbName = "tycho_cache.db", string password = null, JsonSerializerOptions jsonSerializerOptions = null, bool rebuildCache = false)
         {

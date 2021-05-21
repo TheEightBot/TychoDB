@@ -16,7 +16,10 @@ namespace Tycho.UnitTests
         [TestMethod]
         public async Task TychoDb_InsertObject_ShouldBeSuccessful ()
         {
-            var db = new TychoDb (Path.GetTempPath (), rebuildCache: true);
+            using var db =
+                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                    .Connect();
+
             var testObj =
                 new TestClassA
                 {
@@ -31,6 +34,27 @@ namespace Tycho.UnitTests
         }
 
         [TestMethod]
+        public async Task TychoDb_RegisterAndInsertObject_ShouldBeSuccessful ()
+        {
+            var db =
+                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                    .AddTypeRegistration<TestClassA> (x => x.StringProperty)
+                    .Connect();
+
+            var testObj =
+                new TestClassA
+                {
+                    StringProperty = "Test String",
+                    IntProperty = 1984,
+                    TimestampMillis = 123451234,
+                };
+
+            var result = await db.WriteObjectAsync (testObj);
+
+            result.Should ().BeTrue ();
+        }
+
+        [TestMethod]
         public async Task TychoDb_InsertAndReadManyObjects_ShouldBeSuccessful ()
         {
             var expected = 1000;
@@ -40,7 +64,9 @@ namespace Tycho.UnitTests
 
             var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
 
-            var db = new TychoDb (Path.GetTempPath (), rebuildCache: true);
+            using var db =
+                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                    .Connect ();
 
             var tasks = 
                 Enumerable
@@ -88,7 +114,9 @@ namespace Tycho.UnitTests
         {
             var expected = true;
 
-            var db = new TychoDb (Path.GetTempPath (), rebuildCache: true);
+            using var db =
+                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                    .Connect ();
 
             var testObjs =
                 Enumerable
@@ -124,7 +152,9 @@ namespace Tycho.UnitTests
         {
             var expected = true;
 
-            var db = new TychoDb (Path.GetTempPath (), rebuildCache: true);
+            using var db =
+                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                    .Connect ();
 
             var rng = new Random ();
 
@@ -180,7 +210,9 @@ namespace Tycho.UnitTests
         {
             var expected = 1000;
 
-            var db = new TychoDb (Path.GetTempPath (), rebuildCache: true);
+            using var db =
+                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                    .Connect ();
 
             var testObjs =
                 Enumerable
@@ -219,7 +251,9 @@ namespace Tycho.UnitTests
         {
             var expected = 1000;
 
-            var db = new TychoDb (Path.GetTempPath (), rebuildCache: true);
+            using var db =
+                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                    .Connect ();
 
             var testObjs =
                 Enumerable
@@ -239,7 +273,6 @@ namespace Tycho.UnitTests
                         })
                     .ToList ();
 
-
             await db.WriteObjectAsync (testObjs, x => x.GetHashCode()).ConfigureAwait (false);
 
             var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
@@ -258,7 +291,9 @@ namespace Tycho.UnitTests
         {
             var expected = 1000;
 
-            var db = new TychoDb (Path.GetTempPath (), rebuildCache: true);
+            using var db =
+                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                    .Connect ();
 
             var testObjs =
                 Enumerable
@@ -301,7 +336,9 @@ namespace Tycho.UnitTests
         {
             var expected = 500;
 
-            var db = new TychoDb (Path.GetTempPath (), rebuildCache: true);
+            using var db =
+                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                    .Connect ();
 
             var testObjs =
                 Enumerable
@@ -318,6 +355,11 @@ namespace Tycho.UnitTests
                                         {
                                             DoubleProperty = i,
                                             FloatProperty = 4567f,
+                                            ValueC =
+                                                new TestClassC
+                                                {
+                                                    IntProperty = i * 2,
+                                                }
                                         },
                                 };
 
@@ -332,10 +374,70 @@ namespace Tycho.UnitTests
 
             var objs =
                 await db
-                    .ReadObjectsAsync<TestClassF, TestClassD> (
-                        x => x.Value,
+                    .ReadObjectsAsync<TestClassF, TestClassC> (
+                        x => x.Value.ValueC,
                         filter: new FilterBuilder<TestClassF> ()
-                            .Filter (FilterType.LessThan, x => x.Value.DoubleProperty, 500));
+                            .Filter (FilterType.GreaterThan, x => x.Value.DoubleProperty, 250d)
+                            .And()
+                            .Filter (FilterType.LessThanOrEqualTo, x => x.Value.DoubleProperty, 750d));
+
+            var count = objs.Count ();
+
+            stopWatch.Stop ();
+
+            Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
+
+            count.Should ().Be (expected);
+        }
+
+        [TestMethod]
+        public async Task TychoDb_ReadManyInnerObjectsWithLessThanFilterAndIndex_ShouldBeSuccessful ()
+        {
+            var expected = 750;
+
+            using var db =
+                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                    .Connect ()
+                    .CreateIndex<TestClassF> (x => x.Value.ValueC.IntProperty, "ValueCInt");
+
+            var testObjs =
+                Enumerable
+                    .Range (0, 1000)
+                    .Select (
+                        i =>
+                        {
+                            var testObj =
+                                new TestClassF
+                                {
+                                    TestClassId = Guid.NewGuid (),
+                                    Value =
+                                        new TestClassD
+                                        {
+                                            DoubleProperty = i,
+                                            FloatProperty = 4567f,
+                                            ValueC =
+                                                new TestClassC
+                                                {
+                                                    IntProperty = i,
+                                                }
+                                        },
+                                };
+
+                            return testObj;
+                        })
+                    .ToList ();
+
+
+            await db.WriteObjectsAsync (testObjs, x => x.TestClassId).ConfigureAwait (false);
+
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
+
+            var objs =
+                await db
+                    .ReadObjectsAsync<TestClassF, TestClassC> (
+                        x => x.Value.ValueC,
+                        filter: new FilterBuilder<TestClassF> ()
+                            .Filter (FilterType.GreaterThanOrEqualTo, x => x.Value.ValueC.IntProperty, 250d));
 
             var count = objs.Count ();
 
@@ -349,7 +451,10 @@ namespace Tycho.UnitTests
         [TestMethod]
         public async Task TychoDb_InsertObjectAndQuery_ShouldBeSuccessful ()
         {
-            var db = new TychoDb (Path.GetTempPath (), rebuildCache: true);
+            using var db =
+                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                    .Connect ();
+
             var testObj =
                 new TestClassA
                 {
@@ -359,7 +464,6 @@ namespace Tycho.UnitTests
                 };
 
             var writeResult = await db.WriteObjectAsync (testObj, x => x.StringProperty);
-
             var readResult = await db.ReadObjectAsync<TestClassA> (testObj.StringProperty);
 
             writeResult.Should ().BeTrue ();
@@ -374,7 +478,9 @@ namespace Tycho.UnitTests
         {
             var expected = 1000;
 
-            var db = new TychoDb (Path.GetTempPath (), rebuildCache: true);
+            using var db =
+                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                    .Connect ();
 
             var testObjs =
                 Enumerable
@@ -420,7 +526,9 @@ namespace Tycho.UnitTests
 
             var doubleProperty = 1234d;
 
-            var db = new TychoDb (Path.GetTempPath (), rebuildCache: true);
+            using var db =
+                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                    .Connect ();
 
             var testObj =
                 new TestClassF
@@ -434,8 +542,9 @@ namespace Tycho.UnitTests
                         },
                 };
 
+            await db.WriteObjectAsync (testObj, x => x.TestClassId, partition: "Obj 1").ConfigureAwait (false);
 
-            await db.WriteObjectAsync (testObj, x => x.TestClassId).ConfigureAwait (false);
+            await db.WriteObjectAsync (testObj, x => x.TestClassId, partition: "Obj 2").ConfigureAwait (false);
 
             var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
 
@@ -451,6 +560,20 @@ namespace Tycho.UnitTests
             Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
             objs.Count ().Should ().Be (expected);
+        }
+
+        [TestMethod]
+        public async Task TychoDb_CreateDataIndex_ShouldBeSuccessful ()
+        {
+            var expected = true;
+
+            using var db =
+                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                    .Connect ();
+
+            var successful = await db.CreateIndexAsync<TestClassD> (x => x.DoubleProperty, "double_index");
+
+            successful.Should ().Be (expected);
         }
     }
 
@@ -483,6 +606,8 @@ namespace Tycho.UnitTests
         public float FloatProperty { get; set; }
 
         public double DoubleProperty { get; set; }
+
+        public TestClassC ValueC { get; set; }
     }
 
     class TestClassE

@@ -72,35 +72,35 @@ namespace Tycho
                     switch (filter.FilterType.Value)
                     {
                         case FilterType.Contains:
-                            queryBuilder.AppendLine ($"JSON_EXTRACT(DATA, \'{filter.PropertyPath}\') like \'%{filter.Value}%\'");
+                            queryBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'%{filter.Value}%\'");
                             break;
                         case FilterType.EndsWith:
-                            queryBuilder.AppendLine ($"JSON_EXTRACT(DATA, \'{filter.PropertyPath}\') like \'%{filter.Value}\'");
+                            queryBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'%{filter.Value}\'");
                             break;
                         case FilterType.Equals:
-                            queryBuilder.AppendLine ($"JSON_EXTRACT(DATA, \'{filter.PropertyPath}\') = \'{filter.Value}\'");
+                            queryBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') = \'{filter.Value}\'");
                             break;
                         //TODO: This is an attack vector and should be parameterized
                         case FilterType.GreaterThan:
-                            queryBuilder.AppendLine ($"JSON_EXTRACT(DATA, \'{filter.PropertyPath}\') + 0 > {filter.Value}");
+                            queryBuilder.AppendLine ($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) > {filter.Value}");
                             break;
                         //TODO: This is an attack vector and should be parameterized
                         case FilterType.GreaterThanOrEqualTo:
-                            queryBuilder.AppendLine ($"JSON_EXTRACT(DATA, \'{filter.PropertyPath}\') + 0 >= {filter.Value}");
+                            queryBuilder.AppendLine ($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) >= {filter.Value}");
                             break;
                         //TODO: This is an attack vector and should be parameterized
                         case FilterType.LessThan:
-                            queryBuilder.AppendLine ($"JSON_EXTRACT(DATA, \'{filter.PropertyPath}\') + 0 < {filter.Value}");
+                            queryBuilder.AppendLine ($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) < {filter.Value}");
                             break;
                         //TODO: This is an attack vector and should be parameterized
                         case FilterType.LessThanOrEqualTo:
-                            queryBuilder.AppendLine ($"JSON_EXTRACT(DATA, \'{filter.PropertyPath}\') + 0 <= {filter.Value}");
+                            queryBuilder.AppendLine ($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) <= {filter.Value}");
                             break;
                         case FilterType.NotEquals:
-                            queryBuilder.AppendLine ($"JSON_EXTRACT(DATA, \'{filter.PropertyPath}\') <> \'{filter.Value}\'");
+                            queryBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') <> \'{filter.Value}\'");
                             break;
                         case FilterType.StartsWith:
-                            queryBuilder.AppendLine ($"JSON_EXTRACT(DATA, \'{filter.PropertyPath}\') like \'{filter.Value}%\'");
+                            queryBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'{filter.Value}%\'");
                             break;
                     }
 

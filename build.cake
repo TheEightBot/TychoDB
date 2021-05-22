@@ -102,51 +102,14 @@ Task ("BuildCore")
 				.SetMSBuildPlatform(MSBuildPlatform.x86);
 	}
 
-    if(skipLicenseCheck)
-    {
-        buildSettings =
-            buildSettings
-				.WithProperty("AdditionalConstants", "SKIP_LICENSE_CHECK");
-    }
-
     MSBuild(mainSolution, buildSettings);
 });
 
-Task ("BuildNuGet")
-.IsDependentOn("BuildCore")
-.Does (() =>
-{
-    var nugetSpecs = GetFiles("*.nuspec", SearchScope.Resursive);
-
-    foreach(var nugetSpec in nugetSpecs) {
-
-        var processArguments = new ProcessArgumentBuilder{};
-
-        processArguments
-            .Append("pack")
-			.Append(nugetSpec.FullPath)
-            .Append("-Version")
-            .Append(version + environment);
-
-        using(var process =
-            StartAndReturnProcess(
-                "nuget",
-                new ProcessSettings{
-                    Arguments = processArguments
-                }
-            ))
-        {
-            process.WaitForExit();
-        }
-
-    }
-});
-
 Task("NuGet")
-.IsDependentOn("BuildNuGet")
+.IsDependentOn("BuildCore")
 .Does(() =>
 {
-    var nugetPackages = GetFiles("./*.nupkg");
+    var nugetPackages = GetFiles("*.nupkg", SearchScope.Recursive);
 
     foreach(var package in nugetPackages) {
 
@@ -176,7 +139,7 @@ Task("NuGet")
 });
 
 Task("Default")
-.IsDependentOn("BuildNuGet")
+.IsDependentOn("NuGet")
 .Does(() =>
 {
     Information("Script Complete");

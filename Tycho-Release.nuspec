@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<package >
+  <metadata>
+    <id>Tycho</id>
+    <title>Tycho by Eight-Bot</title>
+    <version>$version$</version>
+    <authors>Eight-Bot, Inc.</authors>
+    <owners>Eight-Bot, Inc.</owners>
+    <tags>sqlite json sqlite nosql</tags>
+    <icon>Aurora_Logo.png</icon>
+    <projectUrl>https://theeightbot.github..io/AuroraDocs</projectUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <description>Beautiful Platform Controls for Xamarin Platforms
+        <div>Icons made by <a href="https://www.freepik.com" title="Freepik">Freepik</a> from <a href="https://www.flaticon.com/" title="Flaticon">www.flaticon.com</a></div>
+    </description>
+    <copyright>© 2019 Eight-Bot, Inc. All rights reserved.</copyright>
+    <dependencies>
+      <group targetFramework="netstandard2.1">
+        <dependency id="Microsoft.Data.Sqlite" version="5.0.6" />
+        <dependency id="SkiaSharp.Views.Forms" version="2.80.2" />
+        <dependency id="Xamarin.Forms" version="5.0.0.2012" />
+      </group>
+    </dependencies>
+  </metadata>
+
+  <files>
+
+    <file src="Aurora_Logo.png" />
+    
+    <!--netstandard-->
+    <file src="Aurora\bin\Release\netstandard2.0\Aurora.dll" target="lib\netstandard2.0" />
+
+    <!--Android-->
+    <file src="Aurora\bin\Release\monoandroid10.0\Aurora.dll" target="lib\monoandroid10.0" />
+
+    <!--iPhone Unified-->
+    <file src="Aurora\bin\Release\xamarinios10\Aurora.dll" target="lib\xamarinios10" />
+
+    <!--UWP-->
+    <file src="Aurora\bin\Release\uap10.0.16299\Aurora.pri" target="lib\uap10.0.16299" />
+    <file src="Aurora\bin\Release\uap10.0.16299\Aurora.dll" target="lib\uap10.0.16299" />
+
+  </files>
+
+</package>

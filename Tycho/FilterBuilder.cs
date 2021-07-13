@@ -25,6 +25,16 @@ namespace Tycho
             return this;
         }
 
+        public FilterBuilder<TObj> Filter<TItem, TItemProp> (FilterType filterType, Expression<Func<TObj, IEnumerable<TItem>>> listPropertyPath, Expression<Func<TItem, TItemProp>> itemPropertyPath, object value)
+        {
+            var listPropertyPathString = QueryPropertyPath.BuildPath (listPropertyPath);
+            var innerPropertyPathString = QueryPropertyPath.BuildPath (itemPropertyPath);
+
+            _filters.Add (new Filter (filterType, listPropertyPathString, innerPropertyPathString, value));
+
+            return this;
+        }
+
         public FilterBuilder<TObj> Filter (FilterType filterType, string propertyPath, object value)
         {
             _filters.Add (new Filter (filterType, propertyPath, value));
@@ -56,81 +66,117 @@ namespace Tycho
             return this;
         }
 
-        public SqliteCommand Build (SqliteCommand command)
+        public StringBuilder Build (StringBuilder commandBuilder)
         {
-            var queryBuilder = new StringBuilder ();
-
             if (_filters.Any())
             {
-                queryBuilder.AppendLine ("AND");
+                commandBuilder.AppendLine ("AND");
             }
 
             foreach (var filter in _filters)
             {
-                if(filter.FilterType.HasValue)
-                {
-                    switch (filter.FilterType.Value)
-                    {
-                        case FilterType.Contains:
-                            queryBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'%{filter.Value}%\'");
-                            break;
-                        case FilterType.EndsWith:
-                            queryBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'%{filter.Value}\'");
-                            break;
-                        case FilterType.Equals:
-                            queryBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') = \'{filter.Value}\'");
-                            break;
-                        //TODO: This is an attack vector and should be parameterized
-                        case FilterType.GreaterThan:
-                            queryBuilder.AppendLine ($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) > {filter.Value}");
-                            break;
-                        //TODO: This is an attack vector and should be parameterized
-                        case FilterType.GreaterThanOrEqualTo:
-                            queryBuilder.AppendLine ($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) >= {filter.Value}");
-                            break;
-                        //TODO: This is an attack vector and should be parameterized
-                        case FilterType.LessThan:
-                            queryBuilder.AppendLine ($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) < {filter.Value}");
-                            break;
-                        //TODO: This is an attack vector and should be parameterized
-                        case FilterType.LessThanOrEqualTo:
-                            queryBuilder.AppendLine ($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) <= {filter.Value}");
-                            break;
-                        case FilterType.NotEquals:
-                            queryBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') <> \'{filter.Value}\'");
-                            break;
-                        case FilterType.StartsWith:
-                            queryBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'{filter.Value}%\'");
-                            break;
-                    }
-
-                    continue;
-                }
-
-                if(filter.Join.HasValue)
+                if (filter.Join.HasValue)
                 {
                     switch (filter.Join.Value)
                     {
                         case FilterJoin.And:
-                            queryBuilder.AppendLine ($"AND");
+                            commandBuilder.AppendLine ($"AND");
                             break;
                         case FilterJoin.Or:
-                            queryBuilder.AppendLine ($"OR");
+                            commandBuilder.AppendLine ($"OR");
                             break;
                         case FilterJoin.StartGroup:
-                            queryBuilder.AppendLine ($"(");
+                            commandBuilder.AppendLine ($"(");
                             break;
                         case FilterJoin.EndGroup:
-                            queryBuilder.AppendLine ($")");
+                            commandBuilder.AppendLine ($")");
                             break;
                     }
                     continue;
                 }
+
+                if(filter.FilterType.HasValue && !string.IsNullOrEmpty(filter.PropertyValuePath))
+                {
+                    switch (filter.FilterType.Value)
+                    {
+                        case FilterType.Contains:
+                            commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value like \'%{filter.Value}%\')");
+                            break;
+                        case FilterType.EndsWith:
+                            commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value like \'%{filter.Value}\')");
+                            break;
+                        case FilterType.Equals:
+                            commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value = \'{filter.Value}\')");
+                            break;
+                        //TODO: This is an attack vector and should be parameterized
+                        case FilterType.GreaterThan:
+                            commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) > {filter.Value})");
+                            break;
+                        //TODO: This is an attack vector and should be parameterized
+                        case FilterType.GreaterThanOrEqualTo:
+                            commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) >= {filter.Value})");
+                            break;
+                        //TODO: This is an attack vector and should be parameterized
+                        case FilterType.LessThan:
+                            commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) < {filter.Value})");
+                            break;
+                        //TODO: This is an attack vector and should be parameterized
+                        case FilterType.LessThanOrEqualTo:
+                            commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) <= {filter.Value})");
+                            break;
+                        case FilterType.NotEquals:
+                            commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value <> \'{filter.Value}\')");
+                            break;
+                        case FilterType.StartsWith:
+                            commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value like \'{filter.Value}%\')");
+                            break;
+                    }
+
+                    continue;
+                }
+
+                if (filter.FilterType.HasValue)
+                {
+                    switch (filter.FilterType.Value)
+                    {
+                        case FilterType.Contains:
+                            commandBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'%{filter.Value}%\'");
+                            break;
+                        case FilterType.EndsWith:
+                            commandBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'%{filter.Value}\'");
+                            break;
+                        case FilterType.Equals:
+                            commandBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') = \'{filter.Value}\'");
+                            break;
+                        //TODO: This is an attack vector and should be parameterized
+                        case FilterType.GreaterThan:
+                            commandBuilder.AppendLine ($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) > {filter.Value}");
+                            break;
+                        //TODO: This is an attack vector and should be parameterized
+                        case FilterType.GreaterThanOrEqualTo:
+                            commandBuilder.AppendLine ($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) >= {filter.Value}");
+                            break;
+                        //TODO: This is an attack vector and should be parameterized
+                        case FilterType.LessThan:
+                            commandBuilder.AppendLine ($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) < {filter.Value}");
+                            break;
+                        //TODO: This is an attack vector and should be parameterized
+                        case FilterType.LessThanOrEqualTo:
+                            commandBuilder.AppendLine ($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) <= {filter.Value}");
+                            break;
+                        case FilterType.NotEquals:
+                            commandBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') <> \'{filter.Value}\'");
+                            break;
+                        case FilterType.StartsWith:
+                            commandBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'{filter.Value}%\'");
+                            break;
+                    }
+
+                    continue;
+                }
             }
 
-            command.CommandText += queryBuilder.ToString ();
-
-            return command;
+            return commandBuilder;
         }
     }
 }

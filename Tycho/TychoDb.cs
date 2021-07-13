@@ -9,6 +9,7 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
@@ -157,13 +158,7 @@ namespace Tycho
                                 var rowId = 0L;
 
                                 using var insertCommand = conn.CreateCommand ();
-                                insertCommand.CommandText =
-                                    @"
-                                    INSERT OR REPLACE INTO JsonValue(Key, FullTypeName, Data, Partition)
-                                    VALUES ($key, $fullTypeName, json($json), $partition);
-
-                                    SELECT last_insert_rowid();
-                                    ";
+                                insertCommand.CommandText = Queries.InsertOrReplace;
 
                                 insertCommand.Parameters.Add ("$key", SqliteType.Text).Value = keySelector (obj);
                                 insertCommand.Parameters.Add ("$partition", SqliteType.Text).Value = partition.AsValueOrDbNull();
@@ -210,29 +205,24 @@ namespace Tycho
                         {
                             using var selectCommand = conn.CreateCommand ();
 
-                            selectCommand.CommandText =
-                                @"
-                                    SELECT Data
-                                    FROM JsonValue
-                                    Where
-                                        Key = $key
-                                        AND
-                                        FullTypeName = $fullTypeName
-                                ";
+                            var commandBuilder = new StringBuilder ();
+
+                            commandBuilder.Append (Queries.SelectDataFromJsonValueWithKeyAndFullTypeName);
 
                             selectCommand.Parameters.Add ("$key", SqliteType.Text).Value = key;
                             selectCommand.Parameters.Add ("$fullTypeName", SqliteType.Text).Value = typeof (T).FullName;
 
                             if (!string.IsNullOrEmpty(partition))
                             {
-                                selectCommand.CommandText +=
-                                    @"
-                                        AND
-                                        Partition = $partition
-                                    ";
-
+                                commandBuilder.Append (Queries.AndPartitionHasValue);
                                 selectCommand.Parameters.Add ("$partition", SqliteType.Text).Value = partition.AsValueOrDbNull ();
                             }
+                            else
+                            {
+                                commandBuilder.Append (Queries.AndPartitionIsNull);
+                            }
+
+                            selectCommand.CommandText = commandBuilder.ToString ();
 
                             using var reader = await selectCommand.ExecuteReaderAsync (cancellationToken).ConfigureAwait (false);
 
@@ -280,31 +270,28 @@ namespace Tycho
                         {
                             using var selectCommand = conn.CreateCommand ();
 
-                            selectCommand.CommandText =
-                                @"
-                                    SELECT Data
-                                    FROM JsonValue
-                                    Where
-                                    FullTypeName = $fullTypeName
-                                ";
+                            var commandBuilder = new StringBuilder ();
+
+                            commandBuilder.Append(Queries.SelectDataFromJsonValueWithFullTypeName);
 
                             selectCommand.Parameters.Add ("$fullTypeName", SqliteType.Text).Value = typeof (T).FullName;
 
                             if (!string.IsNullOrEmpty (partition))
                             {
-                                selectCommand.CommandText +=
-                                @"
-                                AND
-                                Partition = $partition
-                                ";
-
+                                commandBuilder.Append (Queries.AndPartitionHasValue);
                                 selectCommand.Parameters.Add ("$partition", SqliteType.Text).Value = partition.AsValueOrDbNull ();
                             }
-
-                            if(filter != null)
+                            else
                             {
-                                filter.Build (selectCommand);
+                                commandBuilder.Append (Queries.AndPartitionIsNull);
                             }
+
+                            if (filter != null)
+                            {
+                                filter.Build (commandBuilder);
+                            }
+
+                            selectCommand.CommandText = commandBuilder.ToString ();
 
                             using var reader = await selectCommand.ExecuteReaderAsync (cancellationToken).ConfigureAwait (false);
 
@@ -346,33 +333,30 @@ namespace Tycho
                         {
                             using var selectCommand = conn.CreateCommand ();
 
+                            var commandBuilder = new StringBuilder ();
+
                             var selectionPath = QueryPropertyPath.BuildPath (innerObjectSelection);
 
-                            selectCommand.CommandText =
-                                @$"
-                                    SELECT JSON_EXTRACT(Data, '{selectionPath}') AS Data
-                                    FROM JsonValue
-                                    Where
-                                    FullTypeName = $fullTypeName
-                                ";
+                            commandBuilder.Append (Queries.ExtractDataFromJsonValueWithFullTypeName (selectionPath));
 
                             selectCommand.Parameters.Add ("$fullTypeName", SqliteType.Text).Value = typeof (TIn).FullName;
 
                             if (!string.IsNullOrEmpty (partition))
                             {
-                                selectCommand.CommandText +=
-                                @"
-                                    AND
-                                    Partition = $partition
-                                ";
-
+                                commandBuilder.Append (Queries.AndPartitionHasValue);
                                 selectCommand.Parameters.Add ("$partition", SqliteType.Text).Value = partition.AsValueOrDbNull ();
+                            }
+                            else
+                            {
+                                commandBuilder.Append (Queries.AndPartitionIsNull);
                             }
 
                             if (filter != null)
                             {
-                                filter.Build (selectCommand);
+                                filter.Build (commandBuilder);
                             }
+
+                            selectCommand.CommandText = commandBuilder.ToString ();
 
                             using var reader = await selectCommand.ExecuteReaderAsync (cancellationToken).ConfigureAwait (false);
 
@@ -393,6 +377,108 @@ namespace Tycho
                         }
 
                         return objects;
+                    });
+        }
+
+        public ValueTask<bool> DeleteObjectAsync<T> (object key, string partition = null, CancellationToken cancellationToken = default)
+        {
+            return _connection
+                .WithConnectionBlock (
+                    _processingQueue,
+                    async conn =>
+                    {
+                        var transaction = await conn.BeginTransactionAsync (IsolationLevel.Serializable, cancellationToken).ConfigureAwait (false);
+
+                        try
+                        {
+                            using var selectCommand = conn.CreateCommand ();
+
+                            var commandBuilder = new StringBuilder ();
+
+                            commandBuilder.Append (Queries.DeleteDataFromJsonValueWithKeyAndFullTypeName);
+
+                            selectCommand.Parameters.Add ("$key", SqliteType.Text).Value = key;
+                            selectCommand.Parameters.Add ("$fullTypeName", SqliteType.Text).Value = typeof (T).FullName;
+
+                            if (!string.IsNullOrEmpty (partition))
+                            {
+                                commandBuilder.Append (Queries.AndPartitionHasValue);
+                                selectCommand.Parameters.Add ("$partition", SqliteType.Text).Value = partition.AsValueOrDbNull ();
+                            }
+                            else
+                            {
+                                commandBuilder.Append (Queries.AndPartitionIsNull);
+                            }
+
+                            selectCommand.CommandText = commandBuilder.ToString ();
+
+                            var deletionCount = await selectCommand.ExecuteNonQueryAsync (cancellationToken).ConfigureAwait (false);
+
+                            return deletionCount == 1;
+                        }
+                        catch (Exception ex)
+                        {
+                            System.Diagnostics.Debug.WriteLine ($"{ex}");
+                        }
+                        finally
+                        {
+                            await transaction.CommitAsync ().ConfigureAwait (false);
+                        }
+
+                        return false;
+                    });
+        }
+
+        public ValueTask<(bool Successful, int Count)> DeleteObjectsAsync<T> (string partition = null, FilterBuilder<T> filter = null, CancellationToken cancellationToken = default)
+        {
+            return _connection
+                .WithConnectionBlock (
+                    _processingQueue,
+                    async conn =>
+                    {
+                        var transaction = await conn.BeginTransactionAsync (IsolationLevel.Serializable, cancellationToken).ConfigureAwait (false);
+
+                        try
+                        {
+                            using var selectCommand = conn.CreateCommand ();
+
+                            var commandBuilder = new StringBuilder ();
+
+                            commandBuilder.Append (Queries.DeleteDataFromJsonValueWithFullTypeName);
+
+                            selectCommand.Parameters.Add ("$fullTypeName", SqliteType.Text).Value = typeof (T).FullName;
+
+                            if (!string.IsNullOrEmpty (partition))
+                            {
+                                commandBuilder.Append (Queries.AndPartitionHasValue);
+                                selectCommand.Parameters.Add ("$partition", SqliteType.Text).Value = partition.AsValueOrDbNull ();
+                            }
+                            else
+                            {
+                                commandBuilder.Append (Queries.AndPartitionIsNull);
+                            }
+
+                            if (filter != null)
+                            {
+                                filter.Build (commandBuilder);
+                            }
+
+                            selectCommand.CommandText = commandBuilder.ToString ();
+
+                            var deletionCount = await selectCommand.ExecuteNonQueryAsync (cancellationToken).ConfigureAwait (false);
+
+                            return (deletionCount > 0, deletionCount);
+                        }
+                        catch (Exception ex)
+                        {
+                            System.Diagnostics.Debug.WriteLine ($"{ex}");
+                        }
+                        finally
+                        {
+                            await transaction.CommitAsync ().ConfigureAwait (false);
+                        }
+
+                        return (false, 0);
                     });
         }
 
@@ -418,15 +504,11 @@ namespace Tycho
 
                         if (isNumeric)
                         {
-                            createIndexCommand.CommandText =
-                            @$" CREATE INDEX IF NOT EXISTS {fullIndexName}
-                                ON JsonValue(FullTypeName, CAST(JSON_EXTRACT(Data, '{propertyPathString}') as NUMERIC));";
+                            createIndexCommand.CommandText = Queries.CreateIndexForJsonValueAsNumeric (fullIndexName, propertyPathString);
                         }
                         else
                         {
-                            createIndexCommand.CommandText =
-                            @$" CREATE INDEX IF NOT EXISTS {fullIndexName}
-                                ON JsonValue(FullTypeName, JSON_EXTRACT(Data, '{propertyPathString}'));";
+                            createIndexCommand.CommandText = Queries.CreateIndexForJsonValue (fullIndexName, propertyPathString);
                         }
 
                         createIndexCommand.ExecuteNonQuery ();
@@ -473,18 +555,15 @@ namespace Tycho
 
                             if (isNumeric)
                             {
-                                createIndexCommand.CommandText =
-                                    @$" CREATE INDEX IF NOT EXISTS {fullIndexName}
-                                        ON JsonValue(FullTypeName, CAST(JSON_EXTRACT(Data, '{propertyPathString}') as NUMERIC));";
+                                createIndexCommand.CommandText = Queries.CreateIndexForJsonValueAsNumeric (fullIndexName, propertyPathString);
                             }
                             else
                             {
-                                createIndexCommand.CommandText =
-                                    @$" CREATE INDEX IF NOT EXISTS {fullIndexName}
-                                        ON JsonValue(FullTypeName, JSON_EXTRACT(Data, '{propertyPathString}'));";
+                                createIndexCommand.CommandText = Queries.CreateIndexForJsonValue (fullIndexName, propertyPathString);
                             }
 
                             await createIndexCommand.ExecuteNonQueryAsync ().ConfigureAwait(false);
+
                             result = true;
                         }
                         catch (Exception ex)
@@ -539,7 +618,7 @@ namespace Tycho
 
                     while (reader.Read ())
                     {
-                        if (reader.GetString (0)?.Equals ("ENABLE_JSON1") ?? false)
+                        if (reader.GetString (0)?.Equals (Queries.EnableJSON1Pragma) ?? false)
                         {
                             supportsJson = true;
                             break;
@@ -551,34 +630,10 @@ namespace Tycho
                         throw new TychoDbException ("JSON support is not available for this platform");
                     }
 
-
                     using var command = _connection.CreateCommand ();
 
                     // Enable write-ahead logging and normal synchronous mode
-                    command.CommandText =
-                        @"
-                        PRAGMA journal_mode = WAL;
-                        PRAGMA synchronous = normal;
-
-                        CREATE TABLE IF NOT EXISTS JsonValue
-                        (
-                            Key             TEXT PRIMARY KEY,
-                            FullTypeName    TEXT NOT NULL,
-                            Data            JSON NOT NULL,
-                            Partition       TEXT
-                        );
-
-                        CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename 
-                        ON JsonValue (FullTypeName);
-
-                        CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename_partition 
-                        ON JsonValue (FullTypeName, Partition);
-
-                        CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename 
-                        ON JsonValue (Key, FullTypeName);
-
-                        CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename_partition 
-                        ON JsonValue (Key, FullTypeName, Partition);";
+                    command.CommandText = Queries.CreateDatabaseSchema;
 
                     command.ExecuteNonQuery ();
                 }
@@ -608,12 +663,12 @@ namespace Tycho
 
                                 // Enable write-ahead logging
                                 using var hasJsonCommand = _connection.CreateCommand ();
-                                hasJsonCommand.CommandText = @" PRAGMA compile_options; ";
+                                hasJsonCommand.CommandText = Queries.PragmaCompileOptions;
                                 using var reader = await hasJsonCommand.ExecuteReaderAsync (cancellationToken).ConfigureAwait (false);
 
                                 while (await reader.ReadAsync (cancellationToken).ConfigureAwait(false))
                                 {
-                                    if (reader.GetString (0)?.Equals ("ENABLE_JSON1") ?? false)
+                                    if (reader.GetString (0)?.Equals (Queries.EnableJSON1Pragma) ?? false)
                                     {
                                         supportsJson = true;
                                         break;
@@ -628,30 +683,7 @@ namespace Tycho
                                 using var command = _connection.CreateCommand ();
 
                                 // Enable write-ahead logging and normal synchronous mode
-                                command.CommandText =
-                                    @"
-                                        PRAGMA journal_mode = WAL;
-                                        PRAGMA synchronous = normal;
-
-                                        CREATE TABLE IF NOT EXISTS JsonValue
-                                        (
-                                            Key             TEXT PRIMARY KEY,
-                                            FullTypeName    TEXT NOT NULL,
-                                            Data            JSON NOT NULL,
-                                            Partition       TEXT
-                                        );
-
-                                        CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename 
-                                        ON JsonValue (FullTypeName);
-
-                                        CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename_partition 
-                                        ON JsonValue (FullTypeName, Partition);
-
-                                        CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename 
-                                        ON JsonValue (Key, FullTypeName);
-
-                                        CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename_partition 
-                                        ON JsonValue (Key, FullTypeName, Partition);";
+                                command.CommandText = Queries.CreateDatabaseSchema;
 
                                 await command.ExecuteNonQueryAsync (cancellationToken).ConfigureAwait (false);
                             }

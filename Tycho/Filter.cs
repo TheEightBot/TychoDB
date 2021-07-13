@@ -32,6 +32,8 @@ namespace Tycho
 
         public string PropertyPath { get; private set; }
 
+        public string PropertyValuePath { get; set; }
+
         public object Value { get; private set; }
 
         public Filter (FilterType filterType, string propertyPath, object value)
@@ -41,9 +43,26 @@ namespace Tycho
             Value = value;
         }
 
+        public Filter (FilterType filterType, string listPropertyPath, string propertyValuePath, object value)
+        {
+            FilterType = filterType;
+            PropertyPath = listPropertyPath;
+            PropertyValuePath = propertyValuePath;
+            Value = value;
+        }
+
         public Filter(FilterJoin join)
         {
             Join = join;
+        }
+    }
+
+    public class ListFilter : Filter
+    {
+
+        public ListFilter (FilterType filterType, string propertyPath, object value)
+            : base(filterType, propertyPath, value)
+        {
         }
     }
 }

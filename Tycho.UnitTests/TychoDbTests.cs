@@ -167,7 +167,7 @@ namespace Tycho.UnitTests
 
                             var testClassDs =
                                 Enumerable
-                                    .Range (100, 1000)
+                                    .Range (10, 100)
                                     .Select (
                                         i =>
                                         {
@@ -203,6 +203,72 @@ namespace Tycho.UnitTests
             Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
             resultWrite.Should ().Be (expected);
+        }
+
+        [TestMethod]
+        public async Task TychoDb_InsertManyObjectsWithNestingAndFilterUsingGreaterThan_ShouldBeSuccessful ()
+        {
+            var expected = 500;
+
+            using var db =
+                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                    .Connect ();
+
+            var rng = new Random ();
+
+            var testObjs =
+                Enumerable
+                    .Range (100, 1000)
+                    .Select (
+                        i =>
+                        {
+
+                            var testClassDs =
+                                Enumerable
+                                    .Range (10, 10)
+                                    .Select (
+                                        ii =>
+                                        {
+                                            var testObj =
+                                                new TestClassD
+                                                {
+                                                    DoubleProperty = rng.NextDouble (),
+                                                    FloatProperty = i % 2 == 0 ? 251 : 0,
+                                                };
+
+                                            return testObj;
+                                        })
+                                    .ToList ();
+
+
+                            var testObj =
+                                new TestClassE
+                                {
+                                    TestClassId = Guid.NewGuid (),
+                                    Values = testClassDs,
+                                };
+
+                            return testObj;
+                        })
+                    .ToList ();
+
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
+
+            var resultWrite = await db.WriteObjectsAsync (testObjs, x => x.TestClassId.ToString ()).ConfigureAwait (false);
+
+            var resultRead =
+                await db
+                    .ReadObjectsAsync<TestClassE> (
+                        filter: new FilterBuilder<TestClassE> ()
+                            .Filter (FilterType.GreaterThan, x => x.Values, x => x.FloatProperty,  250d));
+
+            var resultReadCount = resultRead.Count ();
+
+            stopWatch.Stop ();
+
+            Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
+
+            resultReadCount.Should ().Be (expected);
         }
 
         [TestMethod]
@@ -542,9 +608,7 @@ namespace Tycho.UnitTests
                         },
                 };
 
-            await db.WriteObjectAsync (testObj, x => x.TestClassId, partition: "Obj 1").ConfigureAwait (false);
-
-            await db.WriteObjectAsync (testObj, x => x.TestClassId, partition: "Obj 2").ConfigureAwait (false);
+            await db.WriteObjectAsync (testObj, x => x.TestClassId).ConfigureAwait (false);
 
             var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
 
@@ -574,6 +638,71 @@ namespace Tycho.UnitTests
             var successful = await db.CreateIndexAsync<TestClassD> (x => x.DoubleProperty, "double_index");
 
             successful.Should ().Be (expected);
+        }
+
+        [TestMethod]
+        public async Task TychoDb_DeleteObject_ShouldBeSuccessful ()
+        {
+            using var db =
+                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                    .Connect ();
+
+            var testObj =
+                new TestClassA
+                {
+                    StringProperty = "Test String",
+                    IntProperty = 1984,
+                    TimestampMillis = 123451234,
+                };
+
+            var writeResult = await db.WriteObjectAsync (testObj, x => x.StringProperty);
+            var deleteResult = await db.DeleteObjectAsync<TestClassA> (testObj.StringProperty);
+
+            writeResult.Should ().BeTrue ();
+            deleteResult.Should ().BeTrue ();
+        }
+
+        [TestMethod]
+        public async Task TychoDb_DeleteManyObjects_ShouldBeSuccessful ()
+        {
+            var expectedSuccess = true;
+            var expectedCount = 1000;
+
+            using var db =
+                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                    .Connect ();
+
+            var testObjs =
+                Enumerable
+                    .Range (100, 1000)
+                    .Select (
+                        i =>
+                        {
+                            var testObj =
+                                new TestClassA
+                                {
+                                    StringProperty = $"Test String {i}",
+                                    IntProperty = i,
+                                    TimestampMillis = 123451234,
+                                };
+
+                            return testObj;
+                        })
+                    .ToList ();
+
+
+            await db.WriteObjectsAsync (testObjs, x => x.StringProperty).ConfigureAwait (false);
+
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
+
+            var objs = await db.DeleteObjectsAsync<TestClassA> ().ConfigureAwait (false);
+
+            stopWatch.Stop ();
+
+            Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
+
+            objs.Successful.Should ().Be (expectedSuccess);
+            objs.Count.Should ().Be (expectedCount);
         }
     }
 

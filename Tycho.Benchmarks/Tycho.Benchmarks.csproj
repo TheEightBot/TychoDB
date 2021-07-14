@@ -11,7 +11,6 @@
   </ItemGroup>
   <ItemGroup>
     <Folder Include="Benchmarks\">
-      <DependentUpon>Benchmarks</DependentUpon>
     </Folder>
   </ItemGroup>
   <ItemGroup>
@@ -19,5 +18,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Tycho\Tycho.csproj" />
+    <ProjectReference Include="..\Tycho.NewtonsoftJson\Tycho.NewtonsoftJson.csproj" />
+    <ProjectReference Include="..\Tycho.SystemTextJson\Tycho.SystemTextJson.csproj" />
   </ItemGroup>
 </Project>

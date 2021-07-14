@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -7,13 +8,21 @@ using BenchmarkDotNet.Attributes;
 
 namespace Tycho.Benchmarks.Benchmarks
 {
+    [MemoryDiagnoser]
+    [SimpleJob (launchCount: 1, warmupCount: 1, targetCount: 10)]
     public class Insertion
     {
+        [ParamsSource (nameof (JsonSerializers))]
+        public IJsonSerializer JsonSerializer { get; set; }
+
+        public static IEnumerable<IJsonSerializer> JsonSerializers ()
+            => new IJsonSerializer[] { new SystemTextJsonSerializer (), new NewtonsoftJsonSerializer() };
+
         [Benchmark]
         public async Task<int> InsertManyAsync ()
         {
             using var db =
-                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                new TychoDb (Path.GetTempPath (), JsonSerializer, rebuildCache: true)
                     .Connect ();
 
             var successWrites = 0;
@@ -44,7 +53,7 @@ namespace Tycho.Benchmarks.Benchmarks
         public async Task<int> InsertManyConcurrentAsync ()
         {
             using var db =
-                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                new TychoDb (Path.GetTempPath (), JsonSerializer, rebuildCache: true)
                     .Connect ();
 
             var successWrites = 0;

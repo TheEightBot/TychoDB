@@ -54,7 +54,7 @@ Task ("Clean")
 	CleanDirectories ("./Tycho*/bin");
 	CleanDirectories ("./Tycho*/obj");
 
-    var nugetPackages = GetFiles("./EightBot.*.nupkg");
+    var nugetPackages = GetFiles("./*.nupkg");
     DeleteFiles(nugetPackages);
 });
 
@@ -109,7 +109,7 @@ Task("NuGet")
 .IsDependentOn("BuildCore")
 .Does(() =>
 {
-    var nugetPackages = GetFiles("./**/*.nupkg");
+    var nugetPackages = GetFiles("./**/EightBot.Tycho.*.nupkg");
 
     foreach(var package in nugetPackages) {
 

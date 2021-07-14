@@ -15,8 +15,6 @@ namespace Tycho
 
             visitor.Visit (expression.Body);
 
-            visitor.PathBuilder.Reverse ();
-
             return $"$.{string.Join('.', visitor.PathBuilder)}";
         }
 
@@ -40,7 +38,7 @@ namespace Tycho
                     throw new ArgumentException ("The path can only contain properties", nameof (node));
                 }
 
-                PathBuilder.Add (node.Member.Name);
+                PathBuilder.Insert(0, node.Member.Name);
 
                 return base.VisitMember (node);
             }

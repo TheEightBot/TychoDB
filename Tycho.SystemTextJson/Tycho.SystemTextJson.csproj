@@ -1,10 +1,10 @@
-<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="UTF-8"?>
 <Project Sdk="MSBuild.Sdk.Extras/3.0.22">
 	<PropertyGroup>
 		<TargetFramework>netstandard2.1</TargetFramework>
 		<LangVersion>Latest</LangVersion>
 		<PackOnBuild>true</PackOnBuild>
-		<PackageId>EightBot.Tycho</PackageId>
+		<PackageId>EightBot.Tycho.SystemTextJson</PackageId>
 		<PackageVersion>1.0</PackageVersion>
 		<Authors>Eight-Bot, Inc.</Authors>
 		<Copyright>2021 Eight-Bot</Copyright>
@@ -12,21 +12,20 @@
 		<Owners>Eight-Bot, Inc.</Owners>
 		<PackageProjectUrl>https://github.com/TheEightBot/Tycho</PackageProjectUrl>
 		<PackageTags>nosql database json</PackageTags>
-		<Title>Tycho DB</Title>
+		<Title>Tycho DB - System.Text.Json Serializer</Title>
 		<Summary>Lightweight and highly opioninated NoSQL database written on top of SQLite</Summary>
 		<Description>Lightweight and highly opioninated NoSQL database written on top of SQLite</Description>
 	</PropertyGroup>
-	<PropertyGroup>
-		<ContentSQLiteInteropFiles>true</ContentSQLiteInteropFiles>
-		<CopySQLiteInteropFiles>false</CopySQLiteInteropFiles>
-		<CleanSQLiteInteropFiles>false</CleanSQLiteInteropFiles>
-		<CollectSQLiteInteropFiles>false</CollectSQLiteInteropFiles>
-	</PropertyGroup>
 	<ItemGroup>
-		<PackageReference Include="Microsoft.Data.Sqlite" Version="5.0.8" />
-		<PackageReference Include="System.Threading.Tasks.Dataflow" Version="5.0.0" />
+		<None Remove="System.Text.Json" />
 	</ItemGroup>
 	<ItemGroup>
-	  <None Include="..\icon.png" PackagePath="icon.png" Pack="true" />
+		<PackageReference Include="System.Text.Json" Version="5.0.2" />
+	</ItemGroup>
+	<ItemGroup>
+		<ProjectReference Include="..\Tycho\Tycho.csproj" />
+	</ItemGroup>
+	<ItemGroup>
+		<None Include="..\icon.png" PackagePath="icon.png" Pack="true" />
 	</ItemGroup>
 </Project>

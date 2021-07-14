@@ -7,6 +7,7 @@ namespace Tycho
 @"
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = normal;
+PRAGMA locking_mode = EXCLUSIVE;
 
 CREATE TABLE IF NOT EXISTS JsonValue
 (
@@ -27,7 +28,6 @@ ON JsonValue (Key, FullTypeName);
 
 CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename_partition 
 ON JsonValue (Key, FullTypeName, Partition);";
-
 
         public const string PragmaCompileOptions = "PRAGMA compile_options;";
 

@@ -18,5 +18,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Tycho\Tycho.csproj" />
+    <ProjectReference Include="..\Tycho.SystemTextJson\Tycho.SystemTextJson.csproj" />
+    <ProjectReference Include="..\Tycho.NewtonsoftJson\Tycho.NewtonsoftJson.csproj" />
   </ItemGroup>
 </Project>

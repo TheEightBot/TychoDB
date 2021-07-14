@@ -109,7 +109,7 @@ Task("NuGet")
 .IsDependentOn("BuildCore")
 .Does(() =>
 {
-    var nugetPackages = GetFiles("./Tycho/bin/Release/*.nupkg");
+    var nugetPackages = GetFiles("./**/*.nupkg");
 
     foreach(var package in nugetPackages) {
 

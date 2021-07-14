@@ -1,33 +1,29 @@
 ﻿using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.Data;
-using System.Data.Common;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
-using System.Runtime.InteropServices;
-using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Xml.Schema;
 using Microsoft.Data.Sqlite;
 
 namespace Tycho
 {
     public class TychoDb : IDisposable
     {
-        private const string DataColumn = "Data";
+        private const string
+            ParameterFullTypeName = "$fullTypeName",
+            ParameterPartition = "$partition",
+            ParameterKey = "$key",
+            ParameterJson = "$json";
 
         private readonly object _connectionLock = new object ();
 
         private readonly string _dbConnectionString;
 
-        private readonly JsonSerializerOptions _jsonSerializerOptions;
+        private readonly IJsonSerializer _jsonSerializer;
 
         private readonly Dictionary<Type, RegisteredTypeInformation> _registeredTypeInformation = new Dictionary<Type, RegisteredTypeInformation>();
 
@@ -37,9 +33,11 @@ namespace Tycho
 
         private bool _isDisposed;
 
-        public TychoDb (string dbPath, string dbName = "tycho_cache.db", string password = null, JsonSerializerOptions jsonSerializerOptions = null, bool rebuildCache = false)
+        public TychoDb (string dbPath, IJsonSerializer jsonSerializer, string dbName = "tycho_cache.db", string password = null, bool rebuildCache = false)
         {
             SQLitePCL.Batteries_V2.Init ();
+
+            _jsonSerializer = jsonSerializer;
 
             var databasePath = Path.Join (dbPath, dbName);
 
@@ -54,6 +52,7 @@ namespace Tycho
                     ConnectionString = $"Filename={databasePath}",
                     Cache = SqliteCacheMode.Default,
                     Mode = SqliteOpenMode.ReadWriteCreate,
+                    
                 };
 
             if(password != null)
@@ -62,15 +61,6 @@ namespace Tycho
             }
 
             _dbConnectionString = connectionStringBuilder.ToString ();
-
-            _jsonSerializerOptions =
-                jsonSerializerOptions ??
-                new JsonSerializerOptions
-                {
-                    IgnoreReadOnlyProperties = true,
-                    NumberHandling = JsonNumberHandling.AllowReadingFromString | JsonNumberHandling.WriteAsString,
-                    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-                };
         }
 
         public TychoDb AddTypeRegistration<T> (Expression<Func<T, object>> idSelector)
@@ -160,22 +150,12 @@ namespace Tycho
                                 using var insertCommand = conn.CreateCommand ();
                                 insertCommand.CommandText = Queries.InsertOrReplace;
 
-                                insertCommand.Parameters.Add ("$key", SqliteType.Text).Value = keySelector (obj);
-                                insertCommand.Parameters.Add ("$partition", SqliteType.Text).Value = partition.AsValueOrDbNull();
-                                insertCommand.Parameters.Add ("$fullTypeName", SqliteType.Text).Value = typeof (T).FullName;
+                                insertCommand.Parameters.Add (ParameterKey, SqliteType.Text).Value = keySelector (obj);
+                                insertCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull();
+                                insertCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;                                
+                                insertCommand.Parameters.Add (ParameterJson, SqliteType.Text).Value = _jsonSerializer.Serialize (obj);
 
-                                var jsonBytes = JsonSerializer.SerializeToUtf8Bytes (obj, _jsonSerializerOptions);
-
-                                try
-                                {
-                                    insertCommand.Parameters.Add ("$json", SqliteType.Text).Value = jsonBytes;
-
-                                    rowId = (long)await insertCommand.ExecuteScalarAsync (cancellationToken).ConfigureAwait(false);
-                                }
-                                finally
-                                {
-                                    jsonBytes = null;
-                                }
+                                rowId = (long)await insertCommand.ExecuteScalarAsync (cancellationToken).ConfigureAwait(false);
 
                                 writeCount += rowId > 0 ? 1 : 0;
                             }
@@ -184,8 +164,8 @@ namespace Tycho
                         }
                         catch (Exception ex)
                         {
-                            System.Diagnostics.Debug.WriteLine ($"{ex}");
                             await transaction.RollbackAsync (cancellationToken).ConfigureAwait (false);
+                            throw new TychoDbException ($"Failed Writing Objects", ex);
                         }
 
                         return writeCount == totalCount;
@@ -209,13 +189,13 @@ namespace Tycho
 
                             commandBuilder.Append (Queries.SelectDataFromJsonValueWithKeyAndFullTypeName);
 
-                            selectCommand.Parameters.Add ("$key", SqliteType.Text).Value = key;
-                            selectCommand.Parameters.Add ("$fullTypeName", SqliteType.Text).Value = typeof (T).FullName;
+                            selectCommand.Parameters.Add (ParameterKey, SqliteType.Text).Value = key;
+                            selectCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
 
                             if (!string.IsNullOrEmpty(partition))
                             {
                                 commandBuilder.Append (Queries.AndPartitionHasValue);
-                                selectCommand.Parameters.Add ("$partition", SqliteType.Text).Value = partition.AsValueOrDbNull ();
+                                selectCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull ();
                             }
                             else
                             {
@@ -229,12 +209,13 @@ namespace Tycho
                             while (await reader.ReadAsync (cancellationToken).ConfigureAwait (false))
                             {
                                 using var stream = reader.GetStream (0);
-                                return await JsonSerializer.DeserializeAsync<T> (stream, _jsonSerializerOptions, cancellationToken).ConfigureAwait (false);
+                                return await _jsonSerializer.DeserializeAsync<T>(stream, cancellationToken).ConfigureAwait (false);
                             }
                         }
                         catch (Exception ex)
                         {
-                            System.Diagnostics.Debug.WriteLine ($"{ex}");
+                            await transaction.RollbackAsync (cancellationToken).ConfigureAwait (false);
+                            throw new TychoDbException ($"Failed Reading Object with key \"{key}\"", ex);
                         }
                         finally
                         {
@@ -260,7 +241,7 @@ namespace Tycho
         public ValueTask<IEnumerable<T>> ReadObjectsAsync<T> (string partition = null, FilterBuilder<T> filter = null, CancellationToken cancellationToken = default)
         {
             return _connection
-                .WithConnectionBlock (
+                .WithConnectionBlock<IEnumerable<T>> (
                     _processingQueue,
                     async conn =>
                     {
@@ -274,12 +255,12 @@ namespace Tycho
 
                             commandBuilder.Append(Queries.SelectDataFromJsonValueWithFullTypeName);
 
-                            selectCommand.Parameters.Add ("$fullTypeName", SqliteType.Text).Value = typeof (T).FullName;
+                            selectCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
 
                             if (!string.IsNullOrEmpty (partition))
                             {
                                 commandBuilder.Append (Queries.AndPartitionHasValue);
-                                selectCommand.Parameters.Add ("$partition", SqliteType.Text).Value = partition.AsValueOrDbNull ();
+                                selectCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull ();
                             }
                             else
                             {
@@ -300,21 +281,20 @@ namespace Tycho
                             while (await reader.ReadAsync (cancellationToken).ConfigureAwait (false))
                             {
                                 using var stream = reader.GetStream (0);
-                                objects.Add(await JsonSerializer.DeserializeAsync<T> (stream, _jsonSerializerOptions, cancellationToken).ConfigureAwait (false));
+                                objects.Add(await _jsonSerializer.DeserializeAsync<T> (stream, cancellationToken).ConfigureAwait (false));
                             }
 
                             return objects;
                         }
                         catch (Exception ex)
                         {
-                            System.Diagnostics.Debug.WriteLine ($"{ex}");
+                            await transaction.RollbackAsync (cancellationToken).ConfigureAwait (false);
+                            throw new TychoDbException ($"Failed Reading Objects", ex);
                         }
                         finally
                         {
                             await transaction.CommitAsync ().ConfigureAwait (false);
                         }
-
-                        return Enumerable.Empty<T>();
                     });
         }
 
@@ -339,12 +319,12 @@ namespace Tycho
 
                             commandBuilder.Append (Queries.ExtractDataFromJsonValueWithFullTypeName (selectionPath));
 
-                            selectCommand.Parameters.Add ("$fullTypeName", SqliteType.Text).Value = typeof (TIn).FullName;
+                            selectCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (TIn).FullName;
 
                             if (!string.IsNullOrEmpty (partition))
                             {
                                 commandBuilder.Append (Queries.AndPartitionHasValue);
-                                selectCommand.Parameters.Add ("$partition", SqliteType.Text).Value = partition.AsValueOrDbNull ();
+                                selectCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull ();
                             }
                             else
                             {
@@ -363,12 +343,13 @@ namespace Tycho
                             while (await reader.ReadAsync (cancellationToken).ConfigureAwait (false))
                             {
                                 using var stream = reader.GetStream (0);
-                                objects.Add (await JsonSerializer.DeserializeAsync<TOut> (stream, _jsonSerializerOptions, cancellationToken).ConfigureAwait (false));
+                                objects.Add (await _jsonSerializer.DeserializeAsync<TOut> (stream, cancellationToken).ConfigureAwait (false));
                             }
 
                         }
                         catch (Exception ex)
                         {
+                            await transaction.RollbackAsync (cancellationToken).ConfigureAwait (false);
                             throw new TychoDbException ("Failed Reading Objects", ex);
                         }
                         finally
@@ -397,13 +378,13 @@ namespace Tycho
 
                             commandBuilder.Append (Queries.DeleteDataFromJsonValueWithKeyAndFullTypeName);
 
-                            selectCommand.Parameters.Add ("$key", SqliteType.Text).Value = key;
-                            selectCommand.Parameters.Add ("$fullTypeName", SqliteType.Text).Value = typeof (T).FullName;
+                            selectCommand.Parameters.Add (ParameterKey, SqliteType.Text).Value = key;
+                            selectCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
 
                             if (!string.IsNullOrEmpty (partition))
                             {
                                 commandBuilder.Append (Queries.AndPartitionHasValue);
-                                selectCommand.Parameters.Add ("$partition", SqliteType.Text).Value = partition.AsValueOrDbNull ();
+                                selectCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull ();
                             }
                             else
                             {
@@ -418,14 +399,13 @@ namespace Tycho
                         }
                         catch (Exception ex)
                         {
-                            System.Diagnostics.Debug.WriteLine ($"{ex}");
+                            await transaction.RollbackAsync (cancellationToken).ConfigureAwait (false);
+                            throw new TychoDbException ($"Failed to delete object with key \"{key}\"", ex);
                         }
                         finally
                         {
                             await transaction.CommitAsync ().ConfigureAwait (false);
                         }
-
-                        return false;
                     });
         }
 
@@ -446,12 +426,12 @@ namespace Tycho
 
                             commandBuilder.Append (Queries.DeleteDataFromJsonValueWithFullTypeName);
 
-                            selectCommand.Parameters.Add ("$fullTypeName", SqliteType.Text).Value = typeof (T).FullName;
+                            selectCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
 
                             if (!string.IsNullOrEmpty (partition))
                             {
                                 commandBuilder.Append (Queries.AndPartitionHasValue);
-                                selectCommand.Parameters.Add ("$partition", SqliteType.Text).Value = partition.AsValueOrDbNull ();
+                                selectCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull ();
                             }
                             else
                             {
@@ -471,14 +451,14 @@ namespace Tycho
                         }
                         catch (Exception ex)
                         {
-                            System.Diagnostics.Debug.WriteLine ($"{ex}");
+                            await transaction.RollbackAsync (cancellationToken).ConfigureAwait (false);
+
+                            throw new TychoDbException ("Failed to delete objects", ex);
                         }
                         finally
                         {
                             await transaction.CommitAsync ().ConfigureAwait (false);
                         }
-
-                        return (false, 0);
                     });
         }
 
@@ -515,6 +495,7 @@ namespace Tycho
                     }
                     catch (Exception ex)
                     {
+                        transaction.Rollback();
                         throw new TychoDbException ($"Failed to Create Index: {fullIndexName}", ex);
                     }
                     finally
@@ -568,6 +549,7 @@ namespace Tycho
                         }
                         catch (Exception ex)
                         {
+                            await transaction.RollbackAsync (cancellationToken).ConfigureAwait (false);
                             throw new TychoDbException ($"Failed to Create Index: {fullIndexName}", ex);
                         }
                         finally
@@ -613,7 +595,7 @@ namespace Tycho
 
                     // Enable write-ahead logging
                     using var hasJsonCommand = _connection.CreateCommand ();
-                    hasJsonCommand.CommandText = @" PRAGMA compile_options; ";
+                    hasJsonCommand.CommandText = Queries.PragmaCompileOptions;
                     using var reader = hasJsonCommand.ExecuteReader ();
 
                     while (reader.Read ())

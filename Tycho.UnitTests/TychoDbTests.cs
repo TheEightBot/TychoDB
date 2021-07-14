@@ -13,11 +13,24 @@ namespace Tycho.UnitTests
     [TestClass]
     public class TychoDbTests
     {
-        [TestMethod]
-        public async Task TychoDb_InsertObject_ShouldBeSuccessful ()
+        private static readonly IJsonSerializer _systemTextJsonSerializer = new SystemTextJsonSerializer ();
+        private static readonly IJsonSerializer _newtonsoftJsonSerializer = new NewtonsoftJsonSerializer ();
+
+        public static IEnumerable<object[]> JsonSerializers
+        {
+            get
+            {
+                yield return new[] { _systemTextJsonSerializer };
+                yield return new[] { _newtonsoftJsonSerializer };
+            }
+        }
+
+        [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_InsertObject_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             using var db =
-                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
                     .Connect();
 
             var testObj =
@@ -33,13 +46,14 @@ namespace Tycho.UnitTests
             result.Should ().BeTrue ();
         }
 
-        [TestMethod]
-        public async Task TychoDb_RegisterAndInsertObject_ShouldBeSuccessful ()
+        [DataTestMethod]
+        [DynamicData (nameof (JsonSerializers))]
+        public async Task TychoDb_RegisterAndInsertObject_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             var db =
-                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
                     .AddTypeRegistration<TestClassA> (x => x.StringProperty)
-                    .Connect();
+                    .Connect ();
 
             var testObj =
                 new TestClassA
@@ -54,8 +68,9 @@ namespace Tycho.UnitTests
             result.Should ().BeTrue ();
         }
 
-        [TestMethod]
-        public async Task TychoDb_InsertAndReadManyObjects_ShouldBeSuccessful ()
+        [DataTestMethod]
+        [DynamicData (nameof (JsonSerializers))]
+        public async Task TychoDb_InsertAndReadManyObjects_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             var expected = 1000;
 
@@ -65,10 +80,10 @@ namespace Tycho.UnitTests
             var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
 
             using var db =
-                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
                     .Connect ();
 
-            var tasks = 
+            var tasks =
                 Enumerable
                     .Range (100, 1000)
                     .Select (
@@ -83,7 +98,7 @@ namespace Tycho.UnitTests
                                 };
 
 
-                            var resultWrite = await db.WriteObjectAsync (testObj, x => x.StringProperty).ConfigureAwait(false);
+                            var resultWrite = await db.WriteObjectAsync (testObj, x => x.StringProperty).ConfigureAwait (false);
 
                             if (resultWrite)
                             {
@@ -97,7 +112,7 @@ namespace Tycho.UnitTests
                                 Interlocked.Increment (ref successReads);
                             }
                         })
-                    .ToList();
+                    .ToList ();
 
             await Task.WhenAll (tasks).ConfigureAwait (false);
 
@@ -109,13 +124,14 @@ namespace Tycho.UnitTests
             successReads.Should ().Be (expected);
         }
 
-        [TestMethod]
-        public async Task TychoDb_InsertManyObjects_ShouldBeSuccessful ()
+        [DataTestMethod]
+        [DynamicData (nameof (JsonSerializers))]
+        public async Task TychoDb_InsertManyObjects_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             var expected = true;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
                     .Connect ();
 
             var testObjs =
@@ -147,13 +163,14 @@ namespace Tycho.UnitTests
             resultWrite.Should ().Be (expected);
         }
 
-        [TestMethod]
-        public async Task TychoDb_InsertManyObjectsWithNesting_ShouldBeSuccessful ()
+        [DataTestMethod]
+        [DynamicData (nameof (JsonSerializers))]
+        public async Task TychoDb_InsertManyObjectsWithNesting_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             var expected = true;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
                     .Connect ();
 
             var rng = new Random ();
@@ -174,8 +191,8 @@ namespace Tycho.UnitTests
                                             var testObj =
                                                 new TestClassD
                                                 {
-                                                    DoubleProperty = rng.NextDouble(),
-                                                    FloatProperty = (float)rng.NextDouble(),
+                                                    DoubleProperty = rng.NextDouble (),
+                                                    FloatProperty = (float)rng.NextDouble (),
                                                 };
 
                                             return testObj;
@@ -186,7 +203,7 @@ namespace Tycho.UnitTests
                             var testObj =
                                 new TestClassE
                                 {
-                                    TestClassId = Guid.NewGuid(),
+                                    TestClassId = Guid.NewGuid (),
                                     Values = testClassDs,
                                 };
 
@@ -196,7 +213,7 @@ namespace Tycho.UnitTests
 
             var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
 
-            var resultWrite = await db.WriteObjectsAsync (testObjs, x => x.TestClassId.ToString()).ConfigureAwait (false);
+            var resultWrite = await db.WriteObjectsAsync (testObjs, x => x.TestClassId.ToString ()).ConfigureAwait (false);
 
             stopWatch.Stop ();
 
@@ -205,13 +222,14 @@ namespace Tycho.UnitTests
             resultWrite.Should ().Be (expected);
         }
 
-        [TestMethod]
-        public async Task TychoDb_InsertManyObjectsWithNestingAndFilterUsingGreaterThan_ShouldBeSuccessful ()
+        [DataTestMethod]
+        [DynamicData (nameof (JsonSerializers))]
+        public async Task TychoDb_InsertManyObjectsWithNestingAndFilterUsingGreaterThan_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             var expected = 500;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
                     .Connect ();
 
             var rng = new Random ();
@@ -260,7 +278,7 @@ namespace Tycho.UnitTests
                 await db
                     .ReadObjectsAsync<TestClassE> (
                         filter: new FilterBuilder<TestClassE> ()
-                            .Filter (FilterType.GreaterThan, x => x.Values, x => x.FloatProperty,  250d));
+                            .Filter (FilterType.GreaterThan, x => x.Values, x => x.FloatProperty, 250d));
 
             var resultReadCount = resultRead.Count ();
 
@@ -271,13 +289,14 @@ namespace Tycho.UnitTests
             resultReadCount.Should ().Be (expected);
         }
 
-        [TestMethod]
-        public async Task TychoDb_ReadManyObjects_ShouldBeSuccessful ()
+        [DataTestMethod]
+        [DynamicData (nameof (JsonSerializers))]
+        public async Task TychoDb_ReadManyObjects_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             var expected = 1000;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
                     .Connect ();
 
             var testObjs =
@@ -309,16 +328,17 @@ namespace Tycho.UnitTests
 
             Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-            objs.Count().Should ().Be (expected);
+            objs.Count ().Should ().Be (expected);
         }
 
-        [TestMethod]
-        public async Task TychoDb_ReadManyGenericObjects_ShouldBeSuccessful ()
+        [DataTestMethod]
+        [DynamicData (nameof (JsonSerializers))]
+        public async Task TychoDb_ReadManyGenericObjects_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             var expected = 1000;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
                     .Connect ();
 
             var testObjs =
@@ -339,11 +359,11 @@ namespace Tycho.UnitTests
                         })
                     .ToList ();
 
-            await db.WriteObjectAsync (testObjs, x => x.GetHashCode()).ConfigureAwait (false);
+            await db.WriteObjectAsync (testObjs, x => x.GetHashCode ()).ConfigureAwait (false);
 
             var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
 
-            var obj = await db.ReadObjectAsync<List<TestClassA>> (testObjs.GetHashCode()).ConfigureAwait (false);
+            var obj = await db.ReadObjectAsync<List<TestClassA>> (testObjs.GetHashCode ()).ConfigureAwait (false);
 
             stopWatch.Stop ();
 
@@ -352,13 +372,14 @@ namespace Tycho.UnitTests
             obj.Count ().Should ().Be (expected);
         }
 
-        [TestMethod]
-        public async Task TychoDb_ReadManyInnerObjects_ShouldBeSuccessful ()
+        [DataTestMethod]
+        [DynamicData (nameof (JsonSerializers))]
+        public async Task TychoDb_ReadManyInnerObjects_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             var expected = 1000;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
                     .Connect ();
 
             var testObjs =
@@ -370,7 +391,7 @@ namespace Tycho.UnitTests
                             var testObj =
                                 new TestClassF
                                 {
-                                    TestClassId = Guid.NewGuid(),
+                                    TestClassId = Guid.NewGuid (),
                                     Value =
                                         new TestClassD
                                         {
@@ -397,13 +418,14 @@ namespace Tycho.UnitTests
             objs.Count ().Should ().Be (expected);
         }
 
-        [TestMethod]
-        public async Task TychoDb_ReadManyInnerObjectsWithLessThanFilter_ShouldBeSuccessful ()
+        [DataTestMethod]
+        [DynamicData (nameof (JsonSerializers))]
+        public async Task TychoDb_ReadManyInnerObjectsWithLessThanFilter_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             var expected = 500;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
                     .Connect ();
 
             var testObjs =
@@ -444,7 +466,7 @@ namespace Tycho.UnitTests
                         x => x.Value.ValueC,
                         filter: new FilterBuilder<TestClassF> ()
                             .Filter (FilterType.GreaterThan, x => x.Value.DoubleProperty, 250d)
-                            .And()
+                            .And ()
                             .Filter (FilterType.LessThanOrEqualTo, x => x.Value.DoubleProperty, 750d));
 
             var count = objs.Count ();
@@ -456,13 +478,14 @@ namespace Tycho.UnitTests
             count.Should ().Be (expected);
         }
 
-        [TestMethod]
-        public async Task TychoDb_ReadManyInnerObjectsWithLessThanFilterAndIndex_ShouldBeSuccessful ()
+        [DataTestMethod]
+        [DynamicData (nameof (JsonSerializers))]
+        public async Task TychoDb_ReadManyInnerObjectsWithLessThanFilterAndIndex_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             var expected = 750;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
                     .Connect ()
                     .CreateIndex<TestClassF> (x => x.Value.ValueC.IntProperty, "ValueCInt");
 
@@ -514,11 +537,12 @@ namespace Tycho.UnitTests
             count.Should ().Be (expected);
         }
 
-        [TestMethod]
-        public async Task TychoDb_InsertObjectAndQuery_ShouldBeSuccessful ()
+        [DataTestMethod]
+        [DynamicData (nameof (JsonSerializers))]
+        public async Task TychoDb_InsertObjectAndQuery_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             using var db =
-                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
                     .Connect ();
 
             var testObj =
@@ -533,19 +557,20 @@ namespace Tycho.UnitTests
             var readResult = await db.ReadObjectAsync<TestClassA> (testObj.StringProperty);
 
             writeResult.Should ().BeTrue ();
-            readResult.Should ().NotBeNull();
+            readResult.Should ().NotBeNull ();
             readResult.StringProperty.Should ().Be (testObj.StringProperty);
             readResult.IntProperty.Should ().Be (testObj.IntProperty);
             readResult.TimestampMillis.Should ().Be (testObj.TimestampMillis);
         }
 
-        [TestMethod]
-        public async Task TychoDb_QueryUsingContains_ShouldBeSuccessful ()
+        [DataTestMethod]
+        [DynamicData (nameof (JsonSerializers))]
+        public async Task TychoDb_QueryUsingContains_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             var expected = 1000;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
                     .Connect ();
 
             var testObjs =
@@ -574,8 +599,8 @@ namespace Tycho.UnitTests
             var objs =
                 await db
                     .ReadObjectsAsync<TestClassA> (
-                        filter: new FilterBuilder<TestClassA>()
-                            .Filter(FilterType.Contains, x => x.StringProperty, " String "))
+                        filter: new FilterBuilder<TestClassA> ()
+                            .Filter (FilterType.Contains, x => x.StringProperty, " String "))
                     .ConfigureAwait (false);
 
             stopWatch.Stop ();
@@ -585,21 +610,22 @@ namespace Tycho.UnitTests
             objs.Count ().Should ().Be (expected);
         }
 
-        [TestMethod]
-        public async Task TychoDb_QueryInnerObjectUsingEquals_ShouldBeSuccessful ()
+        [DataTestMethod]
+        [DynamicData (nameof (JsonSerializers))]
+        public async Task TychoDb_QueryInnerObjectUsingEquals_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             var expected = 1;
 
-            var doubleProperty = 1234d;
+            var doubleProperty = 1234.0d;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
                     .Connect ();
 
             var testObj =
                 new TestClassF
                 {
-                    TestClassId = Guid.NewGuid(),
+                    TestClassId = Guid.NewGuid (),
                     Value =
                         new TestClassD
                         {
@@ -626,13 +652,14 @@ namespace Tycho.UnitTests
             objs.Count ().Should ().Be (expected);
         }
 
-        [TestMethod]
-        public async Task TychoDb_CreateDataIndex_ShouldBeSuccessful ()
+        [DataTestMethod]
+        [DynamicData (nameof (JsonSerializers))]
+        public async Task TychoDb_CreateDataIndex_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             var expected = true;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
                     .Connect ();
 
             var successful = await db.CreateIndexAsync<TestClassD> (x => x.DoubleProperty, "double_index");
@@ -640,11 +667,12 @@ namespace Tycho.UnitTests
             successful.Should ().Be (expected);
         }
 
-        [TestMethod]
-        public async Task TychoDb_DeleteObject_ShouldBeSuccessful ()
+        [DataTestMethod]
+        [DynamicData (nameof (JsonSerializers))]
+        public async Task TychoDb_DeleteObject_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             using var db =
-                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
                     .Connect ();
 
             var testObj =
@@ -662,14 +690,15 @@ namespace Tycho.UnitTests
             deleteResult.Should ().BeTrue ();
         }
 
-        [TestMethod]
-        public async Task TychoDb_DeleteManyObjects_ShouldBeSuccessful ()
+        [DataTestMethod]
+        [DynamicData (nameof (JsonSerializers))]
+        public async Task TychoDb_DeleteManyObjects_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             var expectedSuccess = true;
             var expectedCount = 1000;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), rebuildCache: true)
+                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
                     .Connect ();
 
             var testObjs =

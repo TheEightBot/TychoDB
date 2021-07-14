@@ -3,7 +3,6 @@
 	<PropertyGroup>
 		<TargetFramework>netstandard2.1</TargetFramework>
 		<LangVersion>Latest</LangVersion>
-		<PackOnBuild>true</PackOnBuild>
 		<PackageId>EightBot.Tycho.SystemTextJson</PackageId>
 		<PackageVersion>1.0</PackageVersion>
 		<Authors>Eight-Bot, Inc.</Authors>
@@ -15,6 +14,7 @@
 		<Title>Tycho DB - System.Text.Json Serializer</Title>
 		<Summary>Lightweight and highly opioninated NoSQL database written on top of SQLite</Summary>
 		<Description>Lightweight and highly opioninated NoSQL database written on top of SQLite</Description>
+		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 	</PropertyGroup>
 	<ItemGroup>
 		<None Remove="System.Text.Json" />

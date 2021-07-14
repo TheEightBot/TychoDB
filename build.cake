@@ -54,7 +54,7 @@ Task ("Clean")
 	CleanDirectories ("./Tycho*/bin");
 	CleanDirectories ("./Tycho*/obj");
 
-    var nugetPackages = GetFiles("./*.nupkg");
+    var nugetPackages = GetFiles("./EightBot.*.nupkg");
     DeleteFiles(nugetPackages);
 });
 

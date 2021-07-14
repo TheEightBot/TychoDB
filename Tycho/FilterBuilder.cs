@@ -19,25 +19,27 @@ namespace Tycho
         public FilterBuilder<TObj> Filter<TProp> (FilterType filterType, Expression<Func<TObj, TProp>> propertyPath, object value)
         {
             var propertyPathString = QueryPropertyPath.BuildPath (propertyPath);
+            var isPropertyPathNumeric = QueryPropertyPath.IsNumeric (propertyPath);
 
-            _filters.Add (new Filter (filterType, propertyPathString, value));
-
-            return this;
-        }
-
-        public FilterBuilder<TObj> Filter<TItem, TItemProp> (FilterType filterType, Expression<Func<TObj, IEnumerable<TItem>>> listPropertyPath, Expression<Func<TItem, TItemProp>> itemPropertyPath, object value)
-        {
-            var listPropertyPathString = QueryPropertyPath.BuildPath (listPropertyPath);
-            var innerPropertyPathString = QueryPropertyPath.BuildPath (itemPropertyPath);
-
-            _filters.Add (new Filter (filterType, listPropertyPathString, innerPropertyPathString, value));
+            _filters.Add (new Filter (filterType, propertyPathString, isPropertyPathNumeric, value));
 
             return this;
         }
 
-        public FilterBuilder<TObj> Filter (FilterType filterType, string propertyPath, object value)
+        public FilterBuilder<TObj> Filter<TItem, TItemProp> (FilterType filterType, Expression<Func<TObj, IEnumerable<TItem>>> propertyPath, Expression<Func<TItem, TItemProp>> propertyValuePath, object value)
         {
-            _filters.Add (new Filter (filterType, propertyPath, value));
+            var propertyPathString = QueryPropertyPath.BuildPath (propertyPath);
+            var propertyValuePathString = QueryPropertyPath.BuildPath (propertyValuePath);
+            var isPropertyValuePathNumeric = QueryPropertyPath.IsNumeric (propertyValuePath);
+
+            _filters.Add (new Filter (filterType, propertyPathString, propertyValuePathString, isPropertyValuePathNumeric, value));
+
+            return this;
+        }
+
+        public FilterBuilder<TObj> Filter (FilterType filterType, string propertyPath, bool isPropertyPathNumeric, object value)
+        {
+            _filters.Add (new Filter (filterType, propertyPath, isPropertyPathNumeric, value));
 
             return this;
         }
@@ -106,6 +108,12 @@ namespace Tycho
                             commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value like \'%{filter.Value}\')");
                             break;
                         case FilterType.Equals:
+                            if(filter.IsPropertyValuePathNumeric)
+                            {
+                                commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) = \'{filter.Value}\')");
+                                break;
+                            }
+                            
                             commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value = \'{filter.Value}\')");
                             break;
                         //TODO: This is an attack vector and should be parameterized
@@ -146,6 +154,12 @@ namespace Tycho
                             commandBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'%{filter.Value}\'");
                             break;
                         case FilterType.Equals:
+                            if(filter.IsPropertyPathNumeric)
+                            {
+                                commandBuilder.AppendLine ($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) = \'{filter.Value}\'");
+                                break;
+                            }
+
                             commandBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') = \'{filter.Value}\'");
                             break;
                         //TODO: This is an attack vector and should be parameterized

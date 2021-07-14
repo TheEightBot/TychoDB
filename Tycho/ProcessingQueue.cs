@@ -5,7 +5,6 @@ using System.Threading;
 using System.Runtime.Serialization;
 using System.Runtime.CompilerServices;
 
-[assembly: InternalsVisibleTo("EightBot.Orbit.Tests")]
 namespace Tycho
 {
     internal class ProcessingQueue
@@ -154,12 +153,11 @@ namespace Tycho
                 new QueuedTask
                 {
                     Input = input,
-                    TaskRunner = 
+                    TaskRunner =
                         async x =>
                         {
-                            var result = await processingTask.Invoke((TInput)x).ConfigureAwait(false);
-                            return Task.FromResult<object>(result);
-                        }
+                            return await processingTask.Invoke ((TInput)x).ConfigureAwait (false);
+                        },
                 };
 
             if (cancellationToken == default(CancellationToken))
@@ -213,7 +211,6 @@ namespace Tycho
             = new TaskCompletionSource<object>();
 
         public object Input { get; set; }
-        public object Output { get; set; }
 
         public Func<object, ValueTask<object>> TaskRunner { get; set; }
     }

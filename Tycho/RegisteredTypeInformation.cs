@@ -20,9 +20,9 @@ namespace Tycho
 
         public Type ObjectType { get; set; }
 
-        public static RegisteredTypeInformation Create<T> (Expression<Func<T, object>> idProperty)
+        public static RegisteredTypeInformation Create<T, TId> (Expression<Func<T, TId>> idProperty)
         {
-            if (idProperty is LambdaExpression lex && idProperty.Body is MemberExpression mex && mex.Member is PropertyInfo pi)
+            if (idProperty is LambdaExpression lex)
             {
                 var compiledExpression = lex.Compile ();
                 var type = typeof (T);
@@ -31,7 +31,7 @@ namespace Tycho
                     new RegisteredTypeInformation
                     {
                         FuncIdSelector = compiledExpression,
-                        IdProperty = pi.Name,
+                        IdProperty = GetMemberInfo(idProperty).Member.Name,
                         TypeFullName = type.FullName,
                         TypeName = type.Name,
                         TypeNamespace = type.Namespace,
@@ -47,6 +47,30 @@ namespace Tycho
         public Func<T, object> GetId<T> ()
         {
             return (Func<T, object>)FuncIdSelector;
+        }
+
+        private static MemberExpression GetMemberInfo (Expression method)
+        {
+            LambdaExpression lambda = method as LambdaExpression;
+            if (lambda == null)
+                throw new ArgumentNullException ("method");
+
+            MemberExpression memberExpr = null;
+
+            if (lambda.Body.NodeType == ExpressionType.Convert)
+            {
+                memberExpr =
+                    ((UnaryExpression)lambda.Body).Operand as MemberExpression;
+            }
+            else if (lambda.Body.NodeType == ExpressionType.MemberAccess)
+            {
+                memberExpr = lambda.Body as MemberExpression;
+            }
+
+            if (memberExpr == null)
+                throw new ArgumentException ("method");
+
+            return memberExpr;
         }
     }
 }

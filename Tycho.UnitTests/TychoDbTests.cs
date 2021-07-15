@@ -7,6 +7,7 @@ using FluentAssertions;
 using System.Threading;
 using FluentAssertions.Common;
 using System.Linq;
+using System.ComponentModel;
 
 namespace Tycho.UnitTests
 {
@@ -61,6 +62,28 @@ namespace Tycho.UnitTests
                     StringProperty = "Test String",
                     IntProperty = 1984,
                     TimestampMillis = 123451234,
+                };
+
+            var result = await db.WriteObjectAsync (testObj);
+
+            result.Should ().BeTrue ();
+        }
+
+        [DataTestMethod]
+        [DynamicData (nameof (JsonSerializers))]
+        public async Task TychoDb_RegisterPatientAndInsertObject_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
+        {
+            var db =
+                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
+                    .AddTypeRegistration<Patient> (x => x.PatientId)
+                    .Connect ();
+
+            var testObj =
+                new Patient
+                {
+                    PatientId = 12345,
+                    FirstName = "TEST",
+                    LastName = "PATIENT",
                 };
 
             var result = await db.WriteObjectAsync (testObj);
@@ -780,5 +803,22 @@ namespace Tycho.UnitTests
         public Guid TestClassId { get; set; }
 
         public TestClassD Value { get; set; }
+    }
+
+    public class Patient : ModelBase
+    {
+        public long PatientId { get; set; }
+        public string MRN { get; set; }
+        public string LastName { get; set; }
+        public string FirstName { get; set; }
+        public string Gender { get; set; }
+        public DateTime? DOB { get; set; }
+        public bool CanAddScic { get; set; }
+        public bool IsDirty { get; set; }
+    }
+
+    public abstract class ModelBase : INotifyPropertyChanged
+    {
+        public event PropertyChangedEventHandler PropertyChanged;
     }
 }

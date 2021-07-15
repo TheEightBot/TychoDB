@@ -14,11 +14,15 @@
 <PrivateAssets>all</PrivateAssets>
 </PackageReference>
     <PackageReference Include="FluentAssertions" Version="5.10.3" />
+    <PackageReference Include="PropertyChanged.Fody" Version="3.4.0" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Tycho\Tycho.csproj" />
     <ProjectReference Include="..\Tycho.SystemTextJson\Tycho.SystemTextJson.csproj" />
     <ProjectReference Include="..\Tycho.NewtonsoftJson\Tycho.NewtonsoftJson.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Remove="PropertyChanged.Fody" />
   </ItemGroup>
 </Project>

@@ -45,9 +45,9 @@ SELECT last_insert_rowid();";
 SELECT Data
 FROM JsonValue
 Where
-    Key = $key
-    AND
-    FullTypeName = $fullTypeName";
+Key = $key
+AND
+FullTypeName = $fullTypeName";
 
         public const string SelectPartitions =
 @"
@@ -59,23 +59,25 @@ From JsonValue";
 SELECT Data
 FROM JsonValue
 Where
-    FullTypeName = $fullTypeName";
+FullTypeName = $fullTypeName";
 
         public const string DeleteDataFromJsonValueWithKeyAndFullTypeName =
 @"
 DELETE
 FROM JsonValue
 Where
-    Key = $key
-    AND
-    FullTypeName = $fullTypeName";
+Key = $key
+AND
+FullTypeName = $fullTypeName
+";
 
         public const string DeleteDataFromJsonValueWithFullTypeName =
 @"
 DELETE
 FROM JsonValue
 Where
-    FullTypeName = $fullTypeName";
+FullTypeName = $fullTypeName
+";
 
         public const string AndPartitionHasValue =
 @"
@@ -105,7 +107,8 @@ FullTypeName = $fullTypeName
             return
 @$"
 CREATE INDEX IF NOT EXISTS {fullIndexName}
-ON JsonValue(FullTypeName, CAST(JSON_EXTRACT(Data, '{propertyPathString}') as NUMERIC));";
+ON JsonValue(FullTypeName, CAST(JSON_EXTRACT(Data, '{propertyPathString}') as NUMERIC));
+";
         }
 
         public static string CreateIndexForJsonValue(string fullIndexName, string propertyPathString)
@@ -113,7 +116,8 @@ ON JsonValue(FullTypeName, CAST(JSON_EXTRACT(Data, '{propertyPathString}') as NU
             return
 @$"
 CREATE INDEX IF NOT EXISTS {fullIndexName}
-ON JsonValue(FullTypeName, JSON_EXTRACT(Data, '{propertyPathString}'));";
+ON JsonValue(FullTypeName, JSON_EXTRACT(Data, '{propertyPathString}'));
+";
         }
 
     }

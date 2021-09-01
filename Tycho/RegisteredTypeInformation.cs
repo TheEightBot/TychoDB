@@ -16,6 +16,8 @@ namespace Tycho
 
         public bool IsNumeric { get; set; }
 
+        public bool IsBool { get; set; }
+
         public string TypeFullName { get; set; }
 
         public string TypeName { get; set; }
@@ -38,6 +40,7 @@ namespace Tycho
                         IdProperty = GetExpressionMemberName (idProperty),
                         IdPropertyPath = QueryPropertyPath.BuildPath(idProperty),
                         IsNumeric = QueryPropertyPath.IsNumeric(idProperty),
+                        IsBool = QueryPropertyPath.IsBool(idProperty),
                         TypeFullName = type.FullName,
                         TypeName = type.Name,
                         TypeNamespace = type.Namespace,

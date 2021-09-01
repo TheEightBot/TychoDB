@@ -92,6 +92,35 @@ namespace Tycho.UnitTests
         }
 
         [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_RegisterPatientAndInsertObjectAndQueryByIsDirty_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+        {
+            var db =
+                new TychoDb(Path.GetTempPath(), jsonSerializer, rebuildCache: true)
+                    .AddTypeRegistration<Patient>(x => x.PatientId)
+                    .Connect();
+
+            var testObj =
+                new Patient
+                {
+                    PatientId = 12345,
+                    FirstName = "TEST",
+                    LastName = "PATIENT",
+                    IsDirty = true,
+                };
+
+            await db.WriteObjectAsync(testObj);
+
+            var result =
+                await db.ReadObjectsAsync<Patient>(
+                        filter: new FilterBuilder<Patient>()
+                            .Filter(FilterType.Equals, x => x.IsDirty, true));
+
+            result.Should().NotBeNullOrEmpty();
+            result.Should().HaveCount(1);
+        }
+
+        [DataTestMethod]
         [DynamicData (nameof (JsonSerializers))]
         public async Task TychoDb_InsertAndReadManyObjects_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {

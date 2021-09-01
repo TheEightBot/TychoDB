@@ -27,6 +27,15 @@ namespace Tycho
             return visitor.IsNumeric ?? false;
         }
 
+        public static bool IsBool<TPathObj, TProp>(Expression<Func<TPathObj, TProp>> expression)
+        {
+            var visitor = new PropertyIsBoolVisitor();
+
+            visitor.Visit(expression.Body);
+
+            return visitor.IsBool ?? false;
+        }
+
         private class PropertyPathVisitor : ExpressionVisitor
         {
             internal readonly List<string> PathBuilder = new List<string>();
@@ -66,6 +75,29 @@ namespace Tycho
                 }
 
                 return base.VisitMember (node);
+            }
+        }
+
+        private class PropertyIsBoolVisitor : ExpressionVisitor
+        {
+            internal bool? IsBool;
+
+            protected override Expression VisitMember(MemberExpression node)
+            {
+                if (!(node.Member is PropertyInfo))
+                {
+                    throw new ArgumentException("The path can only contain properties", nameof(node));
+                }
+
+                var propertyType = ((PropertyInfo)node.Member).PropertyType;
+
+                if (!IsBool.HasValue)
+                {
+                    //TODO: Should we add comparisons for numerics of 0/1???
+                    IsBool = propertyType == typeof(bool);
+                }
+
+                return base.VisitMember(node);
             }
         }
     }

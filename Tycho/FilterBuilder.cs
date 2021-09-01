@@ -20,8 +20,9 @@ namespace Tycho
         {
             var propertyPathString = QueryPropertyPath.BuildPath (propertyPath);
             var isPropertyPathNumeric = QueryPropertyPath.IsNumeric (propertyPath);
+            var isPropertyPathBool = QueryPropertyPath.IsBool(propertyPath);
 
-            _filters.Add (new Filter (filterType, propertyPathString, isPropertyPathNumeric, value));
+            _filters.Add (new Filter (filterType, propertyPathString, isPropertyPathNumeric, isPropertyPathBool, value));
 
             return this;
         }
@@ -31,15 +32,16 @@ namespace Tycho
             var propertyPathString = QueryPropertyPath.BuildPath (propertyPath);
             var propertyValuePathString = QueryPropertyPath.BuildPath (propertyValuePath);
             var isPropertyValuePathNumeric = QueryPropertyPath.IsNumeric (propertyValuePath);
+            var isPropertyValuePathBool = QueryPropertyPath.IsBool(propertyValuePath);
 
-            _filters.Add (new Filter (filterType, propertyPathString, propertyValuePathString, isPropertyValuePathNumeric, value));
+            _filters.Add (new Filter (filterType, propertyPathString, propertyValuePathString, isPropertyValuePathNumeric, isPropertyValuePathBool, value));
 
             return this;
         }
 
-        public FilterBuilder<TObj> Filter (FilterType filterType, string propertyPath, bool isPropertyPathNumeric, object value)
+        public FilterBuilder<TObj> Filter (FilterType filterType, string propertyPath, bool isPropertyPathNumeric, bool isPropertyPathBool, object value)
         {
-            _filters.Add (new Filter (filterType, propertyPath, isPropertyPathNumeric, value));
+            _filters.Add (new Filter (filterType, propertyPath, isPropertyPathNumeric, isPropertyPathBool, value));
 
             return this;
         }
@@ -108,12 +110,18 @@ namespace Tycho
                             commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value like \'%{filter.Value}\')");
                             break;
                         case FilterType.Equals:
+                            if (filter.IsPropertyValuePathBool)
+                            {
+                                commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value = {filter.Value})");
+                                break;
+                            }
+
                             if(filter.IsPropertyValuePathNumeric)
                             {
                                 commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) = \'{filter.Value}\')");
                                 break;
                             }
-                            
+
                             commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value = \'{filter.Value}\')");
                             break;
                         //TODO: This is an attack vector and should be parameterized
@@ -133,6 +141,11 @@ namespace Tycho
                             commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) <= {filter.Value})");
                             break;
                         case FilterType.NotEquals:
+                            if (filter.IsPropertyValuePathBool)
+                            {
+                                commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value <> {filter.Value})");
+                                break;
+                            }
                             commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value <> \'{filter.Value}\')");
                             break;
                         case FilterType.StartsWith:
@@ -154,6 +167,12 @@ namespace Tycho
                             commandBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'%{filter.Value}\'");
                             break;
                         case FilterType.Equals:
+                            if(filter.IsPropertyPathBool)
+                            {
+                                commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') = {filter.Value}");
+                                break;
+                            }
+
                             if(filter.IsPropertyPathNumeric)
                             {
                                 commandBuilder.AppendLine ($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) = \'{filter.Value}\'");
@@ -179,6 +198,12 @@ namespace Tycho
                             commandBuilder.AppendLine ($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) <= {filter.Value}");
                             break;
                         case FilterType.NotEquals:
+                            if (filter.IsPropertyPathBool)
+                            {
+                                commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') <> {filter.Value}");
+                                break;
+                            }
+
                             commandBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') <> \'{filter.Value}\'");
                             break;
                         case FilterType.StartsWith:

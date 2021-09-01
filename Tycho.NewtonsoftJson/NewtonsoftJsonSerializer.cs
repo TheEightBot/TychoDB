@@ -9,21 +9,12 @@ namespace Tycho
     public class NewtonsoftJsonSerializer : IJsonSerializer
     {
         private readonly JsonSerializer _jsonSerializer;
-        private readonly JsonSerializerSettings _jsonSerializerSettings;
 
-        public NewtonsoftJsonSerializer (JsonSerializer jsonSerializer = null, JsonSerializerSettings jsonSerializerSettings = null)
+        public NewtonsoftJsonSerializer (JsonSerializer jsonSerializer = null)
         {
             _jsonSerializer =
                 jsonSerializer ??
                 new JsonSerializer
-                {
-                    DefaultValueHandling = DefaultValueHandling.Include,
-                    NullValueHandling = NullValueHandling.Ignore,
-                };
-
-            _jsonSerializerSettings =
-                jsonSerializerSettings ??
-                new JsonSerializerSettings
                 {
                     DefaultValueHandling = DefaultValueHandling.Include,
                     NullValueHandling = NullValueHandling.Ignore,
@@ -40,7 +31,16 @@ namespace Tycho
 
         public object Serialize<T> (T obj)
         {
-            return JsonConvert.SerializeObject (obj, _jsonSerializerSettings);
+            using var stream = new MemoryStream();
+            using var writer = new StreamWriter(stream);
+            using var jsonWriter = new JsonTextWriter(writer);
+
+            _jsonSerializer.Serialize(jsonWriter, obj);
+
+            jsonWriter.Flush();
+            stream.Position = 0;
+
+            return stream.ToArray();
         }
 
         public override string ToString () => nameof (NewtonsoftJsonSerializer);

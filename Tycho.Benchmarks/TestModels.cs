@@ -24,7 +24,7 @@ namespace Tycho.Benchmarks
     {
         public int IntProperty { get; set; }
 
-        public string DoubleProperty { get; set; }
+        public double DoubleProperty { get; set; }
     }
 
     class TestClassD

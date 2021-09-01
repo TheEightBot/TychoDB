@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using BenchmarkDotNet.Attributes;
+using Microsoft.Diagnostics.Tracing.Parsers.ApplicationServer;
 
 namespace Tycho.Benchmarks.Benchmarks
 {
@@ -18,14 +19,99 @@ namespace Tycho.Benchmarks.Benchmarks
         public static IEnumerable<IJsonSerializer> JsonSerializers ()
             => new IJsonSerializer[] { new SystemTextJsonSerializer (), new NewtonsoftJsonSerializer() };
 
+        private static TestClassE _largeTestObject =
+            new TestClassE()
+            {
+                TestClassId = Guid.NewGuid(),
+                Values = 
+                    new []
+                    {
+                        new TestClassD()
+                        {
+                            DoubleProperty = 12d,
+                            FloatProperty = 15f,
+                            ValueC = 
+                                new TestClassC()
+                                {
+                                    DoubleProperty = 14d,
+                                    IntProperty = 15,
+                                }
+                        },
+                        new TestClassD()
+                        {
+                            DoubleProperty = 12d,
+                            FloatProperty = 15f,
+                            ValueC = 
+                                new TestClassC()
+                                {
+                                    DoubleProperty = 14d,
+                                    IntProperty = 15,
+                                }
+                        },
+                        new TestClassD()
+                        {
+                            DoubleProperty = 12d,
+                            FloatProperty = 15f,
+                            ValueC = 
+                                new TestClassC()
+                                {
+                                    DoubleProperty = 14d,
+                                    IntProperty = 15,
+                                }
+                        },
+                        new TestClassD()
+                        {
+                            DoubleProperty = 12d,
+                            FloatProperty = 15f,
+                            ValueC = 
+                                new TestClassC()
+                                {
+                                    DoubleProperty = 14d,
+                                    IntProperty = 15,
+                                }
+                        }
+                    }
+                
+                
+            };
+        
+        internal static TestClassE LargeTestObject => _largeTestObject;
+        
         [Benchmark]
-        public async Task<int> InsertManyAsync ()
+        public async Task InsertSingularAsync()
+        {
+            using var db =
+                new TychoDb(Path.GetTempPath(), JsonSerializer, rebuildCache: true)
+                    .Connect();
+
+            var testObj =
+                new TestClassA
+                {
+                    StringProperty = $"Test String",
+                    IntProperty = 100,
+                    TimestampMillis = 123451234,
+                };
+
+
+            await db.WriteObjectAsync(testObj, x => x.StringProperty).ConfigureAwait(false);
+        }
+        
+        [Benchmark]
+        public async Task InsertSingularLargeObjectAsync ()
+        {
+            using var db =
+                new TychoDb(Path.GetTempPath(), JsonSerializer, rebuildCache: true)
+                    .Connect();
+
+            await db.WriteObjectAsync (LargeTestObject, x => x.TestClassId).ConfigureAwait (false);
+        }
+
+        [Benchmark]
+        public async Task InsertManyAsync ()
         {
             using var db =
                 new TychoDb (Path.GetTempPath (), JsonSerializer, rebuildCache: true)
                     .Connect ();
-
-            var successWrites = 0;
 
             for (int i = 100; i < 1100; i++)
             {
@@ -38,26 +124,17 @@ namespace Tycho.Benchmarks.Benchmarks
                     };
 
 
-                var resultWrite = await db.WriteObjectAsync (testObj, x => x.StringProperty).ConfigureAwait (false);
-
-                if (resultWrite)
-                {
-                    Interlocked.Increment (ref successWrites);
-                }
+                await db.WriteObjectAsync (testObj, x => x.StringProperty).ConfigureAwait (false);
             }
-
-            return successWrites;
         }
 
         [Benchmark]
-        public async Task<int> InsertManyConcurrentAsync ()
+        public async Task InsertManyConcurrentAsync ()
         {
             using var db =
                 new TychoDb (Path.GetTempPath (), JsonSerializer, rebuildCache: true)
                     .Connect ();
-
-            var successWrites = 0;
-
+            
             var tasks =
                 Enumerable
                     .Range (100, 1000)
@@ -73,18 +150,11 @@ namespace Tycho.Benchmarks.Benchmarks
                                 };
 
 
-                            var resultWrite = await db.WriteObjectAsync (testObj, x => x.StringProperty).ConfigureAwait (false);
-
-                            if (resultWrite)
-                            {
-                                Interlocked.Increment (ref successWrites);
-                            }
+                            await db.WriteObjectAsync (testObj, x => x.StringProperty).ConfigureAwait (false);
                         })
                     .ToList ();
 
             await Task.WhenAll (tasks).ConfigureAwait (false);
-
-            return successWrites;
         }
     }
 }

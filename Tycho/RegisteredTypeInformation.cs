@@ -12,6 +12,10 @@ namespace Tycho
 
         public string IdProperty { get; set; }
 
+        public string IdPropertyPath { get; set; }
+
+        public bool IsNumeric { get; set; }
+
         public string TypeFullName { get; set; }
 
         public string TypeName { get; set; }
@@ -31,7 +35,9 @@ namespace Tycho
                     new RegisteredTypeInformation
                     {
                         FuncIdSelector = compiledExpression,
-                        IdProperty = GetMemberInfo(idProperty).Member.Name,
+                        IdProperty = GetExpressionMemberName (idProperty),
+                        IdPropertyPath = QueryPropertyPath.BuildPath(idProperty),
+                        IsNumeric = QueryPropertyPath.IsNumeric(idProperty),
                         TypeFullName = type.FullName,
                         TypeName = type.Name,
                         TypeNamespace = type.Namespace,
@@ -49,28 +55,22 @@ namespace Tycho
             return (Func<T, object>)FuncIdSelector;
         }
 
-        private static MemberExpression GetMemberInfo (Expression method)
+        private static string GetExpressionMemberName (Expression method)
         {
-            LambdaExpression lambda = method as LambdaExpression;
-            if (lambda == null)
-                throw new ArgumentNullException ("method");
-
-            MemberExpression memberExpr = null;
-
-            if (lambda.Body.NodeType == ExpressionType.Convert)
+            if(method is LambdaExpression lex)
             {
-                memberExpr =
-                    ((UnaryExpression)lambda.Body).Operand as MemberExpression;
-            }
-            else if (lambda.Body.NodeType == ExpressionType.MemberAccess)
-            {
-                memberExpr = lambda.Body as MemberExpression;
+                if (lex.Body.NodeType == ExpressionType.Convert)
+                {
+                    return (((UnaryExpression)lex.Body).Operand as MemberExpression).Member.Name;
+                }
+
+                if (lex.Body.NodeType == ExpressionType.MemberAccess)
+                {
+                    return (lex.Body as MemberExpression).Member.Name;
+                }
             }
 
-            if (memberExpr == null)
-                throw new ArgumentException ("method");
-
-            return memberExpr;
+            throw new TychoDbException ("The provided expression is not valid member expression");
         }
     }
 }

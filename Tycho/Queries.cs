@@ -49,6 +49,11 @@ Where
     AND
     FullTypeName = $fullTypeName";
 
+        public const string SelectPartitions =
+@"
+SELECT DISTINCT Partition
+From JsonValue";
+
         public const string SelectDataFromJsonValueWithFullTypeName =
 @"
 SELECT Data

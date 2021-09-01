@@ -22,7 +22,7 @@ namespace SqliteJson
             base.OnAppearing ();
 
             using var db =
-                await new TychoDb (FileSystem.AppDataDirectory)
+                await new TychoDb (FileSystem.AppDataDirectory, new SystemTextJsonSerializer())
                     .ConnectAsync();
 
             var testObj =

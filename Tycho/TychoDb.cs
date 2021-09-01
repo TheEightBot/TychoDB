@@ -79,6 +79,12 @@ namespace Tycho
             if(_connection == null)
             {
                 _connection = BuildConnection ();
+
+                foreach (var registeredType in _registeredTypeInformation)
+                {
+                    var value = registeredType.Value;
+                    CreateIndex(value.IdPropertyPath, value.IsNumeric, value.TypeName, $"ID_{value.TypeName}_{value.IdProperty}");
+                }
             }
 
             return this;
@@ -90,6 +96,12 @@ namespace Tycho
             if (_connection == null)
             {
                 _connection = await BuildConnectionAsync ().ConfigureAwait(false);
+
+                foreach (var registeredType in _registeredTypeInformation)
+                {
+                    var value = registeredType.Value;
+                    await CreateIndexAsync(value.IdPropertyPath, value.IsNumeric, value.TypeName, $"ID_{value.TypeName}_{value.IdProperty}").ConfigureAwait(false);
+                }
             }
 
             return this;
@@ -138,7 +150,7 @@ namespace Tycho
                         var writeCount = 0;
                         var totalCount = objs.Count ();
 
-                        var transaction = await conn.BeginTransactionAsync (IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+                        using var transaction = await conn.BeginTransactionAsync (IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
 
                         try
                         {
@@ -179,7 +191,7 @@ namespace Tycho
                     _processingQueue,
                     async conn =>
                     {
-                        var transaction = await conn.BeginTransactionAsync (IsolationLevel.RepeatableRead, cancellationToken).ConfigureAwait (false);
+                        using var transaction = await conn.BeginTransactionAsync (IsolationLevel.RepeatableRead, cancellationToken).ConfigureAwait (false);
 
                         try
                         {
@@ -206,23 +218,22 @@ namespace Tycho
 
                             using var reader = await selectCommand.ExecuteReaderAsync (cancellationToken).ConfigureAwait (false);
 
+                            T returnValue = default(T);
                             while (await reader.ReadAsync (cancellationToken).ConfigureAwait (false))
                             {
                                 using var stream = reader.GetStream (0);
-                                return await _jsonSerializer.DeserializeAsync<T>(stream, cancellationToken).ConfigureAwait (false);
+                                returnValue = await _jsonSerializer.DeserializeAsync<T>(stream, cancellationToken).ConfigureAwait (false);
                             }
+
+                            await transaction.CommitAsync (cancellationToken).ConfigureAwait (false);
+
+                            return returnValue;
                         }
                         catch (Exception ex)
                         {
                             await transaction.RollbackAsync (cancellationToken).ConfigureAwait (false);
                             throw new TychoDbException ($"Failed Reading Object with key \"{key}\"", ex);
                         }
-                        finally
-                        {
-                            await transaction.CommitAsync ().ConfigureAwait (false);
-                        }
-
-                        return default;
                     });
         }
 
@@ -245,7 +256,7 @@ namespace Tycho
                     _processingQueue,
                     async conn =>
                     {
-                        var transaction = await conn.BeginTransactionAsync (IsolationLevel.RepeatableRead, cancellationToken).ConfigureAwait (false);
+                        using var transaction = await conn.BeginTransactionAsync (IsolationLevel.RepeatableRead, cancellationToken).ConfigureAwait (false);
 
                         try
                         {
@@ -284,16 +295,14 @@ namespace Tycho
                                 objects.Add(await _jsonSerializer.DeserializeAsync<T> (stream, cancellationToken).ConfigureAwait (false));
                             }
 
+                            await transaction.CommitAsync (cancellationToken).ConfigureAwait (false);
+
                             return objects;
                         }
                         catch (Exception ex)
                         {
                             await transaction.RollbackAsync (cancellationToken).ConfigureAwait (false);
                             throw new TychoDbException ($"Failed Reading Objects", ex);
-                        }
-                        finally
-                        {
-                            await transaction.CommitAsync ().ConfigureAwait (false);
                         }
                     });
         }
@@ -305,7 +314,7 @@ namespace Tycho
                     _processingQueue,
                     async conn =>
                     {
-                        var transaction = await conn.BeginTransactionAsync (IsolationLevel.RepeatableRead, cancellationToken).ConfigureAwait (false);
+                        using var transaction = await conn.BeginTransactionAsync (IsolationLevel.RepeatableRead, cancellationToken).ConfigureAwait (false);
 
                         var objects = new List<TOut> ();
 
@@ -346,15 +355,12 @@ namespace Tycho
                                 objects.Add (await _jsonSerializer.DeserializeAsync<TOut> (stream, cancellationToken).ConfigureAwait (false));
                             }
 
+                            await transaction.CommitAsync (cancellationToken).ConfigureAwait (false);
                         }
                         catch (Exception ex)
                         {
                             await transaction.RollbackAsync (cancellationToken).ConfigureAwait (false);
                             throw new TychoDbException ("Failed Reading Objects", ex);
-                        }
-                        finally
-                        {
-                            await transaction.CommitAsync ().ConfigureAwait (false);
                         }
 
                         return objects;
@@ -368,7 +374,7 @@ namespace Tycho
                     _processingQueue,
                     async conn =>
                     {
-                        var transaction = await conn.BeginTransactionAsync (IsolationLevel.Serializable, cancellationToken).ConfigureAwait (false);
+                        using var transaction = await conn.BeginTransactionAsync (IsolationLevel.Serializable, cancellationToken).ConfigureAwait (false);
 
                         try
                         {
@@ -395,16 +401,14 @@ namespace Tycho
 
                             var deletionCount = await selectCommand.ExecuteNonQueryAsync (cancellationToken).ConfigureAwait (false);
 
+                            await transaction.CommitAsync ().ConfigureAwait (false);
+
                             return deletionCount == 1;
                         }
                         catch (Exception ex)
                         {
                             await transaction.RollbackAsync (cancellationToken).ConfigureAwait (false);
                             throw new TychoDbException ($"Failed to delete object with key \"{key}\"", ex);
-                        }
-                        finally
-                        {
-                            await transaction.CommitAsync ().ConfigureAwait (false);
                         }
                     });
         }
@@ -416,7 +420,7 @@ namespace Tycho
                     _processingQueue,
                     async conn =>
                     {
-                        var transaction = await conn.BeginTransactionAsync (IsolationLevel.Serializable, cancellationToken).ConfigureAwait (false);
+                        using var transaction = await conn.BeginTransactionAsync (IsolationLevel.Serializable, cancellationToken).ConfigureAwait (false);
 
                         try
                         {
@@ -447,60 +451,58 @@ namespace Tycho
 
                             var deletionCount = await selectCommand.ExecuteNonQueryAsync (cancellationToken).ConfigureAwait (false);
 
+                            await transaction.CommitAsync ().ConfigureAwait (false);
+
                             return (deletionCount > 0, deletionCount);
                         }
                         catch (Exception ex)
                         {
                             await transaction.RollbackAsync (cancellationToken).ConfigureAwait (false);
-
                             throw new TychoDbException ("Failed to delete objects", ex);
-                        }
-                        finally
-                        {
-                            await transaction.CommitAsync ().ConfigureAwait (false);
                         }
                     });
         }
 
         public TychoDb CreateIndex<TObj> (Expression<Func<TObj, object>> propertyPath, string indexName)
         {
+            return CreateIndex(QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath), typeof(TObj).Name, indexName);
+        }
+
+        public TychoDb CreateIndex(string propertyPathString, bool isNumeric, string objectTypeName, string indexName)
+        {
             lock (_connectionLock)
             {
                 try
                 {
-                    _connection.Open ();
+                    _connection.Open();
 
-                    var transaction = _connection.BeginTransaction (IsolationLevel.Serializable);
+                    var transaction = _connection.BeginTransaction(IsolationLevel.Serializable);
 
-                    var propertyPathString = QueryPropertyPath.BuildPath (propertyPath);
-
-                    var isNumeric = QueryPropertyPath.IsNumeric (propertyPath);
-
-                    var fullIndexName = $"idx_{indexName}_{typeof (TObj).Name}";
+                    var fullIndexName = $"idx_{indexName}_{objectTypeName}";
 
                     try
                     {
-                        using var createIndexCommand = _connection.CreateCommand ();
+                        using var createIndexCommand = _connection.CreateCommand();
 
                         if (isNumeric)
                         {
-                            createIndexCommand.CommandText = Queries.CreateIndexForJsonValueAsNumeric (fullIndexName, propertyPathString);
+                            createIndexCommand.CommandText = Queries.CreateIndexForJsonValueAsNumeric(fullIndexName, propertyPathString);
                         }
                         else
                         {
-                            createIndexCommand.CommandText = Queries.CreateIndexForJsonValue (fullIndexName, propertyPathString);
+                            createIndexCommand.CommandText = Queries.CreateIndexForJsonValue(fullIndexName, propertyPathString);
                         }
 
-                        createIndexCommand.ExecuteNonQuery ();
+                        createIndexCommand.ExecuteNonQuery();
                     }
                     catch (Exception ex)
                     {
                         transaction.Rollback();
-                        throw new TychoDbException ($"Failed to Create Index: {fullIndexName}", ex);
+                        throw new TychoDbException($"Failed to Create Index: {fullIndexName}", ex);
                     }
                     finally
                     {
-                        transaction.Commit ();
+                        transaction.Commit();
                     }
 
                 }
@@ -515,46 +517,45 @@ namespace Tycho
 
         public ValueTask<bool> CreateIndexAsync<TObj>(Expression<Func<TObj, object>> propertyPath, string indexName, CancellationToken cancellationToken = default)
         {
+            return CreateIndexAsync(QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath), typeof(TObj).Name, indexName);
+        }
+
+        public ValueTask<bool> CreateIndexAsync(string propertyPathString, bool isNumeric, string objectTypeName, string indexName, CancellationToken cancellationToken = default)
+        {
             return _connection
-                .WithConnectionBlock (
+                .WithConnectionBlock(
                     _processingQueue,
                     async conn =>
                     {
-                        var transaction = await conn.BeginTransactionAsync (IsolationLevel.Serializable, cancellationToken).ConfigureAwait (false);
+                        using var transaction = await conn.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
 
                         var result = false;
 
-                        var propertyPathString = QueryPropertyPath.BuildPath (propertyPath);
-
-                        var fullIndexName = $"idx_{indexName}_{typeof(TObj).Name}";
-
-                        var isNumeric = QueryPropertyPath.IsNumeric (propertyPath);
+                        var fullIndexName = $"idx_{indexName}_{objectTypeName}";
 
                         try
                         {
-                            using var createIndexCommand = conn.CreateCommand ();
+                            using var createIndexCommand = conn.CreateCommand();
 
                             if (isNumeric)
                             {
-                                createIndexCommand.CommandText = Queries.CreateIndexForJsonValueAsNumeric (fullIndexName, propertyPathString);
+                                createIndexCommand.CommandText = Queries.CreateIndexForJsonValueAsNumeric(fullIndexName, propertyPathString);
                             }
                             else
                             {
-                                createIndexCommand.CommandText = Queries.CreateIndexForJsonValue (fullIndexName, propertyPathString);
+                                createIndexCommand.CommandText = Queries.CreateIndexForJsonValue(fullIndexName, propertyPathString);
                             }
 
-                            await createIndexCommand.ExecuteNonQueryAsync ().ConfigureAwait(false);
+                            await createIndexCommand.ExecuteNonQueryAsync().ConfigureAwait(false);
+
+                            await transaction.CommitAsync().ConfigureAwait(false);
 
                             result = true;
                         }
                         catch (Exception ex)
                         {
-                            await transaction.RollbackAsync (cancellationToken).ConfigureAwait (false);
-                            throw new TychoDbException ($"Failed to Create Index: {fullIndexName}", ex);
-                        }
-                        finally
-                        {
-                            await transaction.CommitAsync ().ConfigureAwait (false);
+                            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                            throw new TychoDbException($"Failed to Create Index: {fullIndexName}", ex);
                         }
 
                         return result;
@@ -646,6 +647,7 @@ namespace Tycho
                                 // Enable write-ahead logging
                                 using var hasJsonCommand = _connection.CreateCommand ();
                                 hasJsonCommand.CommandText = Queries.PragmaCompileOptions;
+
                                 using var reader = await hasJsonCommand.ExecuteReaderAsync (cancellationToken).ConfigureAwait (false);
 
                                 while (await reader.ReadAsync (cancellationToken).ConfigureAwait(false))

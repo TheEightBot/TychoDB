@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Data;
 using System.IO;
@@ -404,28 +404,30 @@ namespace Tycho
 
                         try
                         {
-                            using var selectCommand = conn.CreateCommand ();
+                            using var deleteCommand = conn.CreateCommand ();
 
                             var commandBuilder = ReusableStringBuilder;
 
                             commandBuilder.Append (Queries.DeleteDataFromJsonValueWithKeyAndFullTypeName);
 
-                            selectCommand.Parameters.Add (ParameterKey, SqliteType.Text).Value = key;
-                            selectCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
+                            deleteCommand.Parameters.Add (ParameterKey, SqliteType.Text).Value = key;
+                            deleteCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
 
                             if (!string.IsNullOrEmpty (partition))
                             {
                                 commandBuilder.Append (Queries.AndPartitionHasValue);
-                                selectCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull ();
+                                deleteCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull ();
                             }
                             else
                             {
                                 commandBuilder.Append (Queries.AndPartitionIsNull);
                             }
 
-                            selectCommand.CommandText = commandBuilder.ToString ();
+                            deleteCommand.CommandText = commandBuilder.ToString ();
 
-                            var deletionCount = await selectCommand.ExecuteNonQueryAsync (cancellationToken).ConfigureAwait (false);
+                            await deleteCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
+
+                            var deletionCount = await deleteCommand.ExecuteNonQueryAsync (cancellationToken).ConfigureAwait (false);
 
                             await transaction.CommitAsync ().ConfigureAwait (false);
 
@@ -450,18 +452,18 @@ namespace Tycho
 
                         try
                         {
-                            using var selectCommand = conn.CreateCommand ();
+                            using var deleteCommand = conn.CreateCommand ();
 
                             var commandBuilder = ReusableStringBuilder;
 
                             commandBuilder.Append (Queries.DeleteDataFromJsonValueWithFullTypeName);
 
-                            selectCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
+                            deleteCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
 
                             if (!string.IsNullOrEmpty (partition))
                             {
                                 commandBuilder.Append (Queries.AndPartitionHasValue);
-                                selectCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull ();
+                                deleteCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull ();
                             }
                             else
                             {
@@ -473,9 +475,11 @@ namespace Tycho
                                 filter.Build (commandBuilder);
                             }
 
-                            selectCommand.CommandText = commandBuilder.ToString ();
+                            deleteCommand.CommandText = commandBuilder.ToString ();
 
-                            var deletionCount = await selectCommand.ExecuteNonQueryAsync (cancellationToken).ConfigureAwait (false);
+                            await deleteCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
+
+                            var deletionCount = await deleteCommand.ExecuteNonQueryAsync (cancellationToken).ConfigureAwait (false);
 
                             await transaction.CommitAsync ().ConfigureAwait (false);
 
@@ -596,27 +600,29 @@ namespace Tycho
 
                         try
                         {
-                            using var selectCommand = conn.CreateCommand();
+                            using var deleteCommand = conn.CreateCommand();
 
                             var commandBuilder = ReusableStringBuilder;
 
                             commandBuilder.Append(Queries.DeleteDataFromStreamValueWithKey);
 
-                            selectCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
+                            deleteCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
 
                             if (!string.IsNullOrEmpty(partition))
                             {
                                 commandBuilder.Append(Queries.AndPartitionHasValue);
-                                selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull();
+                                deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull();
                             }
                             else
                             {
                                 commandBuilder.Append(Queries.AndPartitionIsNull);
                             }
 
-                            selectCommand.CommandText = commandBuilder.ToString();
+                            deleteCommand.CommandText = commandBuilder.ToString();
 
-                            var deletionCount = await selectCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                            await deleteCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
+
+                            var deletionCount = await deleteCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
                             await transaction.CommitAsync().ConfigureAwait(false);
 

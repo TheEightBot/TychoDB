@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.IO;
@@ -33,9 +33,21 @@ namespace Tycho
 
         private readonly ProcessingQueue _processingQueue = new ProcessingQueue();
 
+        private readonly StringBuilder _commandBuilder = new StringBuilder();
+
         private SqliteConnection _connection;
 
         private bool _isDisposed;
+
+
+        private StringBuilder ReusableStringBuilder
+        {
+            get
+            {
+                _commandBuilder.Clear();
+                return _commandBuilder;
+            }
+        }
 
         public TychoDb (string dbPath, IJsonSerializer jsonSerializer, string dbName = "tycho_cache.db", string password = null, bool rebuildCache = false)
         {
@@ -201,7 +213,7 @@ namespace Tycho
                         {
                             using var selectCommand = conn.CreateCommand ();
 
-                            var commandBuilder = new StringBuilder ();
+                            var commandBuilder = ReusableStringBuilder;
 
                             commandBuilder.Append (Queries.SelectDataFromJsonValueWithKeyAndFullTypeName);
 
@@ -266,7 +278,7 @@ namespace Tycho
                         {
                             using var selectCommand = conn.CreateCommand ();
 
-                            var commandBuilder = new StringBuilder ();
+                            var commandBuilder = ReusableStringBuilder;
 
                             commandBuilder.Append(Queries.SelectDataFromJsonValueWithFullTypeName);
 
@@ -326,7 +338,7 @@ namespace Tycho
                         {
                             using var selectCommand = conn.CreateCommand ();
 
-                            var commandBuilder = new StringBuilder ();
+                            var commandBuilder = ReusableStringBuilder;
 
                             var selectionPath = QueryPropertyPath.BuildPath (innerObjectSelection);
 
@@ -384,7 +396,7 @@ namespace Tycho
                         {
                             using var selectCommand = conn.CreateCommand ();
 
-                            var commandBuilder = new StringBuilder ();
+                            var commandBuilder = ReusableStringBuilder;
 
                             commandBuilder.Append (Queries.DeleteDataFromJsonValueWithKeyAndFullTypeName);
 
@@ -430,7 +442,7 @@ namespace Tycho
                         {
                             using var selectCommand = conn.CreateCommand ();
 
-                            var commandBuilder = new StringBuilder ();
+                            var commandBuilder = ReusableStringBuilder;
 
                             commandBuilder.Append (Queries.DeleteDataFromJsonValueWithFullTypeName);
 
@@ -524,7 +536,7 @@ namespace Tycho
                         {
                             using var selectCommand = conn.CreateCommand();
 
-                            var commandBuilder = new StringBuilder();
+                            var commandBuilder = ReusableStringBuilder;
 
                             commandBuilder.Append(Queries.SelectDataFromStreamValueWithKey);
 
@@ -571,7 +583,7 @@ namespace Tycho
                         {
                             using var selectCommand = conn.CreateCommand();
 
-                            var commandBuilder = new StringBuilder();
+                            var commandBuilder = ReusableStringBuilder;
 
                             commandBuilder.Append(Queries.DeleteDataFromStreamValueWithKey);
 

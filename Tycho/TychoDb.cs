@@ -183,6 +183,8 @@ namespace Tycho
                                 insertCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;                                
                                 insertCommand.Parameters.Add (ParameterJson, SqliteType.Text).Value = _jsonSerializer.Serialize (obj);
 
+                                await insertCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
+
                                 rowId = (long)await insertCommand.ExecuteScalarAsync (cancellationToken).ConfigureAwait(false);
 
                                 writeCount += rowId > 0 ? 1 : 0;
@@ -231,6 +233,8 @@ namespace Tycho
                             }
 
                             selectCommand.CommandText = commandBuilder.ToString ();
+
+                            await selectCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
 
                             using var reader = await selectCommand.ExecuteReaderAsync (cancellationToken).ConfigureAwait (false);
 
@@ -301,6 +305,8 @@ namespace Tycho
 
                             selectCommand.CommandText = commandBuilder.ToString ();
 
+                            await selectCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
+
                             using var reader = await selectCommand.ExecuteReaderAsync (cancellationToken).ConfigureAwait (false);
 
                             var objects = new List<T> ();
@@ -362,6 +368,8 @@ namespace Tycho
                             }
 
                             selectCommand.CommandText = commandBuilder.ToString ();
+
+                            await selectCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
 
                             using var reader = await selectCommand.ExecuteReaderAsync (cancellationToken).ConfigureAwait (false);
 
@@ -501,6 +509,8 @@ namespace Tycho
                             insertCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull();
                             insertCommand.Parameters.AddWithValue(ParameterBlobLength, stream.Length);
 
+                            await insertCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
+
                             rowId = (long)await insertCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
                             writeCount += rowId > 0 ? 1 : 0;
@@ -553,6 +563,9 @@ namespace Tycho
                             }
 
                             selectCommand.CommandText = commandBuilder.ToString();
+
+                            await selectCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
+
                             using var reader = await selectCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
                             Stream returnValue = Stream.Null;

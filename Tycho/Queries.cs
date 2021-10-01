@@ -27,7 +27,17 @@ CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename
 ON JsonValue (Key, FullTypeName);
 
 CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename_partition 
-ON JsonValue (Key, FullTypeName, Partition);";
+ON JsonValue (Key, FullTypeName, Partition);
+
+CREATE TABLE IF NOT EXISTS StreamValue
+(
+    Key             TEXT PRIMARY KEY,
+    Data            BLOB NOT NULL,
+    Partition       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_streamvalue_key_partition 
+ON JsonValue (Key, Partition);";
 
         public const string PragmaCompileOptions = "PRAGMA compile_options;";
 
@@ -40,6 +50,13 @@ VALUES ($key, $fullTypeName, json($json), $partition);
 
 SELECT last_insert_rowid();";
 
+        public const string InsertOrReplaceBlob =
+@"
+INSERT OR REPLACE INTO StreamValue(Key, Data, Partition)
+VALUES ($key, zeroblob($blobLength), $partition);
+
+SELECT last_insert_rowid();";
+
         public const string SelectDataFromJsonValueWithKeyAndFullTypeName =
 @"
 SELECT Data
@@ -48,6 +65,13 @@ Where
 Key = $key
 AND
 FullTypeName = $fullTypeName";
+
+        public const string SelectDataFromStreamValueWithKey =
+@"
+SELECT Data
+FROM StreamValue
+Where
+Key = $key";
 
         public const string SelectPartitions =
 @"
@@ -69,6 +93,14 @@ Where
 Key = $key
 AND
 FullTypeName = $fullTypeName
+";
+
+        public const string DeleteDataFromStreamValueWithKey =
+@"
+DELETE
+FROM StreamValue
+Where
+Key = $key
 ";
 
         public const string DeleteDataFromJsonValueWithFullTypeName =

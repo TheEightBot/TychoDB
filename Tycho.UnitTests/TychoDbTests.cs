@@ -785,6 +785,76 @@ namespace Tycho.UnitTests
             objs.Successful.Should ().Be (expectedSuccess);
             objs.Count.Should ().Be (expectedCount);
         }
+
+        [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_InsertBlob_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+        {
+            using var db =
+                new TychoDb(Path.GetTempPath(), jsonSerializer, rebuildCache: true)
+                    .Connect();
+
+            var textExample = "This is a test message";
+            using var stream = new MemoryStream();
+            using var writer = new StreamWriter(stream);
+            writer.Write(textExample);
+            writer.Flush();
+            stream.Position = 0;
+
+            var result = await db.WriteBlobAsync(stream, "Test");
+
+            result.Should().BeTrue();
+        }
+
+        [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_InsertBlobAndQuery_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+        {
+            using var db =
+                new TychoDb(Path.GetTempPath(), jsonSerializer, rebuildCache: true)
+                    .Connect();
+
+            var textExample = "This is a test message";
+            var key = "Test";
+
+            using var stream = new MemoryStream();
+            using var writer = new StreamWriter(stream);
+            writer.Write(textExample);
+            writer.Flush();
+            stream.Position = 0;
+
+            var insertResult = await db.WriteBlobAsync(stream, key);
+            using var queryResult = await db.ReadBlobAsync(key);
+            using var resultReader = new StreamReader(queryResult);
+            var streamContents = await resultReader.ReadToEndAsync();
+
+            insertResult.Should().BeTrue();
+            streamContents.Should().BeEquivalentTo(textExample);
+        }
+
+        [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_InsertBlobAndDelete_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+        {
+            using var db =
+                new TychoDb(Path.GetTempPath(), jsonSerializer, rebuildCache: true)
+                    .Connect();
+
+            var textExample = "This is a test message";
+            var key = "Test";
+
+            using var stream = new MemoryStream();
+            using var writer = new StreamWriter(stream);
+            writer.Write(textExample);
+            writer.Flush();
+            stream.Position = 0;
+
+            var insertResult = await db.WriteBlobAsync(stream, key);
+            var deleteResult = await db.DeleteBlobAsync(key);
+
+            insertResult.Should().BeTrue();
+            deleteResult.Should().BeTrue();
+        }
     }
 
     class TestClassA

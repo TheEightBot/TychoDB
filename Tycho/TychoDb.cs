@@ -17,7 +17,11 @@ namespace Tycho
             ParameterFullTypeName = "$fullTypeName",
             ParameterPartition = "$partition",
             ParameterKey = "$key",
-            ParameterJson = "$json";
+            ParameterJson = "$json",
+            ParameterBlob = "$blob",
+            ParameterBlobLength = "$blobLength",
+            TableStreamValue = "StreamValue",
+            TableStreamValueDataColumn = "Data";
 
         private readonly object _connectionLock = new object ();
 
@@ -459,6 +463,142 @@ namespace Tycho
                         {
                             await transaction.RollbackAsync (cancellationToken).ConfigureAwait (false);
                             throw new TychoDbException ("Failed to delete objects", ex);
+                        }
+                    });
+        }
+
+        public ValueTask<bool> WriteBlobAsync(Stream stream, string key, string partition = null, CancellationToken cancellationToken = default)
+        {
+            return _connection
+                .WithConnectionBlock(
+                    _processingQueue,
+                    async conn =>
+                    {
+                        var writeCount = 0;
+
+                        using var transaction = await conn.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+
+                        try
+                        {
+                            var rowId = 0L;
+
+                            using var insertCommand = conn.CreateCommand();
+                            insertCommand.CommandText = Queries.InsertOrReplaceBlob;
+
+                            insertCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
+                            insertCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull();
+                            insertCommand.Parameters.AddWithValue(ParameterBlobLength, stream.Length);
+
+                            rowId = (long)await insertCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+                            writeCount += rowId > 0 ? 1 : 0;
+
+                            if (writeCount > 0)
+                            {
+                                using (var writeStream = new SqliteBlob(conn, TableStreamValue, TableStreamValueDataColumn, rowId))
+                                {
+                                    await stream.CopyToAsync(writeStream).ConfigureAwait(false);
+                                }
+                            }
+
+                            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                        }
+                        catch (Exception ex)
+                        {
+                            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                            throw new TychoDbException($"Failed Writing Objects", ex);
+                        }
+
+                        return writeCount == 1;
+                    });
+        }
+
+        public ValueTask<Stream> ReadBlobAsync(object key, string partition = null, CancellationToken cancellationToken = default)
+        {
+            return _connection
+                .WithConnectionBlock(
+                    _processingQueue,
+                    async conn =>
+                    {
+                        try
+                        {
+                            using var selectCommand = conn.CreateCommand();
+
+                            var commandBuilder = new StringBuilder();
+
+                            commandBuilder.Append(Queries.SelectDataFromStreamValueWithKey);
+
+                            selectCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
+
+                            if (!string.IsNullOrEmpty(partition))
+                            {
+                                commandBuilder.Append(Queries.AndPartitionHasValue);
+                                selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull();
+                            }
+                            else
+                            {
+                                commandBuilder.Append(Queries.AndPartitionIsNull);
+                            }
+
+                            selectCommand.CommandText = commandBuilder.ToString();
+                            using var reader = await selectCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+                            Stream returnValue = Stream.Null;
+                            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                            {
+                                returnValue = reader.GetStream(0);
+                            }
+
+                            return returnValue;
+                        }
+                        catch (Exception ex)
+                        {
+                            throw new TychoDbException($"Failed Reading Object with key \"{key}\"", ex);
+                        }
+                    });
+        }
+
+        public ValueTask<bool> DeleteBlobAsync(object key, string partition = null, CancellationToken cancellationToken = default)
+        {
+            return _connection
+                .WithConnectionBlock(
+                    _processingQueue,
+                    async conn =>
+                    {
+                        using var transaction = await conn.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+
+                        try
+                        {
+                            using var selectCommand = conn.CreateCommand();
+
+                            var commandBuilder = new StringBuilder();
+
+                            commandBuilder.Append(Queries.DeleteDataFromStreamValueWithKey);
+
+                            selectCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
+
+                            if (!string.IsNullOrEmpty(partition))
+                            {
+                                commandBuilder.Append(Queries.AndPartitionHasValue);
+                                selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull();
+                            }
+                            else
+                            {
+                                commandBuilder.Append(Queries.AndPartitionIsNull);
+                            }
+
+                            selectCommand.CommandText = commandBuilder.ToString();
+
+                            var deletionCount = await selectCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                            await transaction.CommitAsync().ConfigureAwait(false);
+
+                            return deletionCount == 1;
+                        }
+                        catch (Exception ex)
+                        {
+                            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                            throw new TychoDbException($"Failed to delete object with key \"{key}\"", ex);
                         }
                     });
         }

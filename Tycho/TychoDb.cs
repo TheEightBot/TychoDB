@@ -33,9 +33,21 @@ namespace Tycho
 
         private readonly ProcessingQueue _processingQueue = new ProcessingQueue();
 
+        private readonly StringBuilder _commandBuilder = new StringBuilder();
+
         private SqliteConnection _connection;
 
         private bool _isDisposed;
+
+
+        private StringBuilder ReusableStringBuilder
+        {
+            get
+            {
+                _commandBuilder.Clear();
+                return _commandBuilder;
+            }
+        }
 
         public TychoDb (string dbPath, IJsonSerializer jsonSerializer, string dbName = "tycho_cache.db", string password = null, bool rebuildCache = false)
         {
@@ -159,17 +171,21 @@ namespace Tycho
                         try
                         {
 
+                            using var insertCommand = conn.CreateCommand ();
+                            insertCommand.CommandText = Queries.InsertOrReplace;
+
                             foreach (var obj in objs)
                             {
                                 var rowId = 0L;
 
-                                using var insertCommand = conn.CreateCommand ();
-                                insertCommand.CommandText = Queries.InsertOrReplace;
+                                insertCommand.Parameters.Clear();
 
                                 insertCommand.Parameters.Add (ParameterKey, SqliteType.Text).Value = keySelector (obj);
                                 insertCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull();
                                 insertCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;                                
                                 insertCommand.Parameters.Add (ParameterJson, SqliteType.Text).Value = _jsonSerializer.Serialize (obj);
+
+                                await insertCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
 
                                 rowId = (long)await insertCommand.ExecuteScalarAsync (cancellationToken).ConfigureAwait(false);
 
@@ -201,7 +217,7 @@ namespace Tycho
                         {
                             using var selectCommand = conn.CreateCommand ();
 
-                            var commandBuilder = new StringBuilder ();
+                            var commandBuilder = ReusableStringBuilder;
 
                             commandBuilder.Append (Queries.SelectDataFromJsonValueWithKeyAndFullTypeName);
 
@@ -219,6 +235,8 @@ namespace Tycho
                             }
 
                             selectCommand.CommandText = commandBuilder.ToString ();
+
+                            await selectCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
 
                             using var reader = await selectCommand.ExecuteReaderAsync (cancellationToken).ConfigureAwait (false);
 
@@ -266,7 +284,7 @@ namespace Tycho
                         {
                             using var selectCommand = conn.CreateCommand ();
 
-                            var commandBuilder = new StringBuilder ();
+                            var commandBuilder = ReusableStringBuilder;
 
                             commandBuilder.Append(Queries.SelectDataFromJsonValueWithFullTypeName);
 
@@ -288,6 +306,8 @@ namespace Tycho
                             }
 
                             selectCommand.CommandText = commandBuilder.ToString ();
+
+                            await selectCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
 
                             using var reader = await selectCommand.ExecuteReaderAsync (cancellationToken).ConfigureAwait (false);
 
@@ -326,7 +346,7 @@ namespace Tycho
                         {
                             using var selectCommand = conn.CreateCommand ();
 
-                            var commandBuilder = new StringBuilder ();
+                            var commandBuilder = ReusableStringBuilder;
 
                             var selectionPath = QueryPropertyPath.BuildPath (innerObjectSelection);
 
@@ -350,6 +370,8 @@ namespace Tycho
                             }
 
                             selectCommand.CommandText = commandBuilder.ToString ();
+
+                            await selectCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
 
                             using var reader = await selectCommand.ExecuteReaderAsync (cancellationToken).ConfigureAwait (false);
 
@@ -382,28 +404,30 @@ namespace Tycho
 
                         try
                         {
-                            using var selectCommand = conn.CreateCommand ();
+                            using var deleteCommand = conn.CreateCommand ();
 
-                            var commandBuilder = new StringBuilder ();
+                            var commandBuilder = ReusableStringBuilder;
 
                             commandBuilder.Append (Queries.DeleteDataFromJsonValueWithKeyAndFullTypeName);
 
-                            selectCommand.Parameters.Add (ParameterKey, SqliteType.Text).Value = key;
-                            selectCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
+                            deleteCommand.Parameters.Add (ParameterKey, SqliteType.Text).Value = key;
+                            deleteCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
 
                             if (!string.IsNullOrEmpty (partition))
                             {
                                 commandBuilder.Append (Queries.AndPartitionHasValue);
-                                selectCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull ();
+                                deleteCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull ();
                             }
                             else
                             {
                                 commandBuilder.Append (Queries.AndPartitionIsNull);
                             }
 
-                            selectCommand.CommandText = commandBuilder.ToString ();
+                            deleteCommand.CommandText = commandBuilder.ToString ();
 
-                            var deletionCount = await selectCommand.ExecuteNonQueryAsync (cancellationToken).ConfigureAwait (false);
+                            await deleteCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
+
+                            var deletionCount = await deleteCommand.ExecuteNonQueryAsync (cancellationToken).ConfigureAwait (false);
 
                             await transaction.CommitAsync ().ConfigureAwait (false);
 
@@ -428,18 +452,18 @@ namespace Tycho
 
                         try
                         {
-                            using var selectCommand = conn.CreateCommand ();
+                            using var deleteCommand = conn.CreateCommand ();
 
-                            var commandBuilder = new StringBuilder ();
+                            var commandBuilder = ReusableStringBuilder;
 
                             commandBuilder.Append (Queries.DeleteDataFromJsonValueWithFullTypeName);
 
-                            selectCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
+                            deleteCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
 
                             if (!string.IsNullOrEmpty (partition))
                             {
                                 commandBuilder.Append (Queries.AndPartitionHasValue);
-                                selectCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull ();
+                                deleteCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull ();
                             }
                             else
                             {
@@ -451,9 +475,11 @@ namespace Tycho
                                 filter.Build (commandBuilder);
                             }
 
-                            selectCommand.CommandText = commandBuilder.ToString ();
+                            deleteCommand.CommandText = commandBuilder.ToString ();
 
-                            var deletionCount = await selectCommand.ExecuteNonQueryAsync (cancellationToken).ConfigureAwait (false);
+                            await deleteCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
+
+                            var deletionCount = await deleteCommand.ExecuteNonQueryAsync (cancellationToken).ConfigureAwait (false);
 
                             await transaction.CommitAsync ().ConfigureAwait (false);
 
@@ -488,6 +514,8 @@ namespace Tycho
                             insertCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
                             insertCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull();
                             insertCommand.Parameters.AddWithValue(ParameterBlobLength, stream.Length);
+
+                            await insertCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
 
                             rowId = (long)await insertCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
@@ -524,7 +552,7 @@ namespace Tycho
                         {
                             using var selectCommand = conn.CreateCommand();
 
-                            var commandBuilder = new StringBuilder();
+                            var commandBuilder = ReusableStringBuilder;
 
                             commandBuilder.Append(Queries.SelectDataFromStreamValueWithKey);
 
@@ -541,6 +569,9 @@ namespace Tycho
                             }
 
                             selectCommand.CommandText = commandBuilder.ToString();
+
+                            await selectCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
+
                             using var reader = await selectCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
                             Stream returnValue = Stream.Null;
@@ -569,27 +600,29 @@ namespace Tycho
 
                         try
                         {
-                            using var selectCommand = conn.CreateCommand();
+                            using var deleteCommand = conn.CreateCommand();
 
-                            var commandBuilder = new StringBuilder();
+                            var commandBuilder = ReusableStringBuilder;
 
                             commandBuilder.Append(Queries.DeleteDataFromStreamValueWithKey);
 
-                            selectCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
+                            deleteCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
 
                             if (!string.IsNullOrEmpty(partition))
                             {
                                 commandBuilder.Append(Queries.AndPartitionHasValue);
-                                selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull();
+                                deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull();
                             }
                             else
                             {
                                 commandBuilder.Append(Queries.AndPartitionIsNull);
                             }
 
-                            selectCommand.CommandText = commandBuilder.ToString();
+                            deleteCommand.CommandText = commandBuilder.ToString();
 
-                            var deletionCount = await selectCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                            await deleteCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
+
+                            var deletionCount = await deleteCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
                             await transaction.CommitAsync().ConfigureAwait(false);
 

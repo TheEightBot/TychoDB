@@ -14,7 +14,7 @@
     </Folder>
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="BenchmarkDotNet" Version="0.13.0" />
+    <PackageReference Include="BenchmarkDotNet" Version="0.13.1" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Tycho\Tycho.csproj" />

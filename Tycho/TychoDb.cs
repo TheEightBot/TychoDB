@@ -171,12 +171,14 @@ namespace Tycho
                         try
                         {
 
+                            using var insertCommand = conn.CreateCommand ();
+                            insertCommand.CommandText = Queries.InsertOrReplace;
+
                             foreach (var obj in objs)
                             {
                                 var rowId = 0L;
 
-                                using var insertCommand = conn.CreateCommand ();
-                                insertCommand.CommandText = Queries.InsertOrReplace;
+                                insertCommand.Parameters.Clear();
 
                                 insertCommand.Parameters.Add (ParameterKey, SqliteType.Text).Value = keySelector (obj);
                                 insertCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull();

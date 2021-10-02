@@ -81,7 +81,7 @@ namespace Tycho.Benchmarks.Benchmarks
         public async Task InsertSingularAsync()
         {
             using var db =
-                new TychoDb(Path.GetTempPath(), JsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection()
                     .Connect();
 
             var testObj =
@@ -100,7 +100,7 @@ namespace Tycho.Benchmarks.Benchmarks
         public async Task InsertSingularLargeObjectAsync ()
         {
             using var db =
-                new TychoDb(Path.GetTempPath(), JsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection()
                     .Connect();
 
             await db.WriteObjectAsync (LargeTestObject, x => x.TestClassId).ConfigureAwait (false);
@@ -110,7 +110,7 @@ namespace Tycho.Benchmarks.Benchmarks
         public async Task InsertManyAsync ()
         {
             using var db =
-                new TychoDb (Path.GetTempPath (), JsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection()
                     .Connect ();
 
             for (int i = 100; i < 1100; i++)
@@ -132,7 +132,7 @@ namespace Tycho.Benchmarks.Benchmarks
         public async Task InsertManyConcurrentAsync ()
         {
             using var db =
-                new TychoDb (Path.GetTempPath (), JsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection()
                     .Connect ();
             
             var tasks =
@@ -155,6 +155,15 @@ namespace Tycho.Benchmarks.Benchmarks
                     .ToList ();
 
             await Task.WhenAll (tasks).ConfigureAwait (false);
+        }
+
+        public TychoDb BuildDatabaseConnection()
+        {
+#if ENCRYPTED
+            return new TychoDb(Path.GetTempPath(), JsonSerializer, "tycho_cache_enc.db", "Password", rebuildCache: true);
+#else
+            return new TychoDb(Path.GetTempPath(), JsonSerializer, rebuildCache: true);
+#endif
         }
     }
 }

@@ -31,7 +31,7 @@ namespace Tycho.UnitTests
         public async Task TychoDb_InsertObject_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             using var db =
-                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .Connect();
 
             var testObj =
@@ -52,7 +52,7 @@ namespace Tycho.UnitTests
         public async Task TychoDb_RegisterAndInsertObject_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             var db =
-                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .AddTypeRegistration<TestClassA> (x => x.StringProperty)
                     .Connect ();
 
@@ -74,7 +74,7 @@ namespace Tycho.UnitTests
         public async Task TychoDb_RegisterPatientAndInsertObject_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             var db =
-                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .AddTypeRegistration<Patient> (x => x.PatientId)
                     .Connect ();
 
@@ -96,7 +96,7 @@ namespace Tycho.UnitTests
         public async Task TychoDb_RegisterPatientAndInsertObjectAndQueryByIsDirty_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             var db =
-                new TychoDb(Path.GetTempPath(), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .AddTypeRegistration<Patient>(x => x.PatientId)
                     .Connect();
 
@@ -132,7 +132,7 @@ namespace Tycho.UnitTests
             var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
 
             using var db =
-                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .Connect ();
 
             var tasks =
@@ -183,7 +183,7 @@ namespace Tycho.UnitTests
             var expected = true;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .Connect ();
 
             var testObjs =
@@ -222,7 +222,7 @@ namespace Tycho.UnitTests
             var expected = true;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .Connect ();
 
             var rng = new Random ();
@@ -281,7 +281,7 @@ namespace Tycho.UnitTests
             var expected = 500;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .Connect ();
 
             var rng = new Random ();
@@ -348,7 +348,7 @@ namespace Tycho.UnitTests
             var expected = 1000;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .Connect ();
 
             var testObjs =
@@ -390,7 +390,7 @@ namespace Tycho.UnitTests
             var expected = 1000;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .Connect ();
 
             var testObjs =
@@ -431,7 +431,7 @@ namespace Tycho.UnitTests
             var expected = 1000;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .Connect ();
 
             var testObjs =
@@ -477,7 +477,7 @@ namespace Tycho.UnitTests
             var expected = 500;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .Connect ();
 
             var testObjs =
@@ -537,7 +537,7 @@ namespace Tycho.UnitTests
             var expected = 750;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .Connect ()
                     .CreateIndex<TestClassF> (x => x.Value.ValueC.IntProperty, "ValueCInt");
 
@@ -594,7 +594,7 @@ namespace Tycho.UnitTests
         public async Task TychoDb_InsertObjectAndQuery_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             using var db =
-                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .Connect ();
 
             var testObj =
@@ -622,7 +622,7 @@ namespace Tycho.UnitTests
             var expected = 1000;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .Connect ();
 
             var testObjs =
@@ -671,7 +671,7 @@ namespace Tycho.UnitTests
             var doubleProperty = 1234.0d;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .Connect ();
 
             var testObj =
@@ -711,7 +711,7 @@ namespace Tycho.UnitTests
             var expected = true;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .Connect ();
 
             var successful = await db.CreateIndexAsync<TestClassD> (x => x.DoubleProperty, "double_index");
@@ -724,7 +724,7 @@ namespace Tycho.UnitTests
         public async Task TychoDb_DeleteObject_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
             using var db =
-                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .Connect ();
 
             var testObj =
@@ -750,7 +750,7 @@ namespace Tycho.UnitTests
             var expectedCount = 1000;
 
             using var db =
-                new TychoDb (Path.GetTempPath (), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .Connect ();
 
             var testObjs =
@@ -791,7 +791,7 @@ namespace Tycho.UnitTests
         public async Task TychoDb_InsertBlob_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             using var db =
-                new TychoDb(Path.GetTempPath(), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .Connect();
 
             var textExample = "This is a test message";
@@ -811,7 +811,7 @@ namespace Tycho.UnitTests
         public async Task TychoDb_InsertBlobAndQuery_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             using var db =
-                new TychoDb(Path.GetTempPath(), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .Connect();
 
             var textExample = "This is a test message";
@@ -837,7 +837,7 @@ namespace Tycho.UnitTests
         public async Task TychoDb_InsertBlobAndDelete_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             using var db =
-                new TychoDb(Path.GetTempPath(), jsonSerializer, rebuildCache: true)
+                BuildDatabaseConnection(jsonSerializer)
                     .Connect();
 
             var textExample = "This is a test message";
@@ -854,6 +854,15 @@ namespace Tycho.UnitTests
 
             insertResult.Should().BeTrue();
             deleteResult.Should().BeTrue();
+        }
+
+        public static TychoDb BuildDatabaseConnection(IJsonSerializer jsonSerializer)
+        {
+#if ENCRYPTED
+            return new TychoDb(Path.GetTempPath(), jsonSerializer, "tycho_cache_enc.db", "Password", rebuildCache: true);
+#else
+            return new TychoDb(Path.GetTempPath(), jsonSerializer, rebuildCache: true);
+#endif
         }
     }
 

@@ -15,17 +15,43 @@
 		<Summary>Lightweight and highly opioninated NoSQL database written on top of SQLite</Summary>
 		<Description>Lightweight and highly opioninated NoSQL database written on top of SQLite</Description>
 		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+		<Configurations>Encrypted;Debug;Release</Configurations>
 	</PropertyGroup>
+
+	<PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Encrypted|AnyCPU' ">
+	  <IntermediateOutputPath>obj\Release\netstandard2.1</IntermediateOutputPath>
+	  <DebugType></DebugType>
+	  <Optimize>true</Optimize>
+	  <OutputPath>bin\Encrypted\netstandard2.1</OutputPath>
+	  <DefineConstants>TRACE;RELEASE;ENCRYPTED;NETSTANDARD;NETSTANDARD2_1;</DefineConstants>
+	  <WarningLevel>4</WarningLevel>
+	  <DocumentationFile></DocumentationFile>
+	  <NoWarn>1701;1702</NoWarn>
+	  <LangVersion>Latest</LangVersion>
+	  <NoStdLib>true</NoStdLib>
+	  <PackageId>EightBot.Tycho.Encrypted</PackageId>
+	</PropertyGroup>
+
 	<PropertyGroup>
 		<ContentSQLiteInteropFiles>true</ContentSQLiteInteropFiles>
 		<CopySQLiteInteropFiles>false</CopySQLiteInteropFiles>
 		<CleanSQLiteInteropFiles>false</CleanSQLiteInteropFiles>
 		<CollectSQLiteInteropFiles>false</CollectSQLiteInteropFiles>
 	</PropertyGroup>
+	
 	<ItemGroup>
-		<PackageReference Include="Microsoft.Data.Sqlite" Version="5.0.10" />
 		<PackageReference Include="System.Threading.Tasks.Dataflow" Version="5.0.0" />
 	</ItemGroup>
+
+	<ItemGroup Condition="'$(Configuration)' != 'Encrypted'">
+		<PackageReference Include="Microsoft.Data.Sqlite" Version="5.0.10" />
+    </ItemGroup>
+
+	<ItemGroup Condition="'$(Configuration)' == 'Encrypted'">
+		<PackageReference Include="Microsoft.Data.Sqlite.Core" Version="5.0.10" />
+		<PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.0.6" />
+    </ItemGroup>
+
 	<ItemGroup>
 	  <None Include="..\icon.png" PackagePath="icon.png" Pack="true" />
 	</ItemGroup>

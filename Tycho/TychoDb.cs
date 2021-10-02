@@ -68,7 +68,6 @@ namespace Tycho
                     ConnectionString = $"Filename={databasePath}",
                     Cache = SqliteCacheMode.Default,
                     Mode = SqliteOpenMode.ReadWriteCreate,
-                    
                 };
 
             if(password != null)

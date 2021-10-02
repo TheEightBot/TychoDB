@@ -90,7 +90,6 @@ namespace Tycho
 
         public TychoDb Connect ()
         {
-
             if(_connection == null)
             {
                 _connection = BuildConnection ();
@@ -107,7 +106,6 @@ namespace Tycho
 
         public async ValueTask<TychoDb> ConnectAsync ()
         {
-
             if (_connection == null)
             {
                 _connection = await BuildConnectionAsync ().ConfigureAwait(false);
@@ -160,12 +158,12 @@ namespace Tycho
             return _connection
                 .WithConnectionBlock (
                     _processingQueue,
-                    async conn =>
+                    conn =>
                     {
                         var writeCount = 0;
                         var totalCount = objs.Count ();
 
-                        using var transaction = await conn.BeginTransactionAsync (IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+                        using var transaction = conn.BeginTransaction (IsolationLevel.Serializable);
 
                         try
                         {
@@ -184,23 +182,24 @@ namespace Tycho
                                 insertCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;                                
                                 insertCommand.Parameters.Add (ParameterJson, SqliteType.Text).Value = _jsonSerializer.Serialize (obj);
 
-                                await insertCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
+                                insertCommand.Prepare ();
 
-                                rowId = (long)await insertCommand.ExecuteScalarAsync (cancellationToken).ConfigureAwait(false);
+                                rowId = (long)insertCommand.ExecuteScalar ();
 
                                 writeCount += rowId > 0 ? 1 : 0;
                             }
 
-                            await transaction.CommitAsync (cancellationToken).ConfigureAwait (false);
+                            transaction.Commit ();
                         }
                         catch (Exception ex)
                         {
-                            await transaction.RollbackAsync (cancellationToken).ConfigureAwait (false);
+                            transaction.Rollback ();
                             throw new TychoDbException ($"Failed Writing Objects", ex);
                         }
 
                         return writeCount == totalCount;
-                    });         
+                    },
+                    cancellationToken);         
         }
 
         public ValueTask<T> ReadObjectAsync<T> (object key, string partition = null, CancellationToken cancellationToken = default)
@@ -210,7 +209,7 @@ namespace Tycho
                     _processingQueue,
                     async conn =>
                     {
-                        using var transaction = await conn.BeginTransactionAsync (IsolationLevel.RepeatableRead, cancellationToken).ConfigureAwait (false);
+                        using var transaction = conn.BeginTransaction (IsolationLevel.RepeatableRead);
 
                         try
                         {
@@ -235,27 +234,28 @@ namespace Tycho
 
                             selectCommand.CommandText = commandBuilder.ToString ();
 
-                            await selectCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
+                            selectCommand.Prepare();
 
-                            using var reader = await selectCommand.ExecuteReaderAsync (cancellationToken).ConfigureAwait (false);
+                            using var reader = selectCommand.ExecuteReader ();
 
                             T returnValue = default(T);
-                            while (await reader.ReadAsync (cancellationToken).ConfigureAwait (false))
+                            while (reader.Read ())
                             {
                                 using var stream = reader.GetStream (0);
                                 returnValue = await _jsonSerializer.DeserializeAsync<T>(stream, cancellationToken).ConfigureAwait (false);
                             }
 
-                            await transaction.CommitAsync (cancellationToken).ConfigureAwait (false);
+                            transaction.Commit ();
 
                             return returnValue;
                         }
                         catch (Exception ex)
                         {
-                            await transaction.RollbackAsync (cancellationToken).ConfigureAwait (false);
+                            transaction.Rollback ();
                             throw new TychoDbException ($"Failed Reading Object with key \"{key}\"", ex);
                         }
-                    });
+                    },
+                    cancellationToken);
         }
 
         public async ValueTask<T> ReadObjectAsync<T> (FilterBuilder<T> filter, string partition = null, CancellationToken cancellationToken = default)
@@ -277,7 +277,7 @@ namespace Tycho
                     _processingQueue,
                     async conn =>
                     {
-                        using var transaction = await conn.BeginTransactionAsync (IsolationLevel.RepeatableRead, cancellationToken).ConfigureAwait (false);
+                        using var transaction = conn.BeginTransaction (IsolationLevel.RepeatableRead);
 
                         try
                         {
@@ -306,28 +306,29 @@ namespace Tycho
 
                             selectCommand.CommandText = commandBuilder.ToString ();
 
-                            await selectCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
+                            selectCommand.Prepare();
 
-                            using var reader = await selectCommand.ExecuteReaderAsync (cancellationToken).ConfigureAwait (false);
+                            using var reader = selectCommand.ExecuteReader ();
 
                             var objects = new List<T> ();
 
-                            while (await reader.ReadAsync (cancellationToken).ConfigureAwait (false))
+                            while (reader.Read ())
                             {
                                 using var stream = reader.GetStream (0);
                                 objects.Add(await _jsonSerializer.DeserializeAsync<T> (stream, cancellationToken).ConfigureAwait (false));
                             }
 
-                            await transaction.CommitAsync (cancellationToken).ConfigureAwait (false);
+                            transaction.Commit ();
 
                             return objects;
                         }
                         catch (Exception ex)
                         {
-                            await transaction.RollbackAsync (cancellationToken).ConfigureAwait (false);
+                            transaction.Rollback ();
                             throw new TychoDbException ($"Failed Reading Objects", ex);
                         }
-                    });
+                    },
+                    cancellationToken);
         }
 
         public ValueTask<IEnumerable<TOut>> ReadObjectsAsync<TIn, TOut> (Expression<Func<TIn,TOut>> innerObjectSelection, string partition = null, FilterBuilder<TIn> filter = null, CancellationToken cancellationToken = default)
@@ -337,7 +338,7 @@ namespace Tycho
                     _processingQueue,
                     async conn =>
                     {
-                        using var transaction = await conn.BeginTransactionAsync (IsolationLevel.RepeatableRead, cancellationToken).ConfigureAwait (false);
+                        using var transaction = conn.BeginTransaction (IsolationLevel.RepeatableRead);
 
                         var objects = new List<TOut> ();
 
@@ -370,26 +371,27 @@ namespace Tycho
 
                             selectCommand.CommandText = commandBuilder.ToString ();
 
-                            await selectCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
+                            selectCommand.Prepare();
 
-                            using var reader = await selectCommand.ExecuteReaderAsync (cancellationToken).ConfigureAwait (false);
+                            using var reader = selectCommand.ExecuteReader ();
 
-                            while (await reader.ReadAsync (cancellationToken).ConfigureAwait (false))
+                            while (reader.Read ())
                             {
                                 using var stream = reader.GetStream (0);
                                 objects.Add (await _jsonSerializer.DeserializeAsync<TOut> (stream, cancellationToken).ConfigureAwait (false));
                             }
 
-                            await transaction.CommitAsync (cancellationToken).ConfigureAwait (false);
+                            transaction.Commit ();
                         }
                         catch (Exception ex)
                         {
-                            await transaction.RollbackAsync (cancellationToken).ConfigureAwait (false);
+                            transaction.Rollback ();
                             throw new TychoDbException ("Failed Reading Objects", ex);
                         }
 
                         return objects;
-                    });
+                    },
+                    cancellationToken);
         }
 
         public ValueTask<bool> DeleteObjectAsync<T> (object key, string partition = null, CancellationToken cancellationToken = default)
@@ -397,9 +399,9 @@ namespace Tycho
             return _connection
                 .WithConnectionBlock (
                     _processingQueue,
-                    async conn =>
+                    conn =>
                     {
-                        using var transaction = await conn.BeginTransactionAsync (IsolationLevel.Serializable, cancellationToken).ConfigureAwait (false);
+                        using var transaction = conn.BeginTransaction (IsolationLevel.Serializable);
 
                         try
                         {
@@ -424,20 +426,21 @@ namespace Tycho
 
                             deleteCommand.CommandText = commandBuilder.ToString ();
 
-                            await deleteCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
+                            deleteCommand.Prepare();
 
-                            var deletionCount = await deleteCommand.ExecuteNonQueryAsync (cancellationToken).ConfigureAwait (false);
+                            var deletionCount = deleteCommand.ExecuteNonQuery ();
 
-                            await transaction.CommitAsync ().ConfigureAwait (false);
+                            transaction.Commit ();
 
                             return deletionCount == 1;
                         }
                         catch (Exception ex)
                         {
-                            await transaction.RollbackAsync (cancellationToken).ConfigureAwait (false);
+                            transaction.Rollback ();
                             throw new TychoDbException ($"Failed to delete object with key \"{key}\"", ex);
                         }
-                    });
+                    },
+                    cancellationToken);
         }
 
         public ValueTask<(bool Successful, int Count)> DeleteObjectsAsync<T> (string partition = null, FilterBuilder<T> filter = null, CancellationToken cancellationToken = default)
@@ -445,9 +448,9 @@ namespace Tycho
             return _connection
                 .WithConnectionBlock (
                     _processingQueue,
-                    async conn =>
+                    conn =>
                     {
-                        using var transaction = await conn.BeginTransactionAsync (IsolationLevel.Serializable, cancellationToken).ConfigureAwait (false);
+                        using var transaction = conn.BeginTransaction (IsolationLevel.Serializable);
 
                         try
                         {
@@ -476,20 +479,21 @@ namespace Tycho
 
                             deleteCommand.CommandText = commandBuilder.ToString ();
 
-                            await deleteCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
+                            deleteCommand.Prepare();
 
-                            var deletionCount = await deleteCommand.ExecuteNonQueryAsync (cancellationToken).ConfigureAwait (false);
+                            var deletionCount = deleteCommand.ExecuteNonQuery ();
 
-                            await transaction.CommitAsync ().ConfigureAwait (false);
+                            transaction.Commit ();
 
                             return (deletionCount > 0, deletionCount);
                         }
                         catch (Exception ex)
                         {
-                            await transaction.RollbackAsync (cancellationToken).ConfigureAwait (false);
+                            transaction.Rollback ();
                             throw new TychoDbException ("Failed to delete objects", ex);
                         }
-                    });
+                    },
+                    cancellationToken);
         }
 
         public ValueTask<bool> WriteBlobAsync(Stream stream, string key, string partition = null, CancellationToken cancellationToken = default)
@@ -501,7 +505,7 @@ namespace Tycho
                     {
                         var writeCount = 0;
 
-                        using var transaction = await conn.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+                        using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
 
                         try
                         {
@@ -514,9 +518,9 @@ namespace Tycho
                             insertCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull();
                             insertCommand.Parameters.AddWithValue(ParameterBlobLength, stream.Length);
 
-                            await insertCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
+                            insertCommand.Prepare ();
 
-                            rowId = (long)await insertCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                            rowId = (long)insertCommand.ExecuteScalar();
 
                             writeCount += rowId > 0 ? 1 : 0;
 
@@ -528,16 +532,17 @@ namespace Tycho
                                 }
                             }
 
-                            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                            transaction.Commit();
                         }
                         catch (Exception ex)
                         {
-                            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                            transaction.Rollback();
                             throw new TychoDbException($"Failed Writing Objects", ex);
                         }
 
                         return writeCount == 1;
-                    });
+                    },
+                    cancellationToken);
         }
 
         public ValueTask<Stream> ReadBlobAsync(object key, string partition = null, CancellationToken cancellationToken = default)
@@ -569,12 +574,12 @@ namespace Tycho
 
                             selectCommand.CommandText = commandBuilder.ToString();
 
-                            await selectCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
+                            selectCommand.Prepare();
 
-                            using var reader = await selectCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                            using var reader = selectCommand.ExecuteReader();
 
                             Stream returnValue = Stream.Null;
-                            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                            while (reader.Read())
                             {
                                 returnValue = reader.GetStream(0);
                             }
@@ -585,7 +590,8 @@ namespace Tycho
                         {
                             throw new TychoDbException($"Failed Reading Object with key \"{key}\"", ex);
                         }
-                    });
+                    },
+                    cancellationToken);
         }
 
         public ValueTask<bool> DeleteBlobAsync(object key, string partition = null, CancellationToken cancellationToken = default)
@@ -593,9 +599,9 @@ namespace Tycho
             return _connection
                 .WithConnectionBlock(
                     _processingQueue,
-                    async conn =>
+                    conn =>
                     {
-                        using var transaction = await conn.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+                        using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
 
                         try
                         {
@@ -619,20 +625,21 @@ namespace Tycho
 
                             deleteCommand.CommandText = commandBuilder.ToString();
 
-                            await deleteCommand.PrepareAsync(cancellationToken).ConfigureAwait(false);
+                            deleteCommand.Prepare();
 
-                            var deletionCount = await deleteCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                            var deletionCount = deleteCommand.ExecuteNonQuery();
 
-                            await transaction.CommitAsync().ConfigureAwait(false);
+                            transaction.Commit();
 
                             return deletionCount == 1;
                         }
                         catch (Exception ex)
                         {
-                            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                            transaction.Rollback();
                             throw new TychoDbException($"Failed to delete object with key \"{key}\"", ex);
                         }
-                    });
+                    },
+                    cancellationToken);
         }
 
         public TychoDb CreateIndex<TObj> (Expression<Func<TObj, object>> propertyPath, string indexName)
@@ -697,9 +704,9 @@ namespace Tycho
             return _connection
                 .WithConnectionBlock(
                     _processingQueue,
-                    async conn =>
+                    conn =>
                     {
-                        using var transaction = await conn.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+                        using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
 
                         var result = false;
 
@@ -718,20 +725,21 @@ namespace Tycho
                                 createIndexCommand.CommandText = Queries.CreateIndexForJsonValue(fullIndexName, propertyPathString);
                             }
 
-                            await createIndexCommand.ExecuteNonQueryAsync().ConfigureAwait(false);
+                            createIndexCommand.ExecuteNonQuery();
 
-                            await transaction.CommitAsync().ConfigureAwait(false);
+                            transaction.Commit();
 
                             result = true;
                         }
                         catch (Exception ex)
                         {
-                            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                            transaction.Rollback();
                             throw new TychoDbException($"Failed to Create Index: {fullIndexName}", ex);
                         }
 
                         return result;
-                    });
+                    },
+                    cancellationToken);
         }
 
         protected virtual void Dispose (bool disposing)
@@ -806,13 +814,13 @@ namespace Tycho
             return
                 _processingQueue
                     .Queue (
-                        async () =>
+                        () =>
                         {
                             _connection = new SqliteConnection (_dbConnectionString);
 
                             try
                             {
-                                await _connection.OpenAsync (cancellationToken).ConfigureAwait (false);
+                                _connection.Open ();
 
                                 var supportsJson = false;
 
@@ -820,9 +828,9 @@ namespace Tycho
                                 using var hasJsonCommand = _connection.CreateCommand ();
                                 hasJsonCommand.CommandText = Queries.PragmaCompileOptions;
 
-                                using var reader = await hasJsonCommand.ExecuteReaderAsync (cancellationToken).ConfigureAwait (false);
+                                using var reader = hasJsonCommand.ExecuteReader ();
 
-                                while (await reader.ReadAsync (cancellationToken).ConfigureAwait(false))
+                                while (reader.Read ())
                                 {
                                     if (reader.GetString (0)?.Equals (Queries.EnableJSON1Pragma) ?? false)
                                     {
@@ -841,15 +849,16 @@ namespace Tycho
                                 // Enable write-ahead logging and normal synchronous mode
                                 command.CommandText = Queries.CreateDatabaseSchema;
 
-                                await command.ExecuteNonQueryAsync (cancellationToken).ConfigureAwait (false);
+                                command.ExecuteNonQuery ();
                             }
                             finally
                             {
-                                await _connection.CloseAsync ().ConfigureAwait(false);
+                                _connection.Close ();
                             }
 
                             return _connection;
-                        });
+                        },
+                        cancellationToken);
         }
 
         private Func<T, object> GetIdFor<T>()
@@ -866,7 +875,7 @@ namespace Tycho
 
     internal static class SqliteExtensions
     {
-        public static ValueTask<T> WithConnectionBlock<T> (this SqliteConnection connection, ProcessingQueue processingQueue, Func<SqliteConnection, T> func)
+        public static ValueTask<T> WithConnectionBlock<T> (this SqliteConnection connection, ProcessingQueue processingQueue, Func<SqliteConnection, T> func, CancellationToken cancellationToken = default)
         {
             if (connection == null)
             {
@@ -875,21 +884,22 @@ namespace Tycho
 
             return processingQueue
                 .Queue (
-                    async () =>
+                    () =>
                     {
                         try
                         {
-                            await connection.OpenAsync ().ConfigureAwait (false);
+                            connection.Open();
                             return func.Invoke (connection);
                         }
                         finally
                         {
-                            await connection.CloseAsync ().ConfigureAwait (false);
+                            connection.Close ();
                         }
-                    });
+                    },
+                    cancellationToken);
         }
 
-        public static ValueTask<T> WithConnectionBlock<T> (this SqliteConnection connection, ProcessingQueue processingQueue, Func<SqliteConnection, ValueTask<T>> func)
+        public static ValueTask<T> WithConnectionBlock<T> (this SqliteConnection connection, ProcessingQueue processingQueue, Func<SqliteConnection, ValueTask<T>> func, CancellationToken cancellationToken = default)
         {
             if (connection == null)
             {
@@ -902,14 +912,15 @@ namespace Tycho
                     {
                         try
                         {
-                            await connection.OpenAsync ().ConfigureAwait (false);
+                            connection.Open ();
                             return await func.Invoke (connection).ConfigureAwait (false);
                         }
                         finally
                         {
-                            await connection.CloseAsync ().ConfigureAwait (false);
+                            connection.Close ();
                         }
-                    });
+                    },
+                    cancellationToken);
         }
 
         public static object AsValueOrDbNull<T>(this T value)

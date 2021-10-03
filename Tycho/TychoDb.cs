@@ -142,22 +142,22 @@ namespace Tycho
             return _connection.DisposeAsync ();
         }
 
-        public ValueTask<bool> WriteObjectAsync<T> (T obj, string partition = null, CancellationToken cancellationToken = default)
+        public ValueTask<bool> WriteObjectAsync<T> (T obj, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
         {
-            return WriteObjectsAsync (new[] { obj }, GetIdFor<T>(), partition, cancellationToken);
+            return WriteObjectsAsync (new[] { obj }, GetIdFor<T>(), partition, withTransaction, cancellationToken);
         }
 
-        public ValueTask<bool> WriteObjectAsync<T> (T obj, Func<T, object> keySelector, string partition = null, CancellationToken cancellationToken = default)
+        public ValueTask<bool> WriteObjectAsync<T> (T obj, Func<T, object> keySelector, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
         {
-            return WriteObjectsAsync (new[] { obj }, keySelector, partition, cancellationToken);
+            return WriteObjectsAsync (new[] { obj }, keySelector, partition, withTransaction, cancellationToken);
         }
 
-        public ValueTask<bool> WriteObjectsAsync<T> (IEnumerable<T> objs, string partition = null, CancellationToken cancellationToken = default)
+        public ValueTask<bool> WriteObjectsAsync<T> (IEnumerable<T> objs, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
         {
-            return WriteObjectsAsync (objs, GetIdFor<T>(), partition, cancellationToken);
+            return WriteObjectsAsync (objs, GetIdFor<T>(), partition, withTransaction, cancellationToken);
         }
 
-        public ValueTask<bool> WriteObjectsAsync<T>(IEnumerable<T> objs, Func<T, object> keySelector, string partition = null, CancellationToken cancellationToken = default)
+        public ValueTask<bool> WriteObjectsAsync<T>(IEnumerable<T> objs, Func<T, object> keySelector, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
         {
             return _connection
                 .WithConnectionBlock (
@@ -167,7 +167,12 @@ namespace Tycho
                         var writeCount = 0;
                         var totalCount = objs.Count ();
 
-                        using var transaction = conn.BeginTransaction (IsolationLevel.Serializable);
+                        SqliteTransaction transaction = null;
+
+                        if(withTransaction)
+                        {
+                            transaction = conn.BeginTransaction (IsolationLevel.Serializable);
+                        }
 
                         try
                         {
@@ -193,12 +198,16 @@ namespace Tycho
                                 writeCount += rowId > 0 ? 1 : 0;
                             }
 
-                            transaction.Commit ();
+                            transaction?.Commit ();
                         }
                         catch (Exception ex)
                         {
-                            transaction.Rollback ();
+                            transaction?.Rollback ();
                             throw new TychoDbException ($"Failed Writing Objects", ex);
+                        }
+                        finally
+                        {
+                            transaction?.Dispose();
                         }
 
                         return writeCount == totalCount;
@@ -207,14 +216,19 @@ namespace Tycho
                     cancellationToken);         
         }
 
-        public ValueTask<T> ReadObjectAsync<T> (object key, string partition = null, CancellationToken cancellationToken = default)
+        public ValueTask<T> ReadObjectAsync<T> (object key, string partition = null, bool withTransaction = false, CancellationToken cancellationToken = default)
         {
             return _connection
                 .WithConnectionBlock (
                     _processingQueue,
                     async conn =>
                     {
-                        using var transaction = conn.BeginTransaction (IsolationLevel.RepeatableRead);
+                        SqliteTransaction transaction = null;
+
+                        if(withTransaction)
+                        {
+                            transaction = conn.BeginTransaction (IsolationLevel.RepeatableRead);
+                        }
 
                         try
                         {
@@ -250,23 +264,27 @@ namespace Tycho
                                 returnValue = await _jsonSerializer.DeserializeAsync<T>(stream, cancellationToken).ConfigureAwait (false);
                             }
 
-                            transaction.Commit ();
+                            transaction?.Commit ();
 
                             return returnValue;
                         }
                         catch (Exception ex)
                         {
-                            transaction.Rollback ();
+                            transaction?.Rollback ();
                             throw new TychoDbException ($"Failed Reading Object with key \"{key}\"", ex);
+                        }
+                        finally
+                        {
+                            transaction?.Dispose();
                         }
                     },
                     _persistConnection,
                     cancellationToken);
         }
 
-        public async ValueTask<T> ReadObjectAsync<T> (FilterBuilder<T> filter, string partition = null, CancellationToken cancellationToken = default)
+        public async ValueTask<T> ReadObjectAsync<T> (FilterBuilder<T> filter, string partition = null, bool withTransaction = false, CancellationToken cancellationToken = default)
         {
-            var result = await ReadObjectsAsync (partition: partition, filter: filter, cancellationToken: cancellationToken).ConfigureAwait(false);
+            var result = await ReadObjectsAsync (partition: partition, filter: filter, withTransaction: withTransaction, cancellationToken: cancellationToken).ConfigureAwait(false);
 
             if(result?.Count() > 1)
             {
@@ -276,14 +294,19 @@ namespace Tycho
             return result.FirstOrDefault ();
         }
 
-        public ValueTask<IEnumerable<T>> ReadObjectsAsync<T> (string partition = null, FilterBuilder<T> filter = null, CancellationToken cancellationToken = default)
+        public ValueTask<IEnumerable<T>> ReadObjectsAsync<T> (string partition = null, FilterBuilder<T> filter = null, bool withTransaction = false, CancellationToken cancellationToken = default)
         {
             return _connection
                 .WithConnectionBlock<IEnumerable<T>> (
                     _processingQueue,
                     async conn =>
                     {
-                        using var transaction = conn.BeginTransaction (IsolationLevel.RepeatableRead);
+                        SqliteTransaction transaction = null;
+
+                        if (withTransaction)
+                        {
+                            transaction = conn.BeginTransaction(IsolationLevel.RepeatableRead);
+                        }
 
                         try
                         {
@@ -324,28 +347,37 @@ namespace Tycho
                                 objects.Add(await _jsonSerializer.DeserializeAsync<T> (stream, cancellationToken).ConfigureAwait (false));
                             }
 
-                            transaction.Commit ();
+                            transaction?.Commit ();
 
                             return objects;
                         }
                         catch (Exception ex)
                         {
-                            transaction.Rollback ();
+                            transaction?.Rollback ();
                             throw new TychoDbException ($"Failed Reading Objects", ex);
+                        }
+                        finally
+                        {
+                            transaction?.Dispose();
                         }
                     },
                     _persistConnection,
                     cancellationToken);
         }
 
-        public ValueTask<IEnumerable<TOut>> ReadObjectsAsync<TIn, TOut> (Expression<Func<TIn,TOut>> innerObjectSelection, string partition = null, FilterBuilder<TIn> filter = null, CancellationToken cancellationToken = default)
+        public ValueTask<IEnumerable<TOut>> ReadObjectsAsync<TIn, TOut> (Expression<Func<TIn,TOut>> innerObjectSelection, string partition = null, FilterBuilder<TIn> filter = null, bool withTransaction = false, CancellationToken cancellationToken = default)
         {
             return _connection
                 .WithConnectionBlock<IEnumerable<TOut>> (
                     _processingQueue,
                     async conn =>
                     {
-                        using var transaction = conn.BeginTransaction (IsolationLevel.RepeatableRead);
+                        SqliteTransaction transaction = null;
+
+                        if (withTransaction)
+                        {
+                            transaction = conn.BeginTransaction(IsolationLevel.RepeatableRead);
+                        }
 
                         var objects = new List<TOut> ();
 
@@ -388,12 +420,16 @@ namespace Tycho
                                 objects.Add (await _jsonSerializer.DeserializeAsync<TOut> (stream, cancellationToken).ConfigureAwait (false));
                             }
 
-                            transaction.Commit ();
+                            transaction?.Commit ();
                         }
                         catch (Exception ex)
                         {
-                            transaction.Rollback ();
+                            transaction?.Rollback ();
                             throw new TychoDbException ("Failed Reading Objects", ex);
+                        }
+                        finally
+                        {
+                            transaction?.Dispose();
                         }
 
                         return objects;
@@ -402,14 +438,19 @@ namespace Tycho
                     cancellationToken);
         }
 
-        public ValueTask<bool> DeleteObjectAsync<T> (object key, string partition = null, CancellationToken cancellationToken = default)
+        public ValueTask<bool> DeleteObjectAsync<T> (object key, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
         {
             return _connection
                 .WithConnectionBlock (
                     _processingQueue,
                     conn =>
                     {
-                        using var transaction = conn.BeginTransaction (IsolationLevel.Serializable);
+                        SqliteTransaction transaction = null;
+
+                        if (withTransaction)
+                        {
+                            transaction = conn.BeginTransaction(IsolationLevel.Serializable);
+                        }
 
                         try
                         {
@@ -438,28 +479,37 @@ namespace Tycho
 
                             var deletionCount = deleteCommand.ExecuteNonQuery ();
 
-                            transaction.Commit ();
+                            transaction?.Commit ();
 
                             return deletionCount == 1;
                         }
                         catch (Exception ex)
                         {
-                            transaction.Rollback ();
+                            transaction?.Rollback ();
                             throw new TychoDbException ($"Failed to delete object with key \"{key}\"", ex);
+                        }
+                        finally
+                        {
+                            transaction?.Dispose();
                         }
                     },
                     _persistConnection,
                     cancellationToken);
         }
 
-        public ValueTask<(bool Successful, int Count)> DeleteObjectsAsync<T> (string partition = null, FilterBuilder<T> filter = null, CancellationToken cancellationToken = default)
+        public ValueTask<(bool Successful, int Count)> DeleteObjectsAsync<T> (string partition = null, FilterBuilder<T> filter = null, bool withTransaction = true, CancellationToken cancellationToken = default)
         {
             return _connection
                 .WithConnectionBlock (
                     _processingQueue,
                     conn =>
                     {
-                        using var transaction = conn.BeginTransaction (IsolationLevel.Serializable);
+                        SqliteTransaction transaction = null;
+
+                        if (withTransaction)
+                        {
+                            transaction = conn.BeginTransaction(IsolationLevel.Serializable);
+                        }
 
                         try
                         {
@@ -492,21 +542,25 @@ namespace Tycho
 
                             var deletionCount = deleteCommand.ExecuteNonQuery ();
 
-                            transaction.Commit ();
+                            transaction?.Commit ();
 
                             return (deletionCount > 0, deletionCount);
                         }
                         catch (Exception ex)
                         {
-                            transaction.Rollback ();
+                            transaction?.Rollback ();
                             throw new TychoDbException ("Failed to delete objects", ex);
+                        }
+                        finally
+                        {
+                            transaction?.Dispose();
                         }
                     },
                     _persistConnection,
                     cancellationToken);
         }
 
-        public ValueTask<bool> WriteBlobAsync(Stream stream, string key, string partition = null, CancellationToken cancellationToken = default)
+        public ValueTask<bool> WriteBlobAsync(Stream stream, object key, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
         {
             return _connection
                 .WithConnectionBlock(
@@ -515,7 +569,12 @@ namespace Tycho
                     {
                         var writeCount = 0;
 
-                        using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
+                        SqliteTransaction transaction = null;
+
+                        if (withTransaction)
+                        {
+                            transaction = conn.BeginTransaction(IsolationLevel.Serializable);
+                        }
 
                         try
                         {
@@ -542,12 +601,16 @@ namespace Tycho
                                 }
                             }
 
-                            transaction.Commit();
+                            transaction?.Commit();
                         }
                         catch (Exception ex)
                         {
-                            transaction.Rollback();
+                            transaction?.Rollback();
                             throw new TychoDbException($"Failed Writing Objects", ex);
+                        }
+                        finally
+                        {
+                            transaction?.Dispose();
                         }
 
                         return writeCount == 1;
@@ -561,7 +624,7 @@ namespace Tycho
             return _connection
                 .WithConnectionBlock(
                     _processingQueue,
-                    async conn =>
+                    conn =>
                     {
                         try
                         {
@@ -606,14 +669,19 @@ namespace Tycho
                     cancellationToken);
         }
 
-        public ValueTask<bool> DeleteBlobAsync(object key, string partition = null, CancellationToken cancellationToken = default)
+        public ValueTask<bool> DeleteBlobAsync(object key, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
         {
             return _connection
                 .WithConnectionBlock(
                     _processingQueue,
                     conn =>
                     {
-                        using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
+                        SqliteTransaction transaction = null;
+
+                        if (withTransaction)
+                        {
+                            transaction = conn.BeginTransaction(IsolationLevel.Serializable);
+                        }
 
                         try
                         {
@@ -641,14 +709,18 @@ namespace Tycho
 
                             var deletionCount = deleteCommand.ExecuteNonQuery();
 
-                            transaction.Commit();
+                            transaction?.Commit();
 
                             return deletionCount == 1;
                         }
                         catch (Exception ex)
                         {
-                            transaction.Rollback();
+                            transaction?.Rollback();
                             throw new TychoDbException($"Failed to delete object with key \"{key}\"", ex);
+                        }
+                        finally
+                        {
+                            transaction?.Dispose();
                         }
                     },
                     _persistConnection,
@@ -709,7 +781,7 @@ namespace Tycho
 
         public ValueTask<bool> CreateIndexAsync<TObj>(Expression<Func<TObj, object>> propertyPath, string indexName, CancellationToken cancellationToken = default)
         {
-            return CreateIndexAsync(QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath), typeof(TObj).Name, indexName);
+            return CreateIndexAsync(QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath), typeof(TObj).Name, indexName, cancellationToken);
         }
 
         public ValueTask<bool> CreateIndexAsync(string propertyPathString, bool isNumeric, string objectTypeName, string indexName, CancellationToken cancellationToken = default)
@@ -879,7 +951,7 @@ namespace Tycho
 
     internal static class SqliteExtensions
     {
-        public static ValueTask<T> WithConnectionBlock<T> (this SqliteConnection connection, ProcessingQueue processingQueue, Func<SqliteConnection, T> func, CancellationToken cancellationToken = default)
+        public static ValueTask<T> WithConnectionBlock<T> (this SqliteConnection connection, ProcessingQueue processingQueue, Func<SqliteConnection, T> func, bool persistConnection, CancellationToken cancellationToken = default)
         {
             if (connection == null)
             {
@@ -910,7 +982,7 @@ namespace Tycho
                     cancellationToken);
         }
 
-        public static ValueTask<T> WithConnectionBlock<T> (this SqliteConnection connection, ProcessingQueue processingQueue, Func<SqliteConnection, ValueTask<T>> func, CancellationToken cancellationToken = default)
+        public static ValueTask<T> WithConnectionBlock<T> (this SqliteConnection connection, ProcessingQueue processingQueue, Func<SqliteConnection, ValueTask<T>> func, bool persistConnection, CancellationToken cancellationToken = default)
         {
             if (connection == null)
             {

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.IO;
@@ -29,6 +29,8 @@ namespace Tycho
 
         private readonly IJsonSerializer _jsonSerializer;
 
+        private readonly bool _persistConnection;
+
         private readonly Dictionary<Type, RegisteredTypeInformation> _registeredTypeInformation = new Dictionary<Type, RegisteredTypeInformation>();
 
         private readonly ProcessingQueue _processingQueue = new ProcessingQueue();
@@ -49,7 +51,7 @@ namespace Tycho
             }
         }
 
-        public TychoDb (string dbPath, IJsonSerializer jsonSerializer, string dbName = "tycho_cache.db", string password = null, bool rebuildCache = false)
+        public TychoDb (string dbPath, IJsonSerializer jsonSerializer, string dbName = "tycho_cache.db", string password = null, bool persistConnection = true, bool rebuildCache = false)
         {
             SQLitePCL.Batteries_V2.Init ();
 
@@ -76,6 +78,8 @@ namespace Tycho
             }
 
             _dbConnectionString = connectionStringBuilder.ToString ();
+
+            _persistConnection = persistConnection;
         }
 
         public TychoDb AddTypeRegistration<T> (Expression<Func<T, object>> idSelector)
@@ -199,6 +203,7 @@ namespace Tycho
 
                         return writeCount == totalCount;
                     },
+                    _persistConnection,
                     cancellationToken);         
         }
 
@@ -255,6 +260,7 @@ namespace Tycho
                             throw new TychoDbException ($"Failed Reading Object with key \"{key}\"", ex);
                         }
                     },
+                    _persistConnection,
                     cancellationToken);
         }
 
@@ -328,6 +334,7 @@ namespace Tycho
                             throw new TychoDbException ($"Failed Reading Objects", ex);
                         }
                     },
+                    _persistConnection,
                     cancellationToken);
         }
 
@@ -391,6 +398,7 @@ namespace Tycho
 
                         return objects;
                     },
+                    _persistConnection,
                     cancellationToken);
         }
 
@@ -440,6 +448,7 @@ namespace Tycho
                             throw new TychoDbException ($"Failed to delete object with key \"{key}\"", ex);
                         }
                     },
+                    _persistConnection,
                     cancellationToken);
         }
 
@@ -493,6 +502,7 @@ namespace Tycho
                             throw new TychoDbException ("Failed to delete objects", ex);
                         }
                     },
+                    _persistConnection,
                     cancellationToken);
         }
 
@@ -542,6 +552,7 @@ namespace Tycho
 
                         return writeCount == 1;
                     },
+                    _persistConnection,
                     cancellationToken);
         }
 
@@ -591,6 +602,7 @@ namespace Tycho
                             throw new TychoDbException($"Failed Reading Object with key \"{key}\"", ex);
                         }
                     },
+                    _persistConnection,
                     cancellationToken);
         }
 
@@ -639,6 +651,7 @@ namespace Tycho
                             throw new TychoDbException($"Failed to delete object with key \"{key}\"", ex);
                         }
                     },
+                    _persistConnection,
                     cancellationToken);
         }
 
@@ -651,43 +664,43 @@ namespace Tycho
         {
             lock (_connectionLock)
             {
+                var transaction = _connection.BeginTransaction(IsolationLevel.Serializable);
+
+                var fullIndexName = $"idx_{indexName}_{objectTypeName}";
                 try
                 {
-                    _connection.Open();
-
-                    var transaction = _connection.BeginTransaction(IsolationLevel.Serializable);
-
-                    var fullIndexName = $"idx_{indexName}_{objectTypeName}";
-
-                    try
+                    if (!_persistConnection)
                     {
-                        using var createIndexCommand = _connection.CreateCommand();
-
-                        if (isNumeric)
-                        {
-                            createIndexCommand.CommandText = Queries.CreateIndexForJsonValueAsNumeric(fullIndexName, propertyPathString);
-                        }
-                        else
-                        {
-                            createIndexCommand.CommandText = Queries.CreateIndexForJsonValue(fullIndexName, propertyPathString);
-                        }
-
-                        createIndexCommand.ExecuteNonQuery();
-                    }
-                    catch (Exception ex)
-                    {
-                        transaction.Rollback();
-                        throw new TychoDbException($"Failed to Create Index: {fullIndexName}", ex);
-                    }
-                    finally
-                    {
-                        transaction.Commit();
+                        _connection.Open();
                     }
 
+                    using var createIndexCommand = _connection.CreateCommand();
+
+                    if (isNumeric)
+                    {
+                        createIndexCommand.CommandText = Queries.CreateIndexForJsonValueAsNumeric(fullIndexName, propertyPathString);
+                    }
+                    else
+                    {
+                        createIndexCommand.CommandText = Queries.CreateIndexForJsonValue(fullIndexName, propertyPathString);
+                    }
+
+                    createIndexCommand.ExecuteNonQuery();
+
+                }
+                catch (Exception ex)
+                {
+                    transaction.Rollback();
+                    throw new TychoDbException($"Failed to Create Index: {fullIndexName}", ex);
                 }
                 finally
                 {
-                    _connection.Close();
+                    transaction.Commit();
+
+                    if (!_persistConnection)
+                    {
+                        _connection.Close();
+                    }
                 }
             }
 
@@ -739,6 +752,7 @@ namespace Tycho
 
                         return result;
                     },
+                    _persistConnection,
                     cancellationToken);
         }
 
@@ -748,6 +762,7 @@ namespace Tycho
             {
                 if (disposing)
                 {
+                    _connection?.Close();
                     _connection?.Dispose ();
                 }
 
@@ -768,42 +783,36 @@ namespace Tycho
             {
                 _connection = new SqliteConnection (_dbConnectionString);
 
-                try
+                _connection.Open ();
+
+                var supportsJson = false;
+
+                // Enable write-ahead logging
+                using var hasJsonCommand = _connection.CreateCommand ();
+                hasJsonCommand.CommandText = Queries.PragmaCompileOptions;
+                using var reader = hasJsonCommand.ExecuteReader ();
+
+                while (reader.Read ())
                 {
-                    _connection.Open ();
-
-                    var supportsJson = false;
-
-                    // Enable write-ahead logging
-                    using var hasJsonCommand = _connection.CreateCommand ();
-                    hasJsonCommand.CommandText = Queries.PragmaCompileOptions;
-                    using var reader = hasJsonCommand.ExecuteReader ();
-
-                    while (reader.Read ())
+                    if (reader.GetString (0)?.Equals (Queries.EnableJSON1Pragma) ?? false)
                     {
-                        if (reader.GetString (0)?.Equals (Queries.EnableJSON1Pragma) ?? false)
-                        {
-                            supportsJson = true;
-                            break;
-                        }
+                        supportsJson = true;
+                        break;
                     }
-
-                    if (!supportsJson)
-                    {
-                        throw new TychoDbException ("JSON support is not available for this platform");
-                    }
-
-                    using var command = _connection.CreateCommand ();
-
-                    // Enable write-ahead logging and normal synchronous mode
-                    command.CommandText = Queries.CreateDatabaseSchema;
-
-                    command.ExecuteNonQuery ();
                 }
-                finally
+
+                if (!supportsJson)
                 {
-                    _connection.Close ();
+                    _connection.Close();
+                    throw new TychoDbException ("JSON support is not available for this platform");
                 }
+
+                using var command = _connection.CreateCommand ();
+
+                // Enable write-ahead logging and normal synchronous mode
+                command.CommandText = Queries.CreateDatabaseSchema;
+
+                command.ExecuteNonQuery ();
 
                 return _connection;
             }
@@ -818,43 +827,38 @@ namespace Tycho
                         {
                             _connection = new SqliteConnection (_dbConnectionString);
 
-                            try
+                            _connection.Open ();
+
+                            var supportsJson = false;
+
+                            // Enable write-ahead logging
+                            using var hasJsonCommand = _connection.CreateCommand ();
+                            hasJsonCommand.CommandText = Queries.PragmaCompileOptions;
+
+                            using var reader = hasJsonCommand.ExecuteReader ();
+
+                            while (reader.Read ())
                             {
-                                _connection.Open ();
-
-                                var supportsJson = false;
-
-                                // Enable write-ahead logging
-                                using var hasJsonCommand = _connection.CreateCommand ();
-                                hasJsonCommand.CommandText = Queries.PragmaCompileOptions;
-
-                                using var reader = hasJsonCommand.ExecuteReader ();
-
-                                while (reader.Read ())
+                                if (reader.GetString (0)?.Equals (Queries.EnableJSON1Pragma) ?? false)
                                 {
-                                    if (reader.GetString (0)?.Equals (Queries.EnableJSON1Pragma) ?? false)
-                                    {
-                                        supportsJson = true;
-                                        break;
-                                    }
+                                    supportsJson = true;
+                                    break;
                                 }
-
-                                if (!supportsJson)
-                                {
-                                    throw new TychoDbException ("JSON support is not available for this platform");
-                                }
-
-                                using var command = _connection.CreateCommand ();
-
-                                // Enable write-ahead logging and normal synchronous mode
-                                command.CommandText = Queries.CreateDatabaseSchema;
-
-                                command.ExecuteNonQuery ();
                             }
-                            finally
+
+                            if (!supportsJson)
                             {
-                                _connection.Close ();
+                                _connection.Close();
+                                throw new TychoDbException ("JSON support is not available for this platform");
                             }
+
+                            using var command = _connection.CreateCommand ();
+
+                            // Enable write-ahead logging and normal synchronous mode
+                            command.CommandText = Queries.CreateDatabaseSchema;
+
+                            command.ExecuteNonQuery ();
+
 
                             return _connection;
                         },
@@ -888,12 +892,19 @@ namespace Tycho
                     {
                         try
                         {
-                            connection.Open();
+                            if(!persistConnection)
+                            {
+                                connection.Open();
+                            }
+
                             return func.Invoke (connection);
                         }
                         finally
                         {
-                            connection.Close ();
+                            if(!persistConnection)
+                            {
+                                connection.Close();
+                            }
                         }
                     },
                     cancellationToken);
@@ -912,12 +923,19 @@ namespace Tycho
                     {
                         try
                         {
-                            connection.Open ();
+                            if (!persistConnection)
+                            {
+                                connection.Open();
+                            }
+
                             return await func.Invoke (connection).ConfigureAwait (false);
                         }
                         finally
                         {
-                            connection.Close ();
+                            if (!persistConnection)
+                            {
+                                connection.Close();
+                            }
                         }
                     },
                     cancellationToken);

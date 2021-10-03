@@ -12,7 +12,7 @@
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Encrypted|AnyCPU' ">
-    <IntermediateOutputPath>obj\Release\net5.0</IntermediateOutputPath>
+    <IntermediateOutputPath>obj\Release\net5.0\net5.0</IntermediateOutputPath>
     <DebugType></DebugType>
     <Optimize>true</Optimize>
     <DefineConstants>TRACE;RELEASE;NET;NET5_0;NETCOREAPP;ENCRYPTED;</DefineConstants>
@@ -21,6 +21,7 @@
   <ItemGroup>
     <None Remove="Benchmarks\" />
     <None Remove="BenchmarkDotNet" />
+    <None Remove="sqlite-net-pcl" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="Benchmarks\">
@@ -28,6 +29,7 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.13.1" />
+    <PackageReference Include="sqlite-net-pcl" Version="1.8.116" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Tycho\Tycho.csproj" />

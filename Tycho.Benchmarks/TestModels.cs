@@ -1,13 +1,15 @@
 ﻿using System;
 using System.Collections.Generic;
+using SQLite;
 
 namespace Tycho.Benchmarks
 {
     class TestClassA
     {
+        [PrimaryKey]
         public string StringProperty { get; set; }
 
-        public int IntProperty { get; set; }
+        public long LongProperty { get; set; }
 
         public long TimestampMillis { get; set; }
     }
@@ -22,6 +24,7 @@ namespace Tycho.Benchmarks
 
     class TestClassC
     {
+        [PrimaryKey]
         public int IntProperty { get; set; }
 
         public double DoubleProperty { get; set; }
@@ -29,6 +32,7 @@ namespace Tycho.Benchmarks
 
     class TestClassD
     {
+        [PrimaryKey]
         public float FloatProperty { get; set; }
 
         public double DoubleProperty { get; set; }
@@ -38,6 +42,7 @@ namespace Tycho.Benchmarks
 
     class TestClassE
     {
+        [PrimaryKey]
         public Guid TestClassId { get; set; }
 
         public IEnumerable<TestClassD> Values { get; set; }

@@ -103,6 +103,15 @@ Where
 Key = $key
 ";
 
+
+        public const string DeleteDataFromStreamValueWithPartition =
+@"
+DELETE
+FROM StreamValue
+Where
+Partition = $partition
+";
+
         public const string DeleteDataFromJsonValueWithFullTypeName =
 @"
 DELETE

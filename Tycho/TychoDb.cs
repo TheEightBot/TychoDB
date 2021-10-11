@@ -727,6 +727,54 @@ namespace Tycho
                     cancellationToken);
         }
 
+        public ValueTask<(bool Successful, int Count)> DeleteBlobsAsync(string partition, bool withTransaction = true, CancellationToken cancellationToken = default)
+        {
+            return _connection
+                .WithConnectionBlock(
+                    _processingQueue,
+                    conn =>
+                    {
+                        SqliteTransaction transaction = null;
+
+                        if (withTransaction)
+                        {
+                            transaction = conn.BeginTransaction(IsolationLevel.Serializable);
+                        }
+
+                        try
+                        {
+                            using var deleteCommand = conn.CreateCommand();
+
+                            var commandBuilder = ReusableStringBuilder;
+
+                            commandBuilder.Append(Queries.DeleteDataFromStreamValueWithPartition);
+                            deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull();
+
+                            deleteCommand.CommandText = commandBuilder.ToString();
+
+                            deleteCommand.Prepare();
+
+                            var deletionCount = deleteCommand.ExecuteNonQuery();
+
+                            transaction?.Commit();
+
+                            return (deletionCount > 0, deletionCount);
+                        }
+                        catch (Exception ex)
+                        {
+                            transaction?.Rollback();
+                            throw new TychoDbException("Failed to delete objects", ex);
+                        }
+                        finally
+                        {
+                            transaction?.Dispose();
+                        }
+                    },
+                    _persistConnection,
+                    cancellationToken);
+        }
+
+
         public TychoDb CreateIndex<TObj> (Expression<Func<TObj, object>> propertyPath, string indexName)
         {
             return CreateIndex(QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath), typeof(TObj).Name, indexName);

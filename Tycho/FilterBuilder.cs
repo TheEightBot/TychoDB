@@ -10,12 +10,8 @@ namespace Tycho
 {
     public class FilterBuilder<TObj>
     {
-        private readonly List<Filter> _filters = new List<Filter> ();
-
-        public FilterBuilder ()
-        {
-        }
-
+        private readonly List<Filter> _filters = new ();
+        
         public FilterBuilder<TObj> Filter<TProp> (FilterType filterType, Expression<Func<TObj, TProp>> propertyPath, object value)
         {
             var propertyPathString = QueryPropertyPath.BuildPath (propertyPath);
@@ -70,7 +66,7 @@ namespace Tycho
             return this;
         }
 
-        public StringBuilder Build (StringBuilder commandBuilder)
+        public void Build (StringBuilder commandBuilder)
         {
             if (_filters.Any())
             {
@@ -210,12 +206,8 @@ namespace Tycho
                             commandBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'{filter.Value}%\'");
                             break;
                     }
-
-                    continue;
                 }
             }
-
-            return commandBuilder;
         }
     }
 }

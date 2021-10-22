@@ -31,11 +31,11 @@ namespace Tycho
 
         private readonly bool _persistConnection;
 
-        private readonly Dictionary<Type, RegisteredTypeInformation> _registeredTypeInformation = new Dictionary<Type, RegisteredTypeInformation>();
+        private readonly Dictionary<Type, RegisteredTypeInformation> _registeredTypeInformation = new();
 
-        private readonly ProcessingQueue _processingQueue = new ProcessingQueue();
+        private readonly ProcessingQueue _processingQueue = new();
 
-        private readonly StringBuilder _commandBuilder = new StringBuilder();
+        private readonly StringBuilder _commandBuilder = new();
 
         private SqliteConnection _connection;
 
@@ -92,17 +92,19 @@ namespace Tycho
             return this;
         }
 
-        public TychoDb Connect ()
+        public TychoDb Connect()
         {
-            if(_connection == null)
+            if (_connection != null)
             {
-                _connection = BuildConnection ();
+                return this;
+            }
 
-                foreach (var registeredType in _registeredTypeInformation)
-                {
-                    var value = registeredType.Value;
-                    CreateIndex(value.IdPropertyPath, value.IsNumeric, value.TypeName, $"ID_{value.TypeName}_{value.IdProperty}");
-                }
+            _connection = BuildConnection ();
+
+            foreach (var registeredType in _registeredTypeInformation)
+            {
+                var value = registeredType.Value;
+                CreateIndex(value.IdPropertyPath, value.IsNumeric, value.TypeName, $"ID_{value.TypeName}_{value.IdProperty}");
             }
 
             return this;
@@ -110,15 +112,17 @@ namespace Tycho
 
         public async ValueTask<TychoDb> ConnectAsync ()
         {
-            if (_connection == null)
+            if (_connection != null)
             {
-                _connection = await BuildConnectionAsync ().ConfigureAwait(false);
+                return this;
+            }
+            
+            _connection = await BuildConnectionAsync ().ConfigureAwait(false);
 
-                foreach (var registeredType in _registeredTypeInformation)
-                {
-                    var value = registeredType.Value;
-                    await CreateIndexAsync(value.IdPropertyPath, value.IsNumeric, value.TypeName, $"ID_{value.TypeName}_{value.IdProperty}").ConfigureAwait(false);
-                }
+            foreach (var registeredType in _registeredTypeInformation)
+            {
+                var value = registeredType.Value;
+                await CreateIndexAsync(value.IdPropertyPath, value.IsNumeric, value.TypeName, $"ID_{value.TypeName}_{value.IdProperty}").ConfigureAwait(false);
             }
 
             return this;
@@ -134,12 +138,7 @@ namespace Tycho
 
         public ValueTask DisconnectAsync ()
         {
-            if(_connection == null)
-            {
-                return new ValueTask (Task.CompletedTask);
-            }
-
-            return _connection.DisposeAsync ();
+            return _connection?.DisposeAsync () ?? new ValueTask (Task.CompletedTask);
         }
 
         public ValueTask<bool> WriteObjectAsync<T> (T obj, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
@@ -165,7 +164,9 @@ namespace Tycho
                     conn =>
                     {
                         var writeCount = 0;
-                        var totalCount = objs.Count ();
+                        var objsArray = objs as T[] ?? objs.ToArray();
+                        
+                        var totalCount = objsArray.Length;
 
                         SqliteTransaction transaction = null;
 
@@ -180,9 +181,9 @@ namespace Tycho
                             using var insertCommand = conn.CreateCommand ();
                             insertCommand.CommandText = Queries.InsertOrReplace;
 
-                            foreach (var obj in objs)
+                            foreach (var obj in objsArray)
                             {
-                                var rowId = 0L;
+                                long rowId;
 
                                 insertCommand.Parameters.Clear();
 
@@ -284,14 +285,17 @@ namespace Tycho
 
         public async ValueTask<T> ReadObjectAsync<T> (FilterBuilder<T> filter, string partition = null, bool withTransaction = false, CancellationToken cancellationToken = default)
         {
-            var result = await ReadObjectsAsync (partition: partition, filter: filter, withTransaction: withTransaction, cancellationToken: cancellationToken).ConfigureAwait(false);
+            var results = 
+                await ReadObjectsAsync (partition, filter, withTransaction, cancellationToken).ConfigureAwait(false);
 
-            if(result?.Count() > 1)
+            var resultsArray = results as T[] ?? results.ToArray();
+            
+            if(resultsArray.Length > 1)
             {
                 throw new TychoDbException ("Too many matching values were found, please refine your query to limit it to a single match");
             }
 
-            return result.FirstOrDefault ();
+            return resultsArray.FirstOrDefault ();
         }
 
         public ValueTask<IEnumerable<T>> ReadObjectsAsync<T> (string partition = null, FilterBuilder<T> filter = null, bool withTransaction = false, CancellationToken cancellationToken = default)
@@ -578,8 +582,6 @@ namespace Tycho
 
                         try
                         {
-                            var rowId = 0L;
-
                             using var insertCommand = conn.CreateCommand();
                             insertCommand.CommandText = Queries.InsertOrReplaceBlob;
 
@@ -589,7 +591,7 @@ namespace Tycho
 
                             insertCommand.Prepare ();
 
-                            rowId = (long)insertCommand.ExecuteScalar();
+                            var rowId = (long)insertCommand.ExecuteScalar();
 
                             writeCount += rowId > 0 ? 1 : 0;
 
@@ -597,7 +599,7 @@ namespace Tycho
                             {
                                 using (var writeStream = new SqliteBlob(conn, TableStreamValue, TableStreamValueDataColumn, rowId))
                                 {
-                                    await stream.CopyToAsync(writeStream).ConfigureAwait(false);
+                                    await stream.CopyToAsync(writeStream, cancellationToken).ConfigureAwait(false);
                                 }
                             }
 
@@ -840,29 +842,21 @@ namespace Tycho
                     conn =>
                     {
                         using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
-
-                        var result = false;
-
+                        
                         var fullIndexName = $"idx_{indexName}_{objectTypeName}";
 
                         try
                         {
                             using var createIndexCommand = conn.CreateCommand();
 
-                            if (isNumeric)
-                            {
-                                createIndexCommand.CommandText = Queries.CreateIndexForJsonValueAsNumeric(fullIndexName, propertyPathString);
-                            }
-                            else
-                            {
-                                createIndexCommand.CommandText = Queries.CreateIndexForJsonValue(fullIndexName, propertyPathString);
-                            }
+                            createIndexCommand.CommandText = 
+                                isNumeric 
+                                    ? Queries.CreateIndexForJsonValueAsNumeric(fullIndexName, propertyPathString) 
+                                    : Queries.CreateIndexForJsonValue(fullIndexName, propertyPathString);
 
                             createIndexCommand.ExecuteNonQuery();
 
                             transaction.Commit();
-
-                            result = true;
                         }
                         catch (Exception ex)
                         {
@@ -870,7 +864,7 @@ namespace Tycho
                             throw new TychoDbException($"Failed to Create Index: {fullIndexName}", ex);
                         }
 
-                        return result;
+                        return true;
                     },
                     _persistConnection,
                     cancellationToken);
@@ -878,22 +872,24 @@ namespace Tycho
 
         protected virtual void Dispose (bool disposing)
         {
-            if (!_isDisposed)
+            if (_isDisposed)
             {
-                if (disposing)
-                {
-                    _connection?.Close();
-                    _connection?.Dispose ();
-                }
-
-                _isDisposed = true;
+                return;
             }
+                
+            if (disposing)
+            {
+                _connection?.Close();
+                _connection?.Dispose ();
+            }
+
+            _isDisposed = true;
         }
 
         public void Dispose ()
         {
             // Do not change this code. Put cleanup code in 'Dispose(bool disposing)' method
-            Dispose (disposing: true);
+            Dispose (true);
             GC.SuppressFinalize (this);
         }
 
@@ -901,40 +897,42 @@ namespace Tycho
         {
             lock(_connectionLock)
             {
-                _connection = new SqliteConnection (_dbConnectionString);
+                var connection = new SqliteConnection (_dbConnectionString);
 
-                _connection.Open ();
+                connection.Open ();
 
                 var supportsJson = false;
 
                 // Enable write-ahead logging
-                using var hasJsonCommand = _connection.CreateCommand ();
+                using var hasJsonCommand = connection.CreateCommand ();
                 hasJsonCommand.CommandText = Queries.PragmaCompileOptions;
                 using var reader = hasJsonCommand.ExecuteReader ();
 
                 while (reader.Read ())
                 {
-                    if (reader.GetString (0)?.Equals (Queries.EnableJSON1Pragma) ?? false)
+                    if (!(reader.GetString(0)?.Equals(Queries.EnableJSON1Pragma) ?? false))
                     {
-                        supportsJson = true;
-                        break;
+                        continue;
                     }
+                    
+                    supportsJson = true;
+                    break;
                 }
 
                 if (!supportsJson)
                 {
-                    _connection.Close();
+                    connection.Close();
                     throw new TychoDbException ("JSON support is not available for this platform");
                 }
 
-                using var command = _connection.CreateCommand ();
+                using var command = connection.CreateCommand ();
 
                 // Enable write-ahead logging and normal synchronous mode
                 command.CommandText = Queries.CreateDatabaseSchema;
 
                 command.ExecuteNonQuery ();
 
-                return _connection;
+                return connection;
             }
         }
 

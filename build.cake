@@ -121,7 +121,8 @@ Task("NuGet")
             .Append(eightbotNugetSourceName)
             .Append("-ApiKey")
             .Append(eightbotNugetApiKey)
-            .Append(package.FullPath);
+            .Append(package.FullPath)
+            .Append("-SkipDuplicate");
 
 
         using(var process =

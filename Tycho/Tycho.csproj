@@ -18,7 +18,7 @@
 		<Configurations>Encrypted;Debug;Release</Configurations>
 	</PropertyGroup>
 
-	<PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Encrypted|AnyCPU' ">
+	<PropertyGroup Condition=" '$(Configuration)' == 'Encrypted' ">
 	  <IntermediateOutputPath>obj\Encrypted</IntermediateOutputPath>
 	  <DebugType></DebugType>
 	  <Optimize>true</Optimize>

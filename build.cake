@@ -51,6 +51,8 @@ Teardown(context =>
 Task ("Clean")
 .Does (() =>
 {
+    CleanDirectories ("./Tycho/bin");
+	CleanDirectories ("./Tycho/obj");
 	CleanDirectories ("./Tycho*/bin");
 	CleanDirectories ("./Tycho*/obj");
 

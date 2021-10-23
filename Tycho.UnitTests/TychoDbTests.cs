@@ -856,6 +856,36 @@ namespace Tycho.UnitTests
             deleteResult.Should().BeTrue();
         }
 
+        [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_InsertManyBlobsAndDeleteManyBlobs_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+        {
+            using var db =
+                BuildDatabaseConnection(jsonSerializer)
+                    .Connect();
+
+            var expected = 5;
+
+            var textExample = "This is a test message";
+            var partition = "partition";
+
+            for (int i = 0; i < expected; i++)
+            {
+                using var stream = new MemoryStream();
+                using var writer = new StreamWriter(stream);
+                writer.Write(textExample);
+                writer.Flush();
+                stream.Position = 0;
+
+                await db.WriteBlobAsync(stream, i.ToString(), partition);
+            }
+
+            var deleteResult = await db.DeleteBlobsAsync(partition);
+
+            deleteResult.Successful.Should().BeTrue();
+            deleteResult.Count.Should().Be(expected);
+        }
+
         public static TychoDb BuildDatabaseConnection(IJsonSerializer jsonSerializer)
         {
 #if ENCRYPTED

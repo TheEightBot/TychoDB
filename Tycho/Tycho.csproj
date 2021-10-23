@@ -19,10 +19,10 @@
 	</PropertyGroup>
 
 	<PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Encrypted|AnyCPU' ">
-	  <IntermediateOutputPath>obj\Release\netstandard2.1\netstandard2.1\netstandard2.1</IntermediateOutputPath>
+	  <IntermediateOutputPath>obj\Encrypted\netstandard2.1</IntermediateOutputPath>
 	  <DebugType></DebugType>
 	  <Optimize>true</Optimize>
-	  <OutputPath>bin\Encrypted\netstandard2.1\netstandard2.1\netstandard2.1</OutputPath>
+	  <OutputPath>bin\Encrypted\netstandard2.1</OutputPath>
 	  <DefineConstants>TRACE;RELEASE;ENCRYPTED;NETSTANDARD;NETSTANDARD2_1;</DefineConstants>
 	  <WarningLevel>4</WarningLevel>
 	  <DocumentationFile></DocumentationFile>
@@ -44,11 +44,12 @@
 	</ItemGroup>
 
 	<ItemGroup Condition="'$(Configuration)' != 'Encrypted'">
-		<PackageReference Include="Microsoft.Data.Sqlite" Version="5.0.10" />
+		<PackageReference Include="Microsoft.Data.Sqlite" Version="5.0.11" />
+		<PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.0.6" />
     </ItemGroup>
 
 	<ItemGroup Condition="'$(Configuration)' == 'Encrypted'">
-		<PackageReference Include="Microsoft.Data.Sqlite.Core" Version="5.0.10" />
+		<PackageReference Include="Microsoft.Data.Sqlite.Core" Version="5.0.11" />
 		<PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.0.6" />
     </ItemGroup>
 

@@ -23,4 +23,7 @@
       </Compile>
     </ItemGroup>
 
+	<ItemGroup>
+		<None Include="..\icon.png" PackagePath="icon.png" Pack="true" />
+	</ItemGroup>
 </Project>

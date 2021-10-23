@@ -3,7 +3,7 @@
 	<PropertyGroup>
 		<TargetFramework>netstandard2.1</TargetFramework>
 		<LangVersion>Latest</LangVersion>
-		<PackageId>EightBot.Tycho.SystemTextJson</PackageId>
+		<PackageId>EightBot.Tycho.JsonSerializer.SystemTextJson</PackageId>
 		<PackageVersion>1.0</PackageVersion>
 		<Authors>Eight-Bot, Inc.</Authors>
 		<Copyright>2021 Eight-Bot</Copyright>
@@ -23,9 +23,9 @@
 		<PackageReference Include="System.Text.Json" Version="5.0.2" />
 	</ItemGroup>
 	<ItemGroup>
-		<ProjectReference Include="..\Tycho\Tycho.csproj" />
+		<None Include="..\icon.png" PackagePath="icon.png" Pack="true" />
 	</ItemGroup>
 	<ItemGroup>
-		<None Include="..\icon.png" PackagePath="icon.png" Pack="true" />
+	  <ProjectReference Include="..\Tycho.JsonSerializer\Tycho.JsonSerializer.csproj" />
 	</ItemGroup>
 </Project>

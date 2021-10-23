@@ -3,7 +3,7 @@
 	<PropertyGroup>
 		<TargetFramework>netstandard2.1</TargetFramework>
 		<LangVersion>Latest</LangVersion>
-		<PackageId>EightBot.Tycho.NewtonsoftJson</PackageId>
+		<PackageId>EightBot.Tycho.JsonSerializer.NewtonsoftJson</PackageId>
 		<PackageVersion>1.0</PackageVersion>
 		<Authors>Eight-Bot, Inc.</Authors>
 		<Copyright>2021 Eight-Bot</Copyright>
@@ -17,12 +17,12 @@
 		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 	</PropertyGroup>
 	<ItemGroup>
-		<ProjectReference Include="..\Tycho\Tycho.csproj" />
-	</ItemGroup>
-	<ItemGroup>
 		<PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
 	</ItemGroup>
 	<ItemGroup>
 		<None Include="..\icon.png" PackagePath="icon.png" Pack="true" />
+	</ItemGroup>
+	<ItemGroup>
+	  <ProjectReference Include="..\Tycho.JsonSerializer\Tycho.JsonSerializer.csproj" />
 	</ItemGroup>
 </Project>

@@ -19,10 +19,10 @@
 	</PropertyGroup>
 
 	<PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Encrypted|AnyCPU' ">
-	  <IntermediateOutputPath>obj\Release\netstandard2.1</IntermediateOutputPath>
+	  <IntermediateOutputPath>obj\Release\netstandard2.1\netstandard2.1\netstandard2.1</IntermediateOutputPath>
 	  <DebugType></DebugType>
 	  <Optimize>true</Optimize>
-	  <OutputPath>bin\Encrypted\netstandard2.1</OutputPath>
+	  <OutputPath>bin\Encrypted\netstandard2.1\netstandard2.1\netstandard2.1</OutputPath>
 	  <DefineConstants>TRACE;RELEASE;ENCRYPTED;NETSTANDARD;NETSTANDARD2_1;</DefineConstants>
 	  <WarningLevel>4</WarningLevel>
 	  <DocumentationFile></DocumentationFile>
@@ -54,5 +54,9 @@
 
 	<ItemGroup>
 	  <None Include="..\icon.png" PackagePath="icon.png" Pack="true" />
+	</ItemGroup>
+
+	<ItemGroup>
+	  <ProjectReference Include="..\Tycho.JsonSerializer\Tycho.JsonSerializer.csproj" />
 	</ItemGroup>
 </Project>

@@ -23,7 +23,7 @@ namespace Tycho
             TableStreamValue = "StreamValue",
             TableStreamValueDataColumn = "Data";
 
-        private readonly object _connectionLock = new object ();
+        private readonly object _connectionLock = new ();
 
         private readonly string _dbConnectionString;
 
@@ -31,17 +31,16 @@ namespace Tycho
 
         private readonly bool _persistConnection;
 
-        private readonly Dictionary<Type, RegisteredTypeInformation> _registeredTypeInformation = new();
+        private readonly Dictionary<Type, RegisteredTypeInformation> _registeredTypeInformation = new ();
 
-        private readonly ProcessingQueue _processingQueue = new();
+        private readonly ProcessingQueue _processingQueue = new ();
 
-        private readonly StringBuilder _commandBuilder = new();
+        private readonly StringBuilder _commandBuilder = new ();
 
         private SqliteConnection _connection;
 
         private bool _isDisposed;
-
-
+        
         private StringBuilder ReusableStringBuilder
         {
             get

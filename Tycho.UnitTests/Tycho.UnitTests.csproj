@@ -39,9 +39,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Tycho.JsonSerializer\Tycho.JsonSerializer.csproj" />
+    <ProjectReference Include="..\Tycho.JsonSerializer.SystemTextJson\Tycho.JsonSerializer.SystemTextJson.csproj" />
+    <ProjectReference Include="..\Tycho.JsonSerializer.NewtonsoftJson\Tycho.JsonSerializer.NewtonsoftJson.csproj" />
     <ProjectReference Include="..\Tycho\Tycho.csproj" />
-    <ProjectReference Include="..\Tycho.SystemTextJson\Tycho.SystemTextJson.csproj" />
-    <ProjectReference Include="..\Tycho.NewtonsoftJson\Tycho.NewtonsoftJson.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Remove="PropertyChanged.Fody" />

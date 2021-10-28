@@ -178,6 +178,7 @@ namespace Tycho
                         {
                             using var insertCommand = conn.CreateCommand ();
                             insertCommand.CommandText = Queries.InsertOrReplace;
+                            insertCommand.Prepare();
 
                             foreach (var obj in objsArray)
                             {
@@ -189,8 +190,6 @@ namespace Tycho
                                 insertCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
                                 insertCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
                                 insertCommand.Parameters.Add (ParameterJson, SqliteType.Text).Value = _jsonSerializer.Serialize (obj);
-
-                                insertCommand.Prepare ();
 
                                 rowId = (long)insertCommand.ExecuteScalar ();
 

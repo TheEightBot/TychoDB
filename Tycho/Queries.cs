@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS JsonValue
 (
     Key             TEXT NOT NULL,
     FullTypeName    TEXT NOT NULL,
-    Partition       TEXT NUT NULL,
+    Partition       TEXT NOT NULL,
     Data            JSON NOT NULL,
     PRIMARY KEY (Key, FullTypeName, Partition)
 );

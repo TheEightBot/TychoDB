@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS StreamValue
 CREATE INDEX IF NOT EXISTS idx_streamvalue_key_partition 
 ON JsonValue (Key, Partition);";
 
+        public static string BuildPragmaCacheSize(uint cacheSizeBytes) => $"PRAGMA cache_size = -{cacheSizeBytes};";
+
         public const string PragmaCompileOptions = "PRAGMA compile_options;";
 
         public const string EnableJSON1Pragma = "ENABLE_JSON1";

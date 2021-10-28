@@ -884,7 +884,7 @@ namespace Tycho
 
                 if(_cacheSizeBytes.HasValue)
                 {
-                    command.CommandText = Queries.BuildPragmaCacheSize(_cacheSizeBytes);
+                    command.CommandText = Queries.BuildPragmaCacheSize(_cacheSizeBytes.Value);
 
                     command.ExecuteNonQuery();
                 }
@@ -936,7 +936,7 @@ namespace Tycho
 
                             if (_cacheSizeBytes.HasValue)
                             {
-                                command.CommandText = Queries.BuildPragmaCacheSize(_cacheSizeBytes);
+                                command.CommandText = Queries.BuildPragmaCacheSize(_cacheSizeBytes.Value);
 
                                 command.ExecuteNonQuery();
                             }

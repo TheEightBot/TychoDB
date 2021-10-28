@@ -41,7 +41,7 @@ namespace Tycho
 
         private bool _isDisposed;
 
-        private uint _cacheSizeBytes;
+        private uint? _cacheSizeBytes;
 
         private StringBuilder ReusableStringBuilder
         {
@@ -52,7 +52,7 @@ namespace Tycho
             }
         }
 
-        public TychoDb (string dbPath, IJsonSerializer jsonSerializer, string dbName = "tycho_cache.db", string password = null, bool persistConnection = true, bool rebuildCache = false, uint cacheSizeBytes = 25_165_824)
+        public TychoDb (string dbPath, IJsonSerializer jsonSerializer, string dbName = "tycho_cache.db", string password = null, bool persistConnection = true, bool rebuildCache = false, uint? cacheSizeBytes = null)
         {
             SQLitePCL.Batteries_V2.Init ();
 
@@ -882,9 +882,12 @@ namespace Tycho
 
                 command.ExecuteNonQuery ();
 
-                command.CommandText = Queries.BuildPragmaCacheSize(_cacheSizeBytes);
+                if(_cacheSizeBytes.HasValue)
+                {
+                    command.CommandText = Queries.BuildPragmaCacheSize(_cacheSizeBytes);
 
-                command.ExecuteNonQuery();
+                    command.ExecuteNonQuery();
+                }
 
                 return connection;
             }
@@ -931,9 +934,12 @@ namespace Tycho
 
                             command.ExecuteNonQuery ();
 
-                            command.CommandText = Queries.BuildPragmaCacheSize(_cacheSizeBytes);
+                            if (_cacheSizeBytes.HasValue)
+                            {
+                                command.CommandText = Queries.BuildPragmaCacheSize(_cacheSizeBytes);
 
-                            command.ExecuteNonQuery();
+                                command.ExecuteNonQuery();
+                            }
 
                             return _connection;
                         },

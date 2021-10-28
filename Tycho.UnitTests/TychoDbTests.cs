@@ -384,6 +384,52 @@ namespace Tycho.UnitTests
         }
 
         [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_ReadManyObjectsWithPartition_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+        {
+            var expected = 1000;
+
+            using var db =
+                BuildDatabaseConnection(jsonSerializer)
+                    .Connect();
+
+            var partition = "partition_name";
+
+            var testObjs =
+                Enumerable
+                    .Range(100, 1000)
+                    .Select(
+                        i =>
+                        {
+                            var testObj =
+                                new TestClassA
+                                {
+                                    StringProperty = $"Test String {i}",
+                                    IntProperty = i,
+                                    TimestampMillis = 123451234,
+                                };
+
+                            return testObj;
+                        })
+                    .ToList();
+
+
+            //Insert without partition, then with
+            await db.WriteObjectsAsync(testObjs.Take(100), x => x.StringProperty).ConfigureAwait(false);
+            await db.WriteObjectsAsync(testObjs, x => x.StringProperty, partition).ConfigureAwait(false);
+
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew();
+
+            var objs = await db.ReadObjectsAsync<TestClassA>(partition: partition).ConfigureAwait(false);
+
+            stopWatch.Stop();
+
+            Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
+
+            objs.Count().Should().Be(expected);
+        }
+
+        [DataTestMethod]
         [DynamicData (nameof (JsonSerializers))]
         public async Task TychoDb_ReadManyGenericObjects_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
@@ -922,6 +968,47 @@ namespace Tycho.UnitTests
 
             readA.IntProperty.Should().Be(classAIntProperty);
             readB.DoubleProperty.Should().Be(classBDoubleProperty);
+        }
+
+        [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_InsertMultipleObjectsWithSameKeyAndDifferentPartition_ShouldBeAbleToFindBoth(IJsonSerializer jsonSerializer)
+        {
+            using var db =
+                BuildDatabaseConnection(jsonSerializer)
+                    .Connect()
+                    .AddTypeRegistration<TestClassA>(x => x.StringProperty);
+
+            var key = "key";
+
+            var partition1 = "partition_1";
+            var partition2 = "partition_2";
+
+            var obj1IntProperty = 1984;
+            var obj2IntProperty = 1999;
+
+            var testObj1 =
+                new TestClassA
+                {
+                    StringProperty = key,
+                    IntProperty = obj1IntProperty,
+                };
+
+            var testObj2 =
+                new TestClassA
+                {
+                    StringProperty = key,
+                    IntProperty = obj2IntProperty,
+                };
+
+            await db.WriteObjectsAsync(new[] { testObj1 }, partition1);
+            await db.WriteObjectsAsync(new[] { testObj2 }, partition2);
+
+            var readA = await db.ReadObjectAsync<TestClassA>(key, partition1);
+            var readB = await db.ReadObjectAsync<TestClassA>(key, partition2);
+
+            readA.IntProperty.Should().Be(obj1IntProperty);
+            readB.IntProperty.Should().Be(obj2IntProperty);
         }
 
         public static TychoDb BuildDatabaseConnection(IJsonSerializer jsonSerializer)

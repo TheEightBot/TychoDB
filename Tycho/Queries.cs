@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS JsonValue
 (
     Key             TEXT NOT NULL,
     FullTypeName    TEXT NOT NULL,
-    Partition       TEXT,
+    Partition       TEXT NUT NULL,
     Data            JSON NOT NULL,
     PRIMARY KEY (Key, FullTypeName, Partition)
 );
@@ -33,7 +33,7 @@ ON JsonValue (Key, FullTypeName, Partition);
 CREATE TABLE IF NOT EXISTS StreamValue
 (
     Key             TEXT NOT NULL,
-    Partition       TEXT,
+    Partition       TEXT NOT NULL,
     Data            BLOB NOT NULL,
     PRIMARY KEY (Key, Partition)
 );
@@ -126,12 +126,6 @@ FullTypeName = $fullTypeName
 @"
 AND
 Partition = $partition
-";
-
-        public const string AndPartitionIsNull =
-@"
-AND
-Partition is NULL
 ";
 
         public static string ExtractDataFromJsonValueWithFullTypeName(string selectionPath)

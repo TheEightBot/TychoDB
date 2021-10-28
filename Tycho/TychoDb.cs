@@ -176,7 +176,6 @@ namespace Tycho
 
                         try
                         {
-
                             using var insertCommand = conn.CreateCommand ();
                             insertCommand.CommandText = Queries.InsertOrReplace;
 
@@ -187,8 +186,8 @@ namespace Tycho
                                 insertCommand.Parameters.Clear();
 
                                 insertCommand.Parameters.Add (ParameterKey, SqliteType.Text).Value = keySelector (obj);
-                                insertCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull();
-                                insertCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;                                
+                                insertCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
+                                insertCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
                                 insertCommand.Parameters.Add (ParameterJson, SqliteType.Text).Value = _jsonSerializer.Serialize (obj);
 
                                 insertCommand.Prepare ();
@@ -241,16 +240,9 @@ namespace Tycho
                             selectCommand.Parameters.Add (ParameterKey, SqliteType.Text).Value = key;
                             selectCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
 
-                            if (!string.IsNullOrEmpty(partition))
-                            {
-                                commandBuilder.Append (Queries.AndPartitionHasValue);
-                                selectCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull ();
-                            }
-                            else
-                            {
-                                commandBuilder.Append (Queries.AndPartitionIsNull);
-                            }
-
+                            commandBuilder.Append (Queries.AndPartitionHasValue);
+                            selectCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+                            
                             selectCommand.CommandText = commandBuilder.ToString ();
 
                             selectCommand.Prepare();
@@ -321,16 +313,9 @@ namespace Tycho
 
                             selectCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
 
-                            if (!string.IsNullOrEmpty (partition))
-                            {
-                                commandBuilder.Append (Queries.AndPartitionHasValue);
-                                selectCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull ();
-                            }
-                            else
-                            {
-                                commandBuilder.Append (Queries.AndPartitionIsNull);
-                            }
-
+                            commandBuilder.Append (Queries.AndPartitionHasValue);
+                            selectCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+                            
                             if (filter != null)
                             {
                                 filter.Build (commandBuilder);
@@ -396,15 +381,8 @@ namespace Tycho
 
                             selectCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (TIn).FullName;
 
-                            if (!string.IsNullOrEmpty (partition))
-                            {
-                                commandBuilder.Append (Queries.AndPartitionHasValue);
-                                selectCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull ();
-                            }
-                            else
-                            {
-                                commandBuilder.Append (Queries.AndPartitionIsNull);
-                            }
+                            commandBuilder.Append (Queries.AndPartitionHasValue);
+                            selectCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
 
                             if (filter != null)
                             {
@@ -466,16 +444,9 @@ namespace Tycho
                             deleteCommand.Parameters.Add (ParameterKey, SqliteType.Text).Value = key;
                             deleteCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
 
-                            if (!string.IsNullOrEmpty (partition))
-                            {
-                                commandBuilder.Append (Queries.AndPartitionHasValue);
-                                deleteCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull ();
-                            }
-                            else
-                            {
-                                commandBuilder.Append (Queries.AndPartitionIsNull);
-                            }
-
+                            commandBuilder.Append (Queries.AndPartitionHasValue);
+                            deleteCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+                            
                             deleteCommand.CommandText = commandBuilder.ToString ();
 
                             deleteCommand.Prepare();
@@ -524,15 +495,8 @@ namespace Tycho
 
                             deleteCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
 
-                            if (!string.IsNullOrEmpty (partition))
-                            {
-                                commandBuilder.Append (Queries.AndPartitionHasValue);
-                                deleteCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull ();
-                            }
-                            else
-                            {
-                                commandBuilder.Append (Queries.AndPartitionIsNull);
-                            }
+                            commandBuilder.Append (Queries.AndPartitionHasValue);
+                            deleteCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
 
                             if (filter != null)
                             {
@@ -585,7 +549,7 @@ namespace Tycho
                             insertCommand.CommandText = Queries.InsertOrReplaceBlob;
 
                             insertCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
-                            insertCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull();
+                            insertCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
                             insertCommand.Parameters.AddWithValue(ParameterBlobLength, stream.Length);
 
                             insertCommand.Prepare ();
@@ -637,16 +601,9 @@ namespace Tycho
 
                             selectCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
 
-                            if (!string.IsNullOrEmpty(partition))
-                            {
-                                commandBuilder.Append(Queries.AndPartitionHasValue);
-                                selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull();
-                            }
-                            else
-                            {
-                                commandBuilder.Append(Queries.AndPartitionIsNull);
-                            }
-
+                            commandBuilder.Append(Queries.AndPartitionHasValue);
+                            selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+                            
                             selectCommand.CommandText = commandBuilder.ToString();
 
                             selectCommand.Prepare();
@@ -694,16 +651,9 @@ namespace Tycho
 
                             deleteCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
 
-                            if (!string.IsNullOrEmpty(partition))
-                            {
-                                commandBuilder.Append(Queries.AndPartitionHasValue);
-                                deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull();
-                            }
-                            else
-                            {
-                                commandBuilder.Append(Queries.AndPartitionIsNull);
-                            }
-
+                            commandBuilder.Append(Queries.AndPartitionHasValue);
+                            deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+                            
                             deleteCommand.CommandText = commandBuilder.ToString();
 
                             deleteCommand.Prepare();
@@ -749,7 +699,7 @@ namespace Tycho
                             var commandBuilder = ReusableStringBuilder;
 
                             commandBuilder.Append(Queries.DeleteDataFromStreamValueWithPartition);
-                            deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrDbNull();
+                            deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
 
                             deleteCommand.CommandText = commandBuilder.ToString();
 
@@ -1062,6 +1012,11 @@ namespace Tycho
             where T : class
         {
             return value ?? (object)DBNull.Value;
+        }
+
+        public static string AsValueOrEmptyString(this string value)
+        {
+            return value ?? string.Empty;
         }
     }
 }

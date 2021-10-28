@@ -11,10 +11,11 @@ PRAGMA locking_mode = EXCLUSIVE;
 
 CREATE TABLE IF NOT EXISTS JsonValue
 (
-    Key             TEXT PRIMARY KEY,
+    Key             TEXT NOT NULL,
     FullTypeName    TEXT NOT NULL,
+    Partition       TEXT,
     Data            JSON NOT NULL,
-    Partition       TEXT
+    PRIMARY KEY (Key, FullTypeName, Partition)
 );
 
 CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename 
@@ -31,9 +32,10 @@ ON JsonValue (Key, FullTypeName, Partition);
 
 CREATE TABLE IF NOT EXISTS StreamValue
 (
-    Key             TEXT PRIMARY KEY,
+    Key             TEXT NOT NULL,
+    Partition       TEXT,
     Data            BLOB NOT NULL,
-    Partition       TEXT
+    PRIMARY KEY (Key, Partition)
 );
 
 CREATE INDEX IF NOT EXISTS idx_streamvalue_key_partition 

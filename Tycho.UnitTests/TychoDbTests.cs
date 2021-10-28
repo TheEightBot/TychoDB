@@ -886,6 +886,44 @@ namespace Tycho.UnitTests
             deleteResult.Count.Should().Be(expected);
         }
 
+        [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_InsertMultipleObjectsWithSameKey_ShouldBeAbleToFindBoth(IJsonSerializer jsonSerializer)
+        {
+            using var db =
+                BuildDatabaseConnection(jsonSerializer)
+                    .Connect();
+
+            var key = "key";
+
+            var classAIntProperty = 1984;
+            var classBDoubleProperty = 1999d;
+
+            var testObjA =
+                new TestClassA
+                {
+                    StringProperty = key,
+                    IntProperty = classAIntProperty,
+                    TimestampMillis = DateTimeOffset.Now.ToUnixTimeMilliseconds(),
+                };
+
+            var testObjB =
+                new TestClassB
+                {
+                    StringProperty = key,
+                    DoubleProperty = classBDoubleProperty,
+                };
+
+            await db.WriteObjectAsync(testObjA, x => x.StringProperty);
+            await db.WriteObjectAsync(testObjB, x => x.StringProperty);
+
+            var readA = await db.ReadObjectAsync<TestClassA>(key);
+            var readB = await db.ReadObjectAsync<TestClassB>(key);
+
+            readA.IntProperty.Should().Be(classAIntProperty);
+            readB.DoubleProperty.Should().Be(classBDoubleProperty);
+        }
+
         public static TychoDb BuildDatabaseConnection(IJsonSerializer jsonSerializer)
         {
 #if ENCRYPTED

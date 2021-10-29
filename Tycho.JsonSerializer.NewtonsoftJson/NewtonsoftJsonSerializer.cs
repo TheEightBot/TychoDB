@@ -31,16 +31,7 @@ namespace Tycho
 
         public object Serialize<T> (T obj)
         {
-            using var stream = new MemoryStream();
-            using var writer = new StreamWriter(stream);
-            using var jsonWriter = new JsonTextWriter(writer);
-
-            _jsonSerializer.Serialize(jsonWriter, obj);
-
-            jsonWriter.Flush();
-            stream.Position = 0;
-
-            return stream.ToArray();
+            return JsonConvert.SerializeObject(obj);
         }
 
         public override string ToString () => nameof (NewtonsoftJsonSerializer);

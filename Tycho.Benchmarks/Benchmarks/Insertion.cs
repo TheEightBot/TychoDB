@@ -199,18 +199,23 @@ namespace Tycho.Benchmarks.Benchmarks
             var db = new SQLiteAsyncConnection(Path.Combine(TempPath, "sqlitenet.db"));
             await db.CreateTableAsync<TestClassA>().ConfigureAwait(false);
 
-            for (int i = 100; i < 1100; i++)
-            {
-                var testObj =
-                    new TestClassA
+            await db.RunInTransactionAsync(
+                conn =>
+                {
+                    for (int i = 100; i < 1100; i++)
                     {
-                        StringProperty = $"Test String {i}",
-                        LongProperty = i,
-                        TimestampMillis = 123451234,
-                    };
+                        var testObj =
+                            new TestClassA
+                            {
+                                StringProperty = $"Test String {i}",
+                                LongProperty = i,
+                                TimestampMillis = 123451234,
+                            };
 
-                await db.InsertOrReplaceAsync(testObj).ConfigureAwait(false);
-            }
+                        conn.InsertOrReplace(testObj);
+                    }
+
+                });
 
             await db.CloseAsync().ConfigureAwait(false);
         }

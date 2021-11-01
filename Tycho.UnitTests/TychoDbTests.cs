@@ -751,6 +751,51 @@ namespace Tycho.UnitTests
         }
 
         [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_QueryInnerObjectUsingEqualsWithDateTime_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+        {
+            var expected = 1;
+            var dobValue = DateTime.Now;
+
+            using var db =
+                BuildDatabaseConnection(jsonSerializer)
+                    .Connect();
+
+            var testObj =
+                new Patient
+                {
+                    PatientId= 12345,
+                    DOB = dobValue,
+                };
+
+            await db.WriteObjectAsync(testObj, x => x.PatientId).ConfigureAwait(false);
+
+            var testObj2 =
+                new Patient
+                {
+                    PatientId = 54321,
+                    DOB = DateTime.Now,
+                };
+
+            await db.WriteObjectAsync(testObj2, x => x.PatientId).ConfigureAwait(false);
+
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew();
+
+            var objs =
+                await db
+                    .ReadObjectsAsync<Patient>(
+                        filter: new FilterBuilder<Patient>()
+                            .Filter(FilterType.Equals, x => x.DOB, dobValue))
+                    .ConfigureAwait(false);
+
+            stopWatch.Stop();
+
+            Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
+
+            objs.Count().Should().Be(expected);
+        }
+
+        [DataTestMethod]
         [DynamicData (nameof (JsonSerializers))]
         public async Task TychoDb_CreateDataIndex_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {

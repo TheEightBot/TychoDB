@@ -17,8 +17,9 @@ namespace Tycho
             var propertyPathString = QueryPropertyPath.BuildPath (propertyPath);
             var isPropertyPathNumeric = QueryPropertyPath.IsNumeric (propertyPath);
             var isPropertyPathBool = QueryPropertyPath.IsBool(propertyPath);
+            var isPropertyPathDateTime = QueryPropertyPath.IsDateTime(propertyPath);
 
-            _filters.Add (new Filter (filterType, propertyPathString, isPropertyPathNumeric, isPropertyPathBool, value));
+            _filters.Add (new Filter (filterType, propertyPathString, isPropertyPathNumeric, isPropertyPathBool, isPropertyPathDateTime, value));
 
             return this;
         }
@@ -29,15 +30,16 @@ namespace Tycho
             var propertyValuePathString = QueryPropertyPath.BuildPath (propertyValuePath);
             var isPropertyValuePathNumeric = QueryPropertyPath.IsNumeric (propertyValuePath);
             var isPropertyValuePathBool = QueryPropertyPath.IsBool(propertyValuePath);
+            var isPropertyValuePathDateTime = QueryPropertyPath.IsDateTime(propertyValuePath);
 
-            _filters.Add (new Filter (filterType, propertyPathString, propertyValuePathString, isPropertyValuePathNumeric, isPropertyValuePathBool, value));
+            _filters.Add (new Filter (filterType, propertyPathString, propertyValuePathString, isPropertyValuePathNumeric, isPropertyValuePathBool, isPropertyValuePathDateTime, value));
 
             return this;
         }
 
-        public FilterBuilder<TObj> Filter (FilterType filterType, string propertyPath, bool isPropertyPathNumeric, bool isPropertyPathBool, object value)
+        public FilterBuilder<TObj> Filter (FilterType filterType, string propertyPath, bool isPropertyPathNumeric, bool isPropertyPathBool, bool isPropertyPathDateTime, object value)
         {
-            _filters.Add (new Filter (filterType, propertyPath, isPropertyPathNumeric, isPropertyPathBool, value));
+            _filters.Add (new Filter (filterType, propertyPath, isPropertyPathNumeric, isPropertyPathBool, isPropertyPathDateTime, value));
 
             return this;
         }
@@ -66,7 +68,7 @@ namespace Tycho
             return this;
         }
 
-        public void Build (StringBuilder commandBuilder)
+        public void Build (StringBuilder commandBuilder, IJsonSerializer jsonSerializer)
         {
             if (_filters.Any())
             {
@@ -115,6 +117,23 @@ namespace Tycho
                             if(filter.IsPropertyValuePathNumeric)
                             {
                                 commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) = \'{filter.Value}\')");
+                                break;
+                            }
+
+                            if (filter.IsPropertyValuePathDateTime)
+                            {
+                                var dateTimeString = string.Empty;
+
+                                if(filter.Value is DateTime dt)
+                                {
+                                    dateTimeString = dt.ToString(jsonSerializer.DateTimeSerializationFormat);
+                                }
+                                else if (filter.Value is DateTimeOffset dto)
+                                {
+                                    dateTimeString = dto.ToString(jsonSerializer.DateTimeSerializationFormat);
+                                }
+
+                                commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value = \'{dateTimeString}\')");
                                 break;
                             }
 
@@ -172,6 +191,23 @@ namespace Tycho
                             if(filter.IsPropertyPathNumeric)
                             {
                                 commandBuilder.AppendLine ($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) = \'{filter.Value}\'");
+                                break;
+                            }
+
+                            if (filter.IsPropertyPathDateTime)
+                            {
+                                var dateTimeString = string.Empty;
+
+                                if (filter.Value is DateTime dt)
+                                {
+                                    dateTimeString = dt.ToString(jsonSerializer.DateTimeSerializationFormat);
+                                }
+                                else if (filter.Value is DateTimeOffset dto)
+                                {
+                                    dateTimeString = dto.ToString(jsonSerializer.DateTimeSerializationFormat);
+                                }
+
+                                commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') = \'{dateTimeString}\'");
                                 break;
                             }
 

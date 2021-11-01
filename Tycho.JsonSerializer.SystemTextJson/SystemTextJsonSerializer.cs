@@ -11,6 +11,8 @@ namespace Tycho
     {
         private readonly JsonSerializerOptions _jsonSerializerOptions;
 
+        public string DateTimeSerializationFormat => "O";
+
         public SystemTextJsonSerializer(JsonSerializerOptions jsonSerializerOptions = null)
         {
             _jsonSerializerOptions =

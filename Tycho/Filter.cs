@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Linq.Expressions;
 
 namespace Tycho
@@ -36,30 +36,40 @@ namespace Tycho
 
         public bool IsPropertyPathBool { get; private set; }
 
+        public bool IsPropertyPathDateTime { get; private set; }
+
         public string PropertyValuePath { get; set; }
 
         public bool IsPropertyValuePathNumeric { get; private set; }
 
         public bool IsPropertyValuePathBool { get; private set; }
 
+        public bool IsPropertyValuePathDateTime { get; private set; }
+
         public object Value { get; private set; }
 
-        public Filter (FilterType filterType, string propertyPath, bool isPropertyPathNumeric, bool isPropertyPathBool, object value)
+        public Filter (FilterType filterType, string propertyPath, bool isPropertyPathNumeric, bool isPropertyPathBool, bool isPropertyPathDateTime, object value)
         {
             FilterType = filterType;
             PropertyPath = propertyPath;
+
             IsPropertyPathNumeric = isPropertyPathNumeric;
             IsPropertyPathBool = isPropertyPathBool;
+            IsPropertyPathDateTime = isPropertyPathDateTime;
+
             Value = value;
         }
 
-        public Filter (FilterType filterType, string listPropertyPath, string propertyValuePath, bool isPropertyValuePathNumeric, bool isPropertyValuePathBool, object value)
+        public Filter (FilterType filterType, string listPropertyPath, string propertyValuePath, bool isPropertyValuePathNumeric, bool isPropertyValuePathBool, bool isPropertyValuePathDateTime, object value)
         {
             FilterType = filterType;
             PropertyPath = listPropertyPath;
             PropertyValuePath = propertyValuePath;
+            
             IsPropertyValuePathNumeric = isPropertyValuePathNumeric;
             IsPropertyValuePathBool = isPropertyValuePathBool;
+            IsPropertyValuePathDateTime = isPropertyValuePathDateTime;
+            
             Value = value;
         }
 

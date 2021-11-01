@@ -10,7 +10,11 @@ namespace Tycho
     {
         private readonly JsonSerializer _jsonSerializer;
 
-        public NewtonsoftJsonSerializer (JsonSerializer jsonSerializer = null)
+        private readonly JsonSerializerSettings _jsonSerializerSettings;
+
+        public string DateTimeSerializationFormat => _jsonSerializerSettings.DateFormatString;
+
+        public NewtonsoftJsonSerializer (JsonSerializer jsonSerializer = null, JsonSerializerSettings jsonSerializerSettings = null)
         {
             _jsonSerializer =
                 jsonSerializer ??
@@ -18,6 +22,14 @@ namespace Tycho
                 {
                     DefaultValueHandling = DefaultValueHandling.Include,
                     NullValueHandling = NullValueHandling.Ignore,
+                };
+
+            _jsonSerializerSettings =
+                jsonSerializerSettings ??
+                new JsonSerializerSettings
+                {
+                    DefaultValueHandling = DefaultValueHandling.Include,
+                    NullValueHandling = NullValueHandling.Include,
                 };
         }
 
@@ -31,7 +43,7 @@ namespace Tycho
 
         public object Serialize<T> (T obj)
         {
-            return JsonConvert.SerializeObject(obj);
+            return JsonConvert.SerializeObject(obj, _jsonSerializerSettings);
         }
 
         public override string ToString () => nameof (NewtonsoftJsonSerializer);

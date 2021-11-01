@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.IO;
@@ -319,7 +319,7 @@ namespace Tycho
                             
                             if (filter != null)
                             {
-                                filter.Build (commandBuilder);
+                                filter.Build (commandBuilder, _jsonSerializer);
                             }
 
                             selectCommand.CommandText = commandBuilder.ToString ();
@@ -387,7 +387,7 @@ namespace Tycho
 
                             if (filter != null)
                             {
-                                filter.Build (commandBuilder);
+                                filter.Build (commandBuilder, _jsonSerializer);
                             }
 
                             selectCommand.CommandText = commandBuilder.ToString ();
@@ -501,7 +501,7 @@ namespace Tycho
 
                             if (filter != null)
                             {
-                                filter.Build (commandBuilder);
+                                filter.Build (commandBuilder, _jsonSerializer);
                             }
 
                             deleteCommand.CommandText = commandBuilder.ToString ();

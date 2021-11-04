@@ -127,15 +127,6 @@ namespace Tycho
 
             _connection = BuildConnection ();
 
-            foreach (var registeredType in _registeredTypeInformation)
-            {
-                var value = registeredType.Value;
-                if(!string.IsNullOrEmpty(value.IdPropertyPath) && !string.IsNullOrEmpty(value.IdPropertyPath))
-                {
-                    CreateIndex(value.IdPropertyPath, value.IsNumeric, value.TypeName, $"ID_{value.TypeName}_{value.IdProperty}");
-                }
-            }
-
             return this;
         }
 
@@ -147,15 +138,6 @@ namespace Tycho
             }
             
             _connection = await BuildConnectionAsync ().ConfigureAwait(false);
-
-            foreach (var registeredType in _registeredTypeInformation)
-            {
-                var value = registeredType.Value;
-                if (!string.IsNullOrEmpty(value.IdPropertyPath) && !string.IsNullOrEmpty(value.IdPropertyPath))
-                {
-                    await CreateIndexAsync(value.IdPropertyPath, value.IsNumeric, value.TypeName, $"ID_{value.TypeName}_{value.IdProperty}").ConfigureAwait(false);
-                }
-            }
 
             return this;
         }

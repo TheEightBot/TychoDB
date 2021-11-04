@@ -4,7 +4,7 @@ using SQLite;
 
 namespace Tycho.Benchmarks
 {
-    class TestClassA
+    public class TestClassA
     {
         [PrimaryKey]
         public string StringProperty { get; set; }
@@ -15,14 +15,14 @@ namespace Tycho.Benchmarks
     }
 
 
-    class TestClassB
+    public class TestClassB
     {
         public string StringProperty { get; set; }
 
         public double DoubleProperty { get; set; }
     }
 
-    class TestClassC
+    public class TestClassC
     {
         [PrimaryKey]
         public int IntProperty { get; set; }
@@ -30,7 +30,7 @@ namespace Tycho.Benchmarks
         public double DoubleProperty { get; set; }
     }
 
-    class TestClassD
+    public class TestClassD
     {
         [PrimaryKey]
         public float FloatProperty { get; set; }
@@ -40,7 +40,7 @@ namespace Tycho.Benchmarks
         public TestClassC ValueC { get; set; }
     }
 
-    class TestClassE
+    public class TestClassE
     {
         [PrimaryKey]
         public Guid TestClassId { get; set; }
@@ -48,7 +48,7 @@ namespace Tycho.Benchmarks
         public IEnumerable<TestClassD> Values { get; set; }
     }
 
-    class TestClassF
+    public class TestClassF
     {
         public Guid TestClassId { get; set; }
 

@@ -53,7 +53,7 @@ namespace Tycho.UnitTests
         {
             var db =
                 BuildDatabaseConnection(jsonSerializer)
-                    .AddTypeRegistration<TestClassA> (x => x.StringProperty)
+                    .AddTypeRegistrationWithCustomKeySelector<TestClassA> (x => x.StringProperty + "_TEST")
                     .Connect ();
 
             var testObj =
@@ -67,6 +67,91 @@ namespace Tycho.UnitTests
             var result = await db.WriteObjectAsync (testObj);
 
             result.Should ().BeTrue ();
+        }
+
+        [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        [ExpectedException(typeof(TychoDbException))]
+        public async Task TychoDb_InsertObjectWithoutRequiredRegistration_ShouldNotBeSuccessful(IJsonSerializer jsonSerializer)
+        {
+            var db =
+                BuildDatabaseConnection(jsonSerializer, true)
+                    .Connect();
+
+            var testObj =
+                new TestClassA
+                {
+                    StringProperty = "Test String",
+                    IntProperty = 1984,
+                    TimestampMillis = 123451234,
+                };
+
+            var result = await db.WriteObjectAsync(testObj);
+        }
+
+        [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_InsertObjectWithRequiredRegistration_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+        {
+            var db =
+                BuildDatabaseConnection(jsonSerializer, true)
+                    .AddTypeRegistrationWithCustomKeySelector<TestClassA>(x => x.StringProperty + "_TEST")
+                    .Connect();
+
+            var testObj =
+                new TestClassA
+                {
+                    StringProperty = "Test String",
+                    IntProperty = 1984,
+                    TimestampMillis = 123451234,
+                };
+
+            var result = await db.WriteObjectAsync(testObj);
+
+            result.Should().BeTrue();
+        }
+
+        [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        [ExpectedException(typeof(TychoDbException))]
+        public async Task TychoDb_InsertObjectWithRequiredRegistrationAndGenericTypeRegistrationAndNoKeySelector_ShouldThrowError(IJsonSerializer jsonSerializer)
+        {
+            var db =
+                BuildDatabaseConnection(jsonSerializer, true)
+                    .AddTypeRegistration<TestClassA>()
+                    .Connect();
+
+            var testObj =
+                new TestClassA
+                {
+                    StringProperty = "Test String",
+                    IntProperty = 1984,
+                    TimestampMillis = 123451234,
+                };
+
+            var result = await db.WriteObjectAsync(testObj);
+        }
+
+        [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_InsertObjectWithRequiredRegistrationAndGenericTypeRegistrationAndKeySelector_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+        {
+            var db =
+                BuildDatabaseConnection(jsonSerializer, true)
+                    .AddTypeRegistration<TestClassA>()
+                    .Connect();
+
+            var testObj =
+                new TestClassA
+                {
+                    StringProperty = "Test String",
+                    IntProperty = 1984,
+                    TimestampMillis = 123451234,
+                };
+
+            var result = await db.WriteObjectAsync(testObj, x => x.StringProperty);
+
+            result.Should().BeTrue();
         }
 
         [DataTestMethod]
@@ -213,6 +298,47 @@ namespace Tycho.UnitTests
             Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
             resultWrite.Should ().Be (expected);
+        }
+
+        [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_InsertManyObjectsThenUpdate_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+        {
+            var expected = true;
+
+            using var db =
+                BuildDatabaseConnection(jsonSerializer)
+                    .Connect();
+
+            var testObjs =
+                Enumerable
+                    .Range(100, 1000)
+                    .Select(
+                        i =>
+                        {
+                            var testObj =
+                                new TestClassA
+                                {
+                                    StringProperty = $"Test String {i}",
+                                    IntProperty = i,
+                                    TimestampMillis = 123451234,
+                                };
+
+                            return testObj;
+                        })
+                    .ToList();
+
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew();
+
+            await db.WriteObjectsAsync(testObjs, x => x.StringProperty).ConfigureAwait(false);
+
+            var resultWrite = await db.WriteObjectsAsync(testObjs, x => x.StringProperty).ConfigureAwait(false);
+
+            stopWatch.Stop();
+
+            Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
+
+            resultWrite.Should().Be(expected);
         }
 
         [DataTestMethod]
@@ -709,6 +835,35 @@ namespace Tycho.UnitTests
         }
 
         [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_QueryUsingEqualsOnAGuid_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+        {
+            var expected = Guid.NewGuid();
+
+            using var db =
+                BuildDatabaseConnection(jsonSerializer)
+                    .Connect();
+
+            var testObj =
+                new TestClassF
+                {
+                    TestClassId = expected,
+                };
+
+            await db.WriteObjectAsync(testObj, x => x.TestClassId).ConfigureAwait(false);
+
+            var obj =
+                await db
+                    .ReadObjectAsync<TestClassF>(
+                        filter: new FilterBuilder<TestClassF>()
+                            .Filter(FilterType.Equals, x => x.TestClassId, expected))
+                    .ConfigureAwait(false);
+
+            obj.Should().NotBeNull();
+            obj.TestClassId.Should().Be(expected);
+        }
+
+        [DataTestMethod]
         [DynamicData (nameof (JsonSerializers))]
         public async Task TychoDb_QueryInnerObjectUsingEquals_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
@@ -1041,17 +1196,17 @@ namespace Tycho.UnitTests
             readB.IntProperty.Should().Be(obj2IntProperty);
         }
 
-        public static TychoDb BuildDatabaseConnection(IJsonSerializer jsonSerializer)
+        public static TychoDb BuildDatabaseConnection(IJsonSerializer jsonSerializer, bool requireTypeRegistration = false)
         {
 #if ENCRYPTED
-            return new TychoDb(Path.GetTempPath(), jsonSerializer, "tycho_cache_enc.db", "Password", rebuildCache: true);
+            return new TychoDb(Path.GetTempPath(), jsonSerializer, "tycho_cache_enc.db", "Password", rebuildCache: true, requireTypeRegistration: requireTypeRegistration);
 #else
-            return new TychoDb(Path.GetTempPath(), jsonSerializer, rebuildCache: true);
+            return new TychoDb(Path.GetTempPath(), jsonSerializer, rebuildCache: true, requireTypeRegistration: requireTypeRegistration);
 #endif
         }
     }
 
-    class TestClassA
+    public class TestClassA
     {
         public string StringProperty { get; set; }
 
@@ -1061,21 +1216,21 @@ namespace Tycho.UnitTests
     }
 
 
-    class TestClassB
+    public class TestClassB
     {
         public string StringProperty { get; set; }
 
         public double DoubleProperty { get; set; }
     }
 
-    class TestClassC
+    public class TestClassC
     {
         public int IntProperty { get; set; }
 
         public string DoubleProperty { get; set; }
     }
 
-    class TestClassD
+    public class TestClassD
     {
         public float FloatProperty { get; set; }
 
@@ -1084,14 +1239,14 @@ namespace Tycho.UnitTests
         public TestClassC ValueC { get; set; }
     }
 
-    class TestClassE
+    public class TestClassE
     {
         public Guid TestClassId { get; set; }
 
         public IEnumerable<TestClassD> Values { get; set; }
     }
 
-    class TestClassF
+    public class TestClassF
     {
         public Guid TestClassId { get; set; }
 

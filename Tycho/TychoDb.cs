@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Data.Common;
 using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
@@ -43,6 +44,8 @@ namespace Tycho
 
         private uint? _cacheSizeBytes;
 
+        private bool _requireTypeRegistration;
+
         private StringBuilder ReusableStringBuilder
         {
             get
@@ -52,7 +55,7 @@ namespace Tycho
             }
         }
 
-        public TychoDb (string dbPath, IJsonSerializer jsonSerializer, string dbName = "tycho_cache.db", string password = null, bool persistConnection = true, bool rebuildCache = false, uint? cacheSizeBytes = null)
+        public TychoDb(string dbPath, IJsonSerializer jsonSerializer, string dbName = "tycho_cache.db", string password = null, bool persistConnection = true, bool rebuildCache = false, bool requireTypeRegistration = false, uint? cacheSizeBytes = null)
         {
             SQLitePCL.Batteries_V2.Init ();
 
@@ -81,12 +84,34 @@ namespace Tycho
             _dbConnectionString = connectionStringBuilder.ToString ();
 
             _persistConnection = persistConnection;
+
+            _requireTypeRegistration = requireTypeRegistration;
         }
 
-        public TychoDb AddTypeRegistration<T> (Expression<Func<T, object>> idSelector)
+        public TychoDb AddTypeRegistration<T> (Expression<Func<T, object>> idPropertySelector)
             where T : class
         {
-            var rti = RegisteredTypeInformation.Create (idSelector);
+            var rti = RegisteredTypeInformation.Create (idPropertySelector);
+
+            _registeredTypeInformation[rti.ObjectType] = rti;
+
+            return this;
+        }
+
+        public TychoDb AddTypeRegistration<T>()
+            where T : class
+        {
+            var rti = RegisteredTypeInformation.Create<T>();
+
+            _registeredTypeInformation[rti.ObjectType] = rti;
+
+            return this;
+        }
+
+        public TychoDb AddTypeRegistrationWithCustomKeySelector<T>(Func<T, object> keySelector)
+            where T : class
+        {
+            var rti = RegisteredTypeInformation.CreateFromFunc(keySelector);
 
             _registeredTypeInformation[rti.ObjectType] = rti;
 
@@ -105,7 +130,10 @@ namespace Tycho
             foreach (var registeredType in _registeredTypeInformation)
             {
                 var value = registeredType.Value;
-                CreateIndex(value.IdPropertyPath, value.IsNumeric, value.TypeName, $"ID_{value.TypeName}_{value.IdProperty}");
+                if(!string.IsNullOrEmpty(value.IdPropertyPath) && !string.IsNullOrEmpty(value.IdPropertyPath))
+                {
+                    CreateIndex(value.IdPropertyPath, value.IsNumeric, value.TypeName, $"ID_{value.TypeName}_{value.IdProperty}");
+                }
             }
 
             return this;
@@ -123,7 +151,10 @@ namespace Tycho
             foreach (var registeredType in _registeredTypeInformation)
             {
                 var value = registeredType.Value;
-                await CreateIndexAsync(value.IdPropertyPath, value.IsNumeric, value.TypeName, $"ID_{value.TypeName}_{value.IdProperty}").ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(value.IdPropertyPath) && !string.IsNullOrEmpty(value.IdPropertyPath))
+                {
+                    await CreateIndexAsync(value.IdPropertyPath, value.IsNumeric, value.TypeName, $"ID_{value.TypeName}_{value.IdProperty}").ConfigureAwait(false);
+                }
             }
 
             return this;
@@ -159,11 +190,22 @@ namespace Tycho
 
         public ValueTask<bool> WriteObjectsAsync<T>(IEnumerable<T> objs, Func<T, object> keySelector, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
         {
+            if(objs == null)
+            {
+                throw new ArgumentNullException(nameof(objs));
+            }
+
+            if(keySelector == null)
+            {
+                throw new ArgumentNullException(nameof(keySelector));
+            }
+
             return _connection
                 .WithConnectionBlock (
                     _processingQueue,
                     conn =>
                     {
+                        var successful = false;
                         var writeCount = 0;
                         var objsArray = objs as T[] ?? objs.ToArray();
                         
@@ -180,25 +222,40 @@ namespace Tycho
                         {
                             using var insertCommand = conn.CreateCommand ();
                             insertCommand.CommandText = Queries.InsertOrReplace;
+
+                            var keyParameter = insertCommand.Parameters.Add(ParameterKey, SqliteType.Text);
+                            var jsonParameter = insertCommand.Parameters.Add(ParameterJson, SqliteType.Blob);
+
+                            insertCommand.Parameters
+                                .Add(ParameterFullTypeName, SqliteType.Text)
+                                .Value = typeof (T).FullName;
+
+                            insertCommand.Parameters
+                                .Add(ParameterPartition, SqliteType.Text)
+                                .Value = partition.AsValueOrEmptyString();
+
                             insertCommand.Prepare();
 
                             foreach (var obj in objsArray)
                             {
-                                long rowId;
+                                keyParameter.Value = keySelector(obj);
+                                jsonParameter.Value = _jsonSerializer.Serialize (obj);
 
-                                insertCommand.Parameters.Clear();
-
-                                insertCommand.Parameters.Add (ParameterKey, SqliteType.Text).Value = keySelector (obj);
-                                insertCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
-                                insertCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
-                                insertCommand.Parameters.Add (ParameterJson, SqliteType.Text).Value = _jsonSerializer.Serialize (obj);
-
-                                rowId = (long)insertCommand.ExecuteScalar ();
+                                var rowId = (long)insertCommand.ExecuteScalar ();
 
                                 writeCount += rowId > 0 ? 1 : 0;
                             }
 
-                            transaction?.Commit ();
+                            successful = writeCount == totalCount;
+
+                            if(successful)
+                            {
+                                transaction?.Commit ();
+                            }
+                            else
+                            {
+                                transaction?.Rollback();
+                            }
                         }
                         catch (Exception ex)
                         {
@@ -210,7 +267,7 @@ namespace Tycho
                             transaction?.Dispose();
                         }
 
-                        return writeCount == totalCount;
+                        return successful;
                     },
                     _persistConnection,
                     cancellationToken);         
@@ -218,6 +275,11 @@ namespace Tycho
 
         public ValueTask<T> ReadObjectAsync<T> (object key, string partition = null, bool withTransaction = false, CancellationToken cancellationToken = default)
         {
+            if(key == null)
+            {
+                throw new ArgumentNullException(nameof(key));
+            }
+
             return _connection
                 .WithConnectionBlock (
                     _processingQueue,
@@ -292,6 +354,11 @@ namespace Tycho
 
         public ValueTask<IEnumerable<T>> ReadObjectsAsync<T> (string partition = null, FilterBuilder<T> filter = null, bool withTransaction = false, CancellationToken cancellationToken = default)
         {
+            if (_requireTypeRegistration)
+            {
+                CheckHasRegisteredType<T>();
+            }
+
             return _connection
                 .WithConnectionBlock<IEnumerable<T>> (
                     _processingQueue,
@@ -356,6 +423,11 @@ namespace Tycho
 
         public ValueTask<IEnumerable<TOut>> ReadObjectsAsync<TIn, TOut> (Expression<Func<TIn,TOut>> innerObjectSelection, string partition = null, FilterBuilder<TIn> filter = null, bool withTransaction = false, CancellationToken cancellationToken = default)
         {
+            if (_requireTypeRegistration)
+            {
+                CheckHasRegisteredType<TIn>();
+            }
+
             return _connection
                 .WithConnectionBlock<IEnumerable<TOut>> (
                     _processingQueue,
@@ -422,6 +494,11 @@ namespace Tycho
 
         public ValueTask<bool> DeleteObjectAsync<T> (object key, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
         {
+            if (_requireTypeRegistration)
+            {
+                CheckHasRegisteredType<T>();
+            }
+
             return _connection
                 .WithConnectionBlock (
                     _processingQueue,
@@ -474,6 +551,11 @@ namespace Tycho
 
         public ValueTask<(bool Successful, int Count)> DeleteObjectsAsync<T> (string partition = null, FilterBuilder<T> filter = null, bool withTransaction = true, CancellationToken cancellationToken = default)
         {
+            if (_requireTypeRegistration)
+            {
+                CheckHasRegisteredType<T>();
+            }
+
             return _connection
                 .WithConnectionBlock (
                     _processingQueue,
@@ -726,7 +808,6 @@ namespace Tycho
                     cancellationToken);
         }
 
-
         public TychoDb CreateIndex<TObj> (Expression<Func<TObj, object>> propertyPath, string indexName)
         {
             return CreateIndex(QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath), typeof(TObj).Name, indexName);
@@ -781,6 +862,11 @@ namespace Tycho
 
         public ValueTask<bool> CreateIndexAsync<TObj>(Expression<Func<TObj, object>> propertyPath, string indexName, CancellationToken cancellationToken = default)
         {
+            if (_requireTypeRegistration)
+            {
+                CheckHasRegisteredType<TObj>();
+            }
+
             return CreateIndexAsync(QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath), typeof(TObj).Name, indexName, cancellationToken);
         }
 
@@ -949,12 +1035,25 @@ namespace Tycho
         private Func<T, object> GetIdFor<T>()
         {
             var type = typeof (T);
-            if (!_registeredTypeInformation.ContainsKey (type))
-            {
-                throw new TychoDbException ($"Registration missing for type: {type}");
-            }
+
+            CheckHasRegisteredType(type);
 
             return _registeredTypeInformation[type].GetId<T> ();
+        }
+
+        private void CheckHasRegisteredType<T>()
+        {
+            var type = typeof(T);
+
+            CheckHasRegisteredType(type);
+        }
+
+        private void CheckHasRegisteredType(Type type)
+        {
+            if (!_registeredTypeInformation.ContainsKey(type))
+            {
+                throw new TychoDbException($"Registration missing for type: {type}");
+            }
         }
     }
 

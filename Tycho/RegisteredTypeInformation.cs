@@ -6,25 +6,25 @@ namespace Tycho
 {
     internal struct RegisteredTypeInformation
     {
-        public Delegate FuncIdSelector { get; set; }
+        public Delegate FuncIdSelector { get; private set; }
 
-        public bool RequiresIdMapping { get; set; }
+        public bool RequiresIdMapping { get; private set; }
 
-        public string IdProperty { get; set; }
+        public string IdProperty { get; private set; }
 
-        public string IdPropertyPath { get; set; }
+        public string IdPropertyPath { get; private set; }
 
-        public bool IsNumeric { get; set; }
+        public bool IsNumeric { get; private set; }
 
-        public bool IsBool { get; set; }
+        public bool IsBool { get; private set; }
 
-        public string TypeFullName { get; set; }
+        public string TypeFullName { get; private set; }
 
-        public string TypeName { get; set; }
+        public string TypeName { get; private set; }
 
-        public string TypeNamespace { get; set; }
+        public string TypeNamespace { get; private set; }
 
-        public Type ObjectType { get; set; }
+        public Type ObjectType { get; private set; }
 
         public static RegisteredTypeInformation Create<T, TId> (Expression<Func<T, TId>> idProperty)
         {
@@ -36,6 +36,7 @@ namespace Tycho
                 var rti =
                     new RegisteredTypeInformation
                     {
+                        RequiresIdMapping = false,
                         FuncIdSelector = compiledExpression,
                         IdProperty = GetExpressionMemberName (idProperty),
                         IdPropertyPath = QueryPropertyPath.BuildPath(idProperty),
@@ -53,9 +54,49 @@ namespace Tycho
             throw new ArgumentException ($"The expression provided is not a lambda expression for {typeof (T).Name}", nameof (idProperty));
         }
 
+        public static RegisteredTypeInformation CreateFromFunc<T>(Func<T, object> keySelector)
+        {
+            var type = typeof(T);
+
+            var rti =
+                new RegisteredTypeInformation
+                {
+                    RequiresIdMapping = false,
+                    FuncIdSelector = keySelector,
+                    TypeFullName = type.FullName,
+                    TypeName = type.Name,
+                    TypeNamespace = type.Namespace,
+                    ObjectType = type
+                };
+
+            return rti;
+        }
+
+        public static RegisteredTypeInformation Create<T>()
+        {
+            var type = typeof(T);
+
+            var rti =
+                new RegisteredTypeInformation
+                {
+                    RequiresIdMapping = true,
+                    TypeFullName = type.FullName,
+                    TypeName = type.Name,
+                    TypeNamespace = type.Namespace,
+                    ObjectType = type
+                };
+
+            return rti;
+        }
+
         public Func<T, object> GetId<T> ()
         {
-            return (Func<T, object>)FuncIdSelector;
+            if(RequiresIdMapping)
+            {
+                throw new TychoDbException($"An id mapping has not been provided for {TypeName}");
+            }
+
+            return  (Func<T, object>)FuncIdSelector;
         }
 
         private static string GetExpressionMemberName (Expression method)

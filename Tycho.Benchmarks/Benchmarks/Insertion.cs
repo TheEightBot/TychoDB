@@ -18,7 +18,12 @@ namespace Tycho.Benchmarks.Benchmarks
         public IJsonSerializer JsonSerializer { get; set; }
 
         public static IEnumerable<IJsonSerializer> JsonSerializers ()
-            => new IJsonSerializer[] { new SystemTextJsonSerializer (), new NewtonsoftJsonSerializer() };
+            =>  new IJsonSerializer[]
+                {
+                    new SystemTextJsonSerializer (),
+                    new NewtonsoftJsonSerializer(),
+                    new UTF8JsonSerializer(),
+                };
 
         private static TestClassE _largeTestObject =
             new TestClassE()

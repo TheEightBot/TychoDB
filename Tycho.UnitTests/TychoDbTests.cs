@@ -16,6 +16,7 @@ namespace Tycho.UnitTests
     {
         private static readonly IJsonSerializer _systemTextJsonSerializer = new SystemTextJsonSerializer ();
         private static readonly IJsonSerializer _newtonsoftJsonSerializer = new NewtonsoftJsonSerializer ();
+        private static readonly IJsonSerializer _utf8JsonSerializer = new UTF8JsonSerializer();
 
         public static IEnumerable<object[]> JsonSerializers
         {
@@ -23,6 +24,7 @@ namespace Tycho.UnitTests
             {
                 yield return new[] { _systemTextJsonSerializer };
                 yield return new[] { _newtonsoftJsonSerializer };
+                yield return new[] { _utf8JsonSerializer };
             }
         }
 

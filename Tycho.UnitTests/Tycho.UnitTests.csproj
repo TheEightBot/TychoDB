@@ -16,10 +16,10 @@
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Encrypted|AnyCPU' ">
-    <IntermediateOutputPath>obj\Release\net5.0</IntermediateOutputPath>
+    <IntermediateOutputPath>obj\Release\net5.0\net5.0</IntermediateOutputPath>
     <DebugType></DebugType>
     <Optimize>true</Optimize>
-    <OutputPath>bin\Encrypted\net5.0</OutputPath>
+    <OutputPath>bin\Encrypted\net5.0\net5.0</OutputPath>
     <DefineConstants>TRACE;RELEASE;NET;NET5_0;NETCOREAPP;ENCRYPTED;</DefineConstants>
     <WarningLevel>4</WarningLevel>
     <DocumentationFile></DocumentationFile>
@@ -43,6 +43,7 @@
     <ProjectReference Include="..\Tycho.JsonSerializer.SystemTextJson\Tycho.JsonSerializer.SystemTextJson.csproj" />
     <ProjectReference Include="..\Tycho.JsonSerializer.NewtonsoftJson\Tycho.JsonSerializer.NewtonsoftJson.csproj" />
     <ProjectReference Include="..\Tycho\Tycho.csproj" />
+    <ProjectReference Include="..\Tycho.JsonSerializer.UTF8Json\Tycho.JsonSerializer.UTF8Json.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Remove="PropertyChanged.Fody" />

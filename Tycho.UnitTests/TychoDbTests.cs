@@ -770,27 +770,12 @@ namespace Tycho.UnitTests
 
             await db.WriteObjectAsync(testObj, x => x.PatientId).ConfigureAwait(false);
 
-            var testObj2 =
-                new Patient
-                {
-                    PatientId = 54321,
-                    DOB = DateTime.Now,
-                };
-
-            await db.WriteObjectAsync(testObj2, x => x.PatientId).ConfigureAwait(false);
-
-            var stopWatch = System.Diagnostics.Stopwatch.StartNew();
-
             var objs =
                 await db
                     .ReadObjectsAsync<Patient>(
                         filter: new FilterBuilder<Patient>()
-                            .Filter(FilterType.Equals, x => x.DOB, dobValue))
+                            .Filter(FilterType.Equals, x => x.DOB, testObj.DOB))
                     .ConfigureAwait(false);
-
-            stopWatch.Stop();
-
-            Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
             objs.Count().Should().Be(expected);
         }

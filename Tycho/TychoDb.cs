@@ -1045,6 +1045,49 @@ namespace Tycho
                     cancellationToken);
         }
 
+        public ValueTask<bool> CreateIndexAsync<TObj>(Expression<Func<TObj, object>>[] propertyPaths, string indexName, CancellationToken cancellationToken = default)
+        {
+            if (_requireTypeRegistration)
+            {
+                CheckHasRegisteredType<TObj>();
+            }
+
+            var processedPaths =
+                    propertyPaths
+                        .Select(x => (QueryPropertyPath.BuildPath(x), QueryPropertyPath.IsNumeric(x)))
+                        .ToArray();
+
+            return _connection
+                .WithConnectionBlock(
+                    _processingQueue,
+                    conn =>
+                    {
+                        using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
+
+                        var fullIndexName = $"idx_{indexName}_{typeof(TObj).Name}";
+
+                        try
+                        {
+                            using var createIndexCommand = conn.CreateCommand();
+
+                            createIndexCommand.CommandText = Queries.CreateIndexForJsonValue(fullIndexName, processedPaths);
+
+                            createIndexCommand.ExecuteNonQuery();
+
+                            transaction.Commit();
+                        }
+                        catch (Exception ex)
+                        {
+                            transaction.Rollback();
+                            throw new TychoDbException($"Failed to Create Index: {fullIndexName}", ex);
+                        }
+
+                        return true;
+                    },
+                    _persistConnection,
+                    cancellationToken);
+        }
+
         protected virtual void Dispose (bool disposing)
         {
             if (_isDisposed)

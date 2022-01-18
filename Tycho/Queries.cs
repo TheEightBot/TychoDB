@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Linq;
+
 namespace Tycho
 {
     public static class Queries
@@ -207,6 +209,25 @@ ON JsonValue(FullTypeName, CAST(JSON_EXTRACT(Data, '{propertyPathString}') as NU
 @$"
 CREATE INDEX IF NOT EXISTS {fullIndexName}
 ON JsonValue(FullTypeName, JSON_EXTRACT(Data, '{propertyPathString}'));
+";
+        }
+
+        public static string CreateIndexForJsonValue(string fullIndexName, (string PropertyPathString, bool IsNumeric)[] propertyPaths)
+        {
+            var propertyPathStringsJoined =
+                string.Join(
+                    string.Empty,
+                    propertyPaths
+                        .Select(
+                            pp =>
+                                pp.IsNumeric
+                                ? $", CAST(JSON_EXTRACT(Data, '{pp.PropertyPathString}') as NUMERIC)"
+                                : $", JSON_EXTRACT(Data, '{pp.PropertyPathString}')"));
+
+            return
+@$"
+CREATE INDEX IF NOT EXISTS {fullIndexName}
+ON JsonValue(FullTypeName{propertyPathStringsJoined});
 ";
         }
 

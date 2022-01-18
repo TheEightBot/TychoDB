@@ -8,6 +8,7 @@ using System.Threading;
 using FluentAssertions.Common;
 using System.Linq;
 using System.ComponentModel;
+using System.Linq.Expressions;
 
 namespace Tycho.UnitTests
 {
@@ -1035,6 +1036,21 @@ namespace Tycho.UnitTests
             var successful = await db.CreateIndexAsync<TestClassD> (x => x.DoubleProperty, "double_index");
 
             successful.Should ().Be (expected);
+        }
+
+        [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_CreateDataIndexWithMultipleProperties_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+        {
+            var expected = true;
+
+            using var db =
+                BuildDatabaseConnection(jsonSerializer)
+                    .Connect();
+
+            var successful = await db.CreateIndexAsync<TestClassB>(new Expression<Func<TestClassB, object>>[] { x => x.StringProperty, x => x.DoubleProperty, } , "string_double_index");
+
+            successful.Should().Be(expected);
         }
 
         [DataTestMethod]

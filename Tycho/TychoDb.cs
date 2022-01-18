@@ -42,8 +42,6 @@ namespace Tycho
 
         private bool _isDisposed;
 
-        private uint? _cacheSizeBytes;
-
         private bool _requireTypeRegistration;
 
         private StringBuilder ReusableStringBuilder
@@ -1200,13 +1198,6 @@ namespace Tycho
 
                 command.ExecuteNonQuery ();
 
-                if(_cacheSizeBytes.HasValue)
-                {
-                    command.CommandText = Queries.BuildPragmaCacheSize(_cacheSizeBytes.Value);
-
-                    command.ExecuteNonQuery();
-                }
-
                 return connection;
             }
         }
@@ -1251,13 +1242,6 @@ namespace Tycho
                             command.CommandText = Queries.CreateDatabaseSchema;
 
                             command.ExecuteNonQuery ();
-
-                            if (_cacheSizeBytes.HasValue)
-                            {
-                                command.CommandText = Queries.BuildPragmaCacheSize(_cacheSizeBytes.Value);
-
-                                command.ExecuteNonQuery();
-                            }
 
                             return _connection;
                         },

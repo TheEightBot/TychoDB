@@ -72,7 +72,7 @@ namespace Tycho
         {
             if (_filters.Any())
             {
-                commandBuilder.AppendLine ("AND");
+                commandBuilder.AppendLine ("\nAND");
             }
 
             foreach (var filter in _filters)

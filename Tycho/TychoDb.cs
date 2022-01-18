@@ -255,6 +255,133 @@ namespace Tycho
                     cancellationToken);         
         }
 
+        public ValueTask<int> CountObjectsAsync<T>(string partition = null, FilterBuilder<T> filter = null, bool withTransaction = false, CancellationToken cancellationToken = default)
+        {
+            if (_requireTypeRegistration)
+            {
+                CheckHasRegisteredType<T>();
+            }
+
+            return _connection
+                .WithConnectionBlock<int>(
+                    _processingQueue,
+                    conn =>
+                    {
+                        SqliteTransaction transaction = null;
+
+                        if (withTransaction)
+                        {
+                            transaction = conn.BeginTransaction(IsolationLevel.RepeatableRead);
+                        }
+
+                        try
+                        {
+                            using var selectCommand = conn.CreateCommand();
+
+                            var commandBuilder = ReusableStringBuilder;
+
+                            commandBuilder.Append(Queries.SelectCountFromJsonValueWithFullTypeName);
+
+                            selectCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(T).FullName;
+                            selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+
+                            if (filter != null)
+                            {
+                                filter.Build(commandBuilder, _jsonSerializer);
+                            }
+
+                            selectCommand.CommandText = commandBuilder.ToString();
+
+                            selectCommand.Prepare();
+
+                            using var reader = selectCommand.ExecuteReader();
+
+                            var count = 0;
+
+                            while (reader.Read())
+                            {
+                                ++count;
+                            }
+
+                            transaction?.Commit();
+
+                            return count;
+                        }
+                        catch (Exception ex)
+                        {
+                            transaction?.Rollback();
+                            throw new TychoDbException($"Failed Reading Objects", ex);
+                        }
+                        finally
+                        {
+                            transaction?.Dispose();
+                        }
+                    },
+                    _persistConnection,
+                    cancellationToken);
+        }
+
+        public ValueTask<bool> ObjectExistsAsync<T>(object key, string partition = null, bool withTransaction = false, CancellationToken cancellationToken = default)
+        {
+            if (key == null)
+            {
+                throw new ArgumentNullException(nameof(key));
+            }
+
+            return _connection
+                .WithConnectionBlock(
+                    _processingQueue,
+                    conn =>
+                    {
+                        SqliteTransaction transaction = null;
+
+                        if (withTransaction)
+                        {
+                            transaction = conn.BeginTransaction(IsolationLevel.RepeatableRead);
+                        }
+
+                        try
+                        {
+                            using var selectCommand = conn.CreateCommand();
+
+                            var commandBuilder = ReusableStringBuilder;
+
+                            commandBuilder.Append(Queries.SelectExistsFromJsonValueWithKeyAndFullTypeName);
+
+                            selectCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
+                            selectCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(T).FullName;
+                            selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+
+                            selectCommand.CommandText = commandBuilder.ToString();
+
+                            selectCommand.Prepare();
+
+                            using var reader = selectCommand.ExecuteReader();
+
+                            var returnValue = false;
+                            while (reader.Read())
+                            {
+                                returnValue = true;
+                            }
+
+                            transaction?.Commit();
+
+                            return returnValue;
+                        }
+                        catch (Exception ex)
+                        {
+                            transaction?.Rollback();
+                            throw new TychoDbException($"Failed Reading Object with key \"{key}\"", ex);
+                        }
+                        finally
+                        {
+                            transaction?.Dispose();
+                        }
+                    },
+                    _persistConnection,
+                    cancellationToken);
+        }
+
         public ValueTask<T> ReadObjectAsync<T> (object key, string partition = null, bool withTransaction = false, CancellationToken cancellationToken = default)
         {
             if(key == null)
@@ -284,8 +411,6 @@ namespace Tycho
 
                             selectCommand.Parameters.Add (ParameterKey, SqliteType.Text).Value = key;
                             selectCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
-
-                            commandBuilder.Append (Queries.AndPartitionHasValue);
                             selectCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
                             
                             selectCommand.CommandText = commandBuilder.ToString ();
@@ -362,8 +487,6 @@ namespace Tycho
                             commandBuilder.Append(Queries.SelectDataFromJsonValueWithFullTypeName);
 
                             selectCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
-
-                            commandBuilder.Append (Queries.AndPartitionHasValue);
                             selectCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
                             
                             if (filter != null)
@@ -435,8 +558,6 @@ namespace Tycho
                             commandBuilder.Append (Queries.ExtractDataFromJsonValueWithFullTypeName (selectionPath));
 
                             selectCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (TIn).FullName;
-
-                            commandBuilder.Append (Queries.AndPartitionHasValue);
                             selectCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
 
                             if (filter != null)
@@ -503,10 +624,8 @@ namespace Tycho
 
                             deleteCommand.Parameters.Add (ParameterKey, SqliteType.Text).Value = key;
                             deleteCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
+                            deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
 
-                            commandBuilder.Append (Queries.AndPartitionHasValue);
-                            deleteCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
-                            
                             deleteCommand.CommandText = commandBuilder.ToString ();
 
                             deleteCommand.Prepare();
@@ -559,9 +678,7 @@ namespace Tycho
                             commandBuilder.Append (Queries.DeleteDataFromJsonValueWithFullTypeName);
 
                             deleteCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
-
-                            commandBuilder.Append (Queries.AndPartitionHasValue);
-                            deleteCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+                            deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
 
                             if (filter != null)
                             {
@@ -649,6 +766,49 @@ namespace Tycho
                     cancellationToken);
         }
 
+        public ValueTask<bool> BlobExistsAsync(object key, string partition = null, CancellationToken cancellationToken = default)
+        {
+            return _connection
+                .WithConnectionBlock(
+                    _processingQueue,
+                    conn =>
+                    {
+                        try
+                        {
+                            using var selectCommand = conn.CreateCommand();
+
+                            var commandBuilder = ReusableStringBuilder;
+
+                            commandBuilder.Append(Queries.SelectExistsFromStreamValueWithKey);
+
+                            selectCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
+
+                            selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+
+                            selectCommand.CommandText = commandBuilder.ToString();
+
+                            selectCommand.Prepare();
+
+                            using var reader = selectCommand.ExecuteReader();
+
+                            bool returnValue = false;
+                            while (reader.Read())
+                            {
+                                returnValue = true;
+                            }
+
+                            return returnValue;
+                        }
+                        catch (Exception ex)
+                        {
+                            throw new TychoDbException($"Failed Reading Object with key \"{key}\"", ex);
+                        }
+                    },
+                    _persistConnection,
+                    cancellationToken);
+        }
+
+
         public ValueTask<Stream> ReadBlobAsync(object key, string partition = null, CancellationToken cancellationToken = default)
         {
             return _connection
@@ -666,9 +826,8 @@ namespace Tycho
 
                             selectCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
 
-                            commandBuilder.Append(Queries.AndPartitionHasValue);
                             selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
-                            
+
                             selectCommand.CommandText = commandBuilder.ToString();
 
                             selectCommand.Prepare();
@@ -715,10 +874,8 @@ namespace Tycho
                             commandBuilder.Append(Queries.DeleteDataFromStreamValueWithKey);
 
                             deleteCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
-
-                            commandBuilder.Append(Queries.AndPartitionHasValue);
                             deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
-                            
+
                             deleteCommand.CommandText = commandBuilder.ToString();
 
                             deleteCommand.Prepare();

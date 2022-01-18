@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS StreamValue
 );
 
 CREATE INDEX IF NOT EXISTS idx_streamvalue_key_partition 
-ON JsonValue (Key, Partition);";
+ON JsonValue (Key, Partition);
+";
 
         public static string BuildPragmaCacheSize(uint cacheSizeBytes) => $"PRAGMA cache_size = -{cacheSizeBytes};";
 
@@ -52,14 +53,16 @@ ON JsonValue (Key, Partition);";
 INSERT OR REPLACE INTO JsonValue(Key, FullTypeName, Data, Partition)
 VALUES ($key, $fullTypeName, json($json), $partition);
 
-SELECT last_insert_rowid();";
+SELECT last_insert_rowid();
+";
 
         public const string InsertOrReplaceBlob =
 @"
 INSERT OR REPLACE INTO StreamValue(Key, Data, Partition)
 VALUES ($key, zeroblob($blobLength), $partition);
 
-SELECT last_insert_rowid();";
+SELECT last_insert_rowid();
+";
 
         public const string SelectDataFromJsonValueWithKeyAndFullTypeName =
 @"
@@ -68,26 +71,72 @@ FROM JsonValue
 Where
 Key = $key
 AND
-FullTypeName = $fullTypeName";
+FullTypeName = $fullTypeName
+AND
+Partition = $partition
+LIMIT 1
+";
+
+        public const string SelectExistsFromJsonValueWithKeyAndFullTypeName =
+@"
+SELECT 1
+FROM JsonValue
+Where
+Key = $key
+AND
+FullTypeName = $fullTypeName
+AND
+Partition = $partition
+LIMIT 1
+";
 
         public const string SelectDataFromStreamValueWithKey =
 @"
 SELECT Data
 FROM StreamValue
 Where
-Key = $key";
+Key = $key
+AND
+Partition = $partition
+LIMIT 1
+";
+
+        public const string SelectExistsFromStreamValueWithKey =
+@"
+SELECT 1
+FROM StreamValue
+Where
+Key = $key
+AND
+Partition = $partition
+LIMIT 1
+";
 
         public const string SelectPartitions =
 @"
 SELECT DISTINCT Partition
-From JsonValue";
+From JsonValue
+";
 
         public const string SelectDataFromJsonValueWithFullTypeName =
 @"
 SELECT Data
 FROM JsonValue
 Where
-FullTypeName = $fullTypeName";
+FullTypeName = $fullTypeName
+AND
+Partition = $partition
+";
+
+        public const string SelectCountFromJsonValueWithFullTypeName =
+@"
+SELECT 1
+FROM JsonValue
+Where
+FullTypeName = $fullTypeName
+AND
+Partition = $partition
+";
 
         public const string DeleteDataFromJsonValueWithKeyAndFullTypeName =
 @"
@@ -97,6 +146,8 @@ Where
 Key = $key
 AND
 FullTypeName = $fullTypeName
+AND
+Partition = $partition
 ";
 
         public const string DeleteDataFromStreamValueWithKey =
@@ -105,6 +156,8 @@ DELETE
 FROM StreamValue
 Where
 Key = $key
+AND
+Partition = $partition
 ";
 
 
@@ -122,10 +175,6 @@ DELETE
 FROM JsonValue
 Where
 FullTypeName = $fullTypeName
-";
-
-        public const string AndPartitionHasValue =
-@"
 AND
 Partition = $partition
 ";
@@ -138,6 +187,8 @@ SELECT JSON_EXTRACT(Data, '{selectionPath}') AS Data
 FROM JsonValue
 Where
 FullTypeName = $fullTypeName
+AND
+Partition = $partition
 ";
         }
 

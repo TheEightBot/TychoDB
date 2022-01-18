@@ -556,6 +556,52 @@ namespace Tycho.UnitTests
         }
 
         [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_CountManyObjectsWithPartition_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+        {
+            var expected = 1000;
+
+            using var db =
+                BuildDatabaseConnection(jsonSerializer)
+                    .Connect();
+
+            var partition = "partition_name";
+
+            var testObjs =
+                Enumerable
+                    .Range(100, 1000)
+                    .Select(
+                        i =>
+                        {
+                            var testObj =
+                                new TestClassA
+                                {
+                                    StringProperty = $"Test String {i}",
+                                    IntProperty = i,
+                                    TimestampMillis = 123451234,
+                                };
+
+                            return testObj;
+                        })
+                    .ToList();
+
+
+            //Insert without partition, then with
+            await db.WriteObjectsAsync(testObjs.Take(100), x => x.StringProperty).ConfigureAwait(false);
+            await db.WriteObjectsAsync(testObjs, x => x.StringProperty, partition).ConfigureAwait(false);
+
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew();
+
+            var objsCount = await db.CountObjectsAsync<TestClassA>(partition: partition).ConfigureAwait(false);
+
+            stopWatch.Stop();
+
+            Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
+
+            objsCount.Should().Be(expected);
+        }
+
+        [DataTestMethod]
         [DynamicData (nameof (JsonSerializers))]
         public async Task TychoDb_ReadManyGenericObjects_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
@@ -594,6 +640,47 @@ namespace Tycho.UnitTests
             Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
             obj.Count ().Should ().Be (expected);
+        }
+
+        [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_CountManyGenericObjects_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+        {
+            var expected = 1000;
+
+            using var db =
+                BuildDatabaseConnection(jsonSerializer)
+                    .Connect();
+
+            var testObjs =
+                Enumerable
+                    .Range(100, 1000)
+                    .Select(
+                        i =>
+                        {
+                            var testObj =
+                                new TestClassA
+                                {
+                                    StringProperty = $"Test String {i}",
+                                    IntProperty = i,
+                                    TimestampMillis = 123451234,
+                                };
+
+                            return testObj;
+                        })
+                    .ToList();
+
+            await db.WriteObjectAsync(testObjs, x => x.GetHashCode()).ConfigureAwait(false);
+
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew();
+
+            var exists = await db.ObjectExistsAsync<List<TestClassA>>(testObjs.GetHashCode()).ConfigureAwait(false);
+
+            stopWatch.Stop();
+
+            Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
+
+            exists.Should().Be(true);
         }
 
         [DataTestMethod]
@@ -1086,6 +1173,31 @@ namespace Tycho.UnitTests
             insertResult.Should().BeTrue();
             deleteResult.Should().BeTrue();
         }
+
+        [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_InsertBlobAndCheckExists_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+        {
+            using var db =
+                BuildDatabaseConnection(jsonSerializer)
+                    .Connect();
+
+            var textExample = "This is a test message";
+            var key = "Test";
+
+            using var stream = new MemoryStream();
+            using var writer = new StreamWriter(stream);
+            writer.Write(textExample);
+            writer.Flush();
+            stream.Position = 0;
+
+            var insertResult = await db.WriteBlobAsync(stream, key);
+            var existsResult = await db.BlobExistsAsync(key);
+
+            insertResult.Should().BeTrue();
+            existsResult.Should().BeTrue();
+        }
+
 
         [DataTestMethod]
         [DynamicData(nameof(JsonSerializers))]

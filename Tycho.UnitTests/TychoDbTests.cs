@@ -199,7 +199,8 @@ namespace Tycho.UnitTests
 
             var result =
                 await db.ReadObjectsAsync<Patient>(
-                        filter: new FilterBuilder<Patient>()
+                        filter: FilterBuilder<Patient>
+                            .Create()
                             .Filter(FilterType.Equals, x => x.IsDirty, true));
 
             result.Should().NotBeNullOrEmpty();
@@ -456,7 +457,8 @@ namespace Tycho.UnitTests
             var resultRead =
                 await db
                     .ReadObjectsAsync<TestClassE> (
-                        filter: new FilterBuilder<TestClassE> ()
+                        filter: FilterBuilder<TestClassE>
+                            .Create()
                             .Filter (FilterType.GreaterThan, x => x.Values, x => x.FloatProperty, 250d));
 
             var resultReadCount = resultRead.Count ();
@@ -776,7 +778,8 @@ namespace Tycho.UnitTests
                 await db
                     .ReadObjectsAsync<TestClassF, TestClassC> (
                         x => x.Value.ValueC,
-                        filter: new FilterBuilder<TestClassF> ()
+                        filter: FilterBuilder<TestClassF>
+                            .Create()
                             .Filter (FilterType.GreaterThan, x => x.Value.DoubleProperty, 250d)
                             .And ()
                             .Filter (FilterType.LessThanOrEqualTo, x => x.Value.DoubleProperty, 750d));
@@ -837,7 +840,8 @@ namespace Tycho.UnitTests
                 await db
                     .ReadObjectsAsync<TestClassF, TestClassC> (
                         x => x.Value.ValueC,
-                        filter: new FilterBuilder<TestClassF> ()
+                        filter: FilterBuilder<TestClassF>
+                            .Create()
                             .Filter (FilterType.GreaterThanOrEqualTo, x => x.Value.ValueC.IntProperty, 250d));
 
             var count = objs.Count ();
@@ -911,7 +915,8 @@ namespace Tycho.UnitTests
             var objs =
                 await db
                     .ReadObjectsAsync<TestClassA> (
-                        filter: new FilterBuilder<TestClassA> ()
+                        filter: FilterBuilder<TestClassA>
+                            .Create()
                             .Filter (FilterType.Contains, x => x.StringProperty, " String "))
                     .ConfigureAwait (false);
 
@@ -943,7 +948,8 @@ namespace Tycho.UnitTests
             var obj =
                 await db
                     .ReadObjectAsync<TestClassF>(
-                        filter: new FilterBuilder<TestClassF>()
+                        filter: FilterBuilder<TestClassF>
+                            .Create()
                             .Filter(FilterType.Equals, x => x.TestClassId, expected))
                     .ConfigureAwait(false);
 
@@ -982,7 +988,8 @@ namespace Tycho.UnitTests
             var objs =
                 await db
                     .ReadObjectsAsync<TestClassF> (
-                        filter: new FilterBuilder<TestClassF> ()
+                        filter: FilterBuilder<TestClassF>
+                            .Create()
                             .Filter (FilterType.Equals, x => x.Value.DoubleProperty, doubleProperty))
                     .ConfigureAwait (false);
 
@@ -1016,7 +1023,8 @@ namespace Tycho.UnitTests
             var objs =
                 await db
                     .ReadObjectsAsync<Patient>(
-                        filter: new FilterBuilder<Patient>()
+                        filter: FilterBuilder<Patient>
+                            .Create()
                             .Filter(FilterType.Equals, x => x.DOB, testObj.DOB))
                     .ConfigureAwait(false);
 

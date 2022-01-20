@@ -1,5 +1,6 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
+using System.Dynamic;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
@@ -10,8 +11,17 @@ namespace Tycho
 {
     public class FilterBuilder<TObj>
     {
-        private readonly List<Filter> _filters = new ();
-        
+        private readonly List<Filter> _filters = new();
+
+        private FilterBuilder()
+        {
+        }
+
+        public static FilterBuilder<TObj> Create()
+        {
+            return new FilterBuilder<TObj>();
+        }
+
         public FilterBuilder<TObj> Filter<TProp> (FilterType filterType, Expression<Func<TObj, TProp>> propertyPath, object value)
         {
             var propertyPathString = QueryPropertyPath.BuildPath (propertyPath);

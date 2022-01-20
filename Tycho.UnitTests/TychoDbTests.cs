@@ -1149,14 +1149,13 @@ namespace Tycho.UnitTests
 
             var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
 
-            var objs = await db.DeleteObjectsAsync<TestClassA> ().ConfigureAwait (false);
+            var objsDeleted = await db.DeleteObjectsAsync<TestClassA> ().ConfigureAwait (false);
 
             stopWatch.Stop ();
 
             Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-            objs.Successful.Should ().Be (expectedSuccess);
-            objs.Count.Should ().Be (expectedCount);
+            objsDeleted.Should ().Be (expectedCount);
         }
 
         [DataTestMethod]

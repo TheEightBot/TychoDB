@@ -663,7 +663,7 @@ namespace Tycho
                     cancellationToken);
         }
 
-        public ValueTask<(bool Successful, int Count)> DeleteObjectsAsync<T> (string partition = null, FilterBuilder<T> filter = null, bool withTransaction = true, CancellationToken cancellationToken = default)
+        public ValueTask<int> DeleteObjectsAsync<T> (string partition = null, FilterBuilder<T> filter = null, bool withTransaction = true, CancellationToken cancellationToken = default)
         {
             if (_requireTypeRegistration)
             {
@@ -706,7 +706,7 @@ namespace Tycho
 
                             transaction?.Commit ();
 
-                            return (deletionCount > 0, deletionCount);
+                            return deletionCount;
                         }
                         catch (Exception ex)
                         {

@@ -3,7 +3,7 @@ using System.Linq;
 
 namespace Tycho
 {
-    public static class Queries
+    internal static class Queries
     {
         public const string CreateDatabaseSchema =
 @"

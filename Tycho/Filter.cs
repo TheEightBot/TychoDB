@@ -24,7 +24,7 @@ namespace Tycho
         LessThanOrEqualTo,
     }
 
-    public class Filter
+    internal class Filter
     {
         public FilterJoin? Join { get; private set; }
 

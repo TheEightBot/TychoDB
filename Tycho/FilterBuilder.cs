@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
@@ -68,7 +68,7 @@ namespace Tycho
             return this;
         }
 
-        public void Build (StringBuilder commandBuilder, IJsonSerializer jsonSerializer)
+        internal void Build (StringBuilder commandBuilder, IJsonSerializer jsonSerializer)
         {
             if (_filters.Any())
             {

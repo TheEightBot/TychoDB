@@ -135,6 +135,84 @@ namespace Tycho.UnitTests
 
         [DataTestMethod]
         [DynamicData(nameof(JsonSerializers))]
+        public void TychoDb_RegisterTypeAndCompareIds_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+        {
+            var db =
+                BuildDatabaseConnection(jsonSerializer, true)
+                    .AddTypeRegistration<TestClassA, int>(x => x.IntProperty)
+                    .Connect();
+
+            var testObj1 =
+                new TestClassA
+                {
+                    IntProperty = 1984,
+                };
+
+            var testObj2 =
+                new TestClassA
+                {
+                    IntProperty = 1984,
+                };
+
+            var successful = db.CompareIdsFor<TestClassA>(testObj1.IntProperty, testObj2.IntProperty);
+
+            Assert.IsTrue(successful);
+        }
+
+        [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        public void TychoDb_RegisterTypeAndCompareObjects_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+        {
+            var db =
+                BuildDatabaseConnection(jsonSerializer, true)
+                    .AddTypeRegistration<TestClassA, int>(x => x.IntProperty)
+                    .Connect();
+
+            var testObj1 =
+                new TestClassA
+                {
+                    IntProperty = 1984,
+                };
+
+            var testObj2 =
+                new TestClassA
+                {
+                    IntProperty = 1984,
+                };
+
+            var successful = db.CompareIdsFor<TestClassA>(testObj1, testObj2);
+
+            Assert.IsTrue(successful);
+        }
+
+        [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        public void TychoDb_RegisterTypeAndCompareObjectsWithDifferentIds_ShouldNotBeEqual(IJsonSerializer jsonSerializer)
+        {
+            var db =
+                BuildDatabaseConnection(jsonSerializer, true)
+                    .AddTypeRegistration<TestClassA, int>(x => x.IntProperty)
+                    .Connect();
+
+            var testObj1 =
+                new TestClassA
+                {
+                    IntProperty = 1984,
+                };
+
+            var testObj2 =
+                new TestClassA
+                {
+                    IntProperty = 1985,
+                };
+
+            var successful = db.CompareIdsFor<TestClassA>(testObj1, testObj2);
+
+            Assert.IsFalse(successful);
+        }
+
+        [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
         public async Task TychoDb_InsertObjectWithRequiredRegistrationAndGenericTypeRegistrationAndKeySelector_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             var db =
@@ -161,7 +239,7 @@ namespace Tycho.UnitTests
         {
             var db =
                 BuildDatabaseConnection(jsonSerializer)
-                    .AddTypeRegistration<Patient> (x => x.PatientId)
+                    .AddTypeRegistration<Patient, long> (x => x.PatientId)
                     .Connect ();
 
             var testObj =
@@ -183,7 +261,7 @@ namespace Tycho.UnitTests
         {
             var db =
                 BuildDatabaseConnection(jsonSerializer)
-                    .AddTypeRegistration<Patient>(x => x.PatientId)
+                    .AddTypeRegistration<Patient, long>(x => x.PatientId)
                     .Connect();
 
             var testObj =
@@ -1070,7 +1148,7 @@ namespace Tycho.UnitTests
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
                     .Connect()
-                    .AddTypeRegistration<TestClassG<object>>(x => x.Id)
+                    .AddTypeRegistration<TestClassG<object>, Guid>(x => x.Id)
                     .CreateIndex<TestClassG<object>>(x => x.Id, "id1")
                     .CreateIndex<TestClassG<object>>(x => x.Id, "id2")
                     .CreateIndex<TestClassG<object>>(x => x.Id, "id3");
@@ -1328,7 +1406,7 @@ namespace Tycho.UnitTests
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
                     .Connect()
-                    .AddTypeRegistration<TestClassA>(x => x.StringProperty);
+                    .AddTypeRegistration<TestClassA, string>(x => x.StringProperty);
 
             var key = "key";
 

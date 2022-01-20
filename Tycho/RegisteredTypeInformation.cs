@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
@@ -9,6 +10,8 @@ namespace Tycho
     public class RegisteredTypeInformation
     {
         private Delegate IdSelector { get; set; }
+
+        private Delegate IdComparer { get; set; }
 
         public bool RequiresIdMapping { get; private set; }
 
@@ -45,23 +48,43 @@ namespace Tycho
             return GetIdSelector<T>().Invoke(obj);
         }
 
+        public bool CompareIdsFor(object id1, object id2)
+        {
+            if (RequiresIdMapping)
+            {
+                throw new TychoDbException($"An id mapping has not been provided for {TypeName}");
+            }
+
+            return ((Func<object, object, bool>)IdComparer).Invoke(id1, id2);
+        }
+
         private RegisteredTypeInformation()
         {
 
         }
 
-        public static RegisteredTypeInformation Create<T, TId>(Expression<Func<T, TId>> idProperty)
+        public static RegisteredTypeInformation Create<T, TId>(
+            Expression<Func<T, TId>> idProperty,
+            Func<TId, TId, bool> idComparer = null)
         {
             if (idProperty is LambdaExpression lex)
             {
-                var compiledExpression = lex.Compile();
                 var type = typeof(T);
+
+                var compiledExpression = lex.Compile();
+
+                if (idComparer == null)
+                {
+                    idComparer =
+                        new Func<TId, TId, bool>((x1, x2) => EqualityComparer<TId>.Default.Equals(x1, x2));
+                }
 
                 var rti =
                     new RegisteredTypeInformation
                     {
                         RequiresIdMapping = false,
                         IdSelector = compiledExpression,
+                        IdComparer = idComparer,
                         IdProperty = idProperty.GetExpressionMemberName(),
                         IdPropertyPath = QueryPropertyPath.BuildPath(idProperty),
                         IsNumeric = QueryPropertyPath.IsNumeric(idProperty),
@@ -79,15 +102,24 @@ namespace Tycho
             throw new ArgumentException($"The expression provided is not a lambda expression for {typeof(T).Name}", nameof(idProperty));
         }
 
-        public static RegisteredTypeInformation CreateFromFunc<T>(Func<T, object> keySelector)
+        public static RegisteredTypeInformation CreateFromFunc<T, TId>(
+            Func<T, TId> keySelector,
+            Func<TId, TId, bool> idComparer = null)
         {
             var type = typeof(T);
+
+            if (idComparer == null)
+            {
+                idComparer =
+                    new Func<TId, TId, bool>((x1, x2) => EqualityComparer<TId>.Default.Equals(x1, x2));
+            }
 
             var rti =
                 new RegisteredTypeInformation
                 {
                     RequiresIdMapping = false,
                     IdSelector = keySelector,
+                    IdComparer = idComparer,
                     TypeFullName = type.FullName,
                     TypeName = type.Name,
                     SafeTypeName = type.GetSafeTypeName(),

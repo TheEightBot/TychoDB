@@ -86,10 +86,12 @@ namespace Tycho
             _requireTypeRegistration = requireTypeRegistration;
         }
 
-        public TychoDb AddTypeRegistration<T> (Expression<Func<T, object>> idPropertySelector)
+        public TychoDb AddTypeRegistration<T, TId> (
+            Expression<Func<T, TId>> idPropertySelector,
+            Func<TId, TId, bool> idComparer = null)
             where T : class
         {
-            var rti = RegisteredTypeInformation.Create (idPropertySelector);
+            var rti = RegisteredTypeInformation.Create (idPropertySelector, idComparer);
 
             _registeredTypeInformation[rti.ObjectType] = rti;
 
@@ -106,10 +108,12 @@ namespace Tycho
             return this;
         }
 
-        public TychoDb AddTypeRegistrationWithCustomKeySelector<T>(Func<T, object> keySelector)
+        public TychoDb AddTypeRegistrationWithCustomKeySelector<T>(
+            Func<T, string> keySelector,
+            Func<string, string, bool> idComparer = null)
             where T : class
         {
-            var rti = RegisteredTypeInformation.CreateFromFunc(keySelector);
+            var rti = RegisteredTypeInformation.CreateFromFunc(keySelector, idComparer);
 
             _registeredTypeInformation[rti.ObjectType] = rti;
 
@@ -1171,6 +1175,26 @@ namespace Tycho
             return _registeredTypeInformation[type].GetIdFor<T>(obj);
         }
 
+        public bool CompareIdsFor<T>(object id1, object id2)
+        {
+            var type = typeof(T);
+
+            CheckHasRegisteredType(type);
+
+            return _registeredTypeInformation[type].CompareIdsFor(id1, id2);
+        }
+
+        public bool CompareIdsFor<T>(T obj1, T obj2)
+        {
+            var type = typeof(T);
+
+            CheckHasRegisteredType(type);
+
+            var rti = _registeredTypeInformation[type];
+
+            return rti.CompareIdsFor(rti.GetIdFor(obj1), rti.GetIdFor(obj2));
+        }
+
         public RegisteredTypeInformation GetRegisteredTypeInformationFor<T>()
         {
             var type = typeof(T);
@@ -1183,6 +1207,7 @@ namespace Tycho
         private string GetSafeTypeName<TObj>()
         {
             var type = typeof(TObj);
+
             return _registeredTypeInformation.ContainsKey(type)
                 ? _registeredTypeInformation[type].SafeTypeName
                 : type.GetSafeTypeName();

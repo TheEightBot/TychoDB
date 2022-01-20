@@ -155,7 +155,7 @@ namespace Tycho
 
         public ValueTask<bool> WriteObjectAsync<T> (T obj, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
         {
-            return WriteObjectsAsync (new[] { obj }, GetIdFor<T>(), partition, withTransaction, cancellationToken);
+            return WriteObjectsAsync (new[] { obj }, GetIdSelectorFor<T>(), partition, withTransaction, cancellationToken);
         }
 
         public ValueTask<bool> WriteObjectAsync<T> (T obj, Func<T, object> keySelector, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
@@ -165,7 +165,7 @@ namespace Tycho
 
         public ValueTask<bool> WriteObjectsAsync<T> (IEnumerable<T> objs, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
         {
-            return WriteObjectsAsync (objs, GetIdFor<T>(), partition, withTransaction, cancellationToken);
+            return WriteObjectsAsync (objs, GetIdSelectorFor<T>(), partition, withTransaction, cancellationToken);
         }
 
         public ValueTask<bool> WriteObjectsAsync<T>(IEnumerable<T> objs, Func<T, object> keySelector, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
@@ -806,7 +806,6 @@ namespace Tycho
                     cancellationToken);
         }
 
-
         public ValueTask<Stream> ReadBlobAsync(object key, string partition = null, CancellationToken cancellationToken = default)
         {
             return _connection
@@ -1136,6 +1135,33 @@ namespace Tycho
                     cancellationToken);
         }
 
+        public Func<T, object> GetIdSelectorFor<T>()
+        {
+            var type = typeof(T);
+
+            CheckHasRegisteredType(type);
+
+            return _registeredTypeInformation[type].GetIdSelector<T>();
+        }
+
+        public object GetIdFor<T>(T obj)
+        {
+            var type = typeof(T);
+
+            CheckHasRegisteredType(type);
+
+            return _registeredTypeInformation[type].GetIdFor<T>(obj);
+        }
+
+        public RegisteredTypeInformation GetRegisteredTypeInformationFor<T>()
+        {
+            var type = typeof(T);
+
+            CheckHasRegisteredType(type);
+
+            return _registeredTypeInformation[type];
+        }
+
         protected virtual void Dispose (bool disposing)
         {
             if (_isDisposed)
@@ -1246,15 +1272,6 @@ namespace Tycho
                             return _connection;
                         },
                         cancellationToken);
-        }
-
-        private Func<T, object> GetIdFor<T>()
-        {
-            var type = typeof (T);
-
-            CheckHasRegisteredType(type);
-
-            return _registeredTypeInformation[type].GetId<T> ();
         }
 
         private void CheckHasRegisteredType<T>()

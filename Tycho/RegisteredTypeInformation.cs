@@ -1,12 +1,13 @@
 ﻿using System;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Runtime.InteropServices;
 
 namespace Tycho
 {
-    internal struct RegisteredTypeInformation
+    public class RegisteredTypeInformation
     {
-        public Delegate FuncIdSelector { get; private set; }
+        private Delegate IdSelector { get; set; }
 
         public bool RequiresIdMapping { get; private set; }
 
@@ -26,19 +27,39 @@ namespace Tycho
 
         public Type ObjectType { get; private set; }
 
-        public static RegisteredTypeInformation Create<T, TId> (Expression<Func<T, TId>> idProperty)
+        public Func<T, object> GetIdSelector<T>()
+        {
+            if (RequiresIdMapping)
+            {
+                throw new TychoDbException($"An id mapping has not been provided for {TypeName}");
+            }
+
+            return (Func<T, object>)IdSelector;
+        }
+
+        public object GetIdFor<T>(T obj)
+        {
+            return GetIdSelector<T>().Invoke(obj);
+        }
+
+        private RegisteredTypeInformation()
+        {
+
+        }
+
+        public static RegisteredTypeInformation Create<T, TId>(Expression<Func<T, TId>> idProperty)
         {
             if (idProperty is LambdaExpression lex)
             {
-                var compiledExpression = lex.Compile ();
-                var type = typeof (T);
+                var compiledExpression = lex.Compile();
+                var type = typeof(T);
 
                 var rti =
                     new RegisteredTypeInformation
                     {
                         RequiresIdMapping = false,
-                        FuncIdSelector = compiledExpression,
-                        IdProperty = GetExpressionMemberName (idProperty),
+                        IdSelector = compiledExpression,
+                        IdProperty = GetExpressionMemberName(idProperty),
                         IdPropertyPath = QueryPropertyPath.BuildPath(idProperty),
                         IsNumeric = QueryPropertyPath.IsNumeric(idProperty),
                         IsBool = QueryPropertyPath.IsBool(idProperty),
@@ -51,7 +72,7 @@ namespace Tycho
                 return rti;
             }
 
-            throw new ArgumentException ($"The expression provided is not a lambda expression for {typeof (T).Name}", nameof (idProperty));
+            throw new ArgumentException($"The expression provided is not a lambda expression for {typeof(T).Name}", nameof(idProperty));
         }
 
         public static RegisteredTypeInformation CreateFromFunc<T>(Func<T, object> keySelector)
@@ -62,7 +83,7 @@ namespace Tycho
                 new RegisteredTypeInformation
                 {
                     RequiresIdMapping = false,
-                    FuncIdSelector = keySelector,
+                    IdSelector = keySelector,
                     TypeFullName = type.FullName,
                     TypeName = type.Name,
                     TypeNamespace = type.Namespace,
@@ -89,19 +110,10 @@ namespace Tycho
             return rti;
         }
 
-        public Func<T, object> GetId<T> ()
-        {
-            if(RequiresIdMapping)
-            {
-                throw new TychoDbException($"An id mapping has not been provided for {TypeName}");
-            }
 
-            return  (Func<T, object>)FuncIdSelector;
-        }
-
-        private static string GetExpressionMemberName (Expression method)
+        private static string GetExpressionMemberName(Expression method)
         {
-            if(method is LambdaExpression lex)
+            if (method is LambdaExpression lex)
             {
                 if (lex.Body.NodeType == ExpressionType.Convert)
                 {
@@ -114,7 +126,7 @@ namespace Tycho
                 }
             }
 
-            throw new TychoDbException ("The provided expression is not valid member expression");
+            throw new TychoDbException("The provided expression is not valid member expression");
         }
     }
 }

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -22,6 +23,8 @@ namespace Tycho
         public string TypeFullName { get; private set; }
 
         public string TypeName { get; private set; }
+
+        public string SafeTypeName { get; private set; }
 
         public string TypeNamespace { get; private set; }
 
@@ -103,6 +106,7 @@ namespace Tycho
                     RequiresIdMapping = true,
                     TypeFullName = type.FullName,
                     TypeName = type.Name,
+                    SafeTypeName = GetSafeTypeName(type),
                     TypeNamespace = type.Namespace,
                     ObjectType = type
                 };
@@ -127,6 +131,16 @@ namespace Tycho
             }
 
             throw new TychoDbException("The provided expression is not valid member expression");
+        }
+
+        private static string GetSafeTypeName(Type type)
+        {
+            return
+                !type.IsGenericType || type.IsGenericTypeDefinition
+                    ? !type.IsGenericTypeDefinition
+                        ? type.Name
+                        : type.Name.Replace('`', '_')
+                    : $"{GetSafeTypeName(type.GetGenericTypeDefinition())}__{string.Join(',', type.GetGenericArguments().Select(x => GetSafeTypeName(x)))}__";
         }
     }
 }

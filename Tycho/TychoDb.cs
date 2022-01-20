@@ -53,7 +53,7 @@ namespace Tycho
             }
         }
 
-        public TychoDb(string dbPath, IJsonSerializer jsonSerializer, string dbName = "tycho_cache.db", string password = null, bool persistConnection = true, bool rebuildCache = false, bool requireTypeRegistration = false, uint? cacheSizeBytes = null)
+        public TychoDb(string dbPath, IJsonSerializer jsonSerializer, string dbName = "tycho_cache.db", string password = null, bool persistConnection = true, bool rebuildCache = false, bool requireTypeRegistration = true)
         {
             SQLitePCL.Batteries_V2.Init ();
 
@@ -1018,7 +1018,7 @@ namespace Tycho
                 CheckHasRegisteredType<TObj>();
             }
 
-            return CreateIndexAsync(QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath), typeof(TObj).Name, indexName, cancellationToken);
+            return CreateIndexAsync(QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath), _registeredTypeInformation[typeof(TObj)].SafeTypeName, indexName, cancellationToken);
         }
 
         public ValueTask<bool> CreateIndexAsync(string propertyPathString, bool isNumeric, string objectTypeName, string indexName, CancellationToken cancellationToken = default)
@@ -1073,7 +1073,7 @@ namespace Tycho
             {
                 var transaction = _connection.BeginTransaction(IsolationLevel.Serializable);
 
-                var fullIndexName = $"idx_{indexName}_{typeof(TObj).Name}";
+                var fullIndexName = $"idx_{indexName}_{_registeredTypeInformation[typeof(TObj)].SafeTypeName}";
                 try
                 {
                     if (!_persistConnection)

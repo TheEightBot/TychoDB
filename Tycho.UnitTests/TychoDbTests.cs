@@ -1039,11 +1039,28 @@ namespace Tycho.UnitTests
 
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
+                    .AddTypeRegistration<TestClassD>()
                     .Connect ();
 
             var successful = await db.CreateIndexAsync<TestClassD> (x => x.DoubleProperty, "double_index");
 
             successful.Should ().Be (expected);
+        }
+
+        [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_CreateDataIndexWithGeneric_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+        {
+            var expected = true;
+
+            using var db =
+                BuildDatabaseConnection(jsonSerializer)
+                    .AddTypeRegistration<TestClassG<object>>()
+                    .Connect();
+
+            var successful = await db.CreateIndexAsync<TestClassG<object>>(x => x.Id, "id_index");
+
+            successful.Should().Be(expected);
         }
 
         [DataTestMethod]
@@ -1054,6 +1071,7 @@ namespace Tycho.UnitTests
 
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
+                    .AddTypeRegistration<TestClassB>()
                     .Connect();
 
             var successful = await db.CreateIndexAsync<TestClassB>(new Expression<Func<TestClassB, object>>[] { x => x.StringProperty, x => x.DoubleProperty, } , "string_double_index");
@@ -1387,6 +1405,13 @@ namespace Tycho.UnitTests
         public Guid TestClassId { get; set; }
 
         public TestClassD Value { get; set; }
+    }
+
+    public class TestClassG<T>
+    {
+        public T InnerClass { get; set; }
+
+        public Guid Id { get; set; }
     }
 
     public class Patient : ModelBase

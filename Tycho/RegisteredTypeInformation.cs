@@ -48,12 +48,15 @@ namespace Tycho
             return GetIdSelector<T>().Invoke(obj);
         }
 
-        public bool CompareIdsFor(object id1, object id2)
+        public bool CompareIdsFor<T>(T obj1, T obj2)
         {
             if (RequiresIdMapping)
             {
                 throw new TychoDbException($"An id mapping has not been provided for {TypeName}");
             }
+
+            var id1 = GetIdFor(obj1);
+            var id2 = GetIdFor(obj2);
 
             return ((Func<object, object, bool>)IdComparer).Invoke(id1, id2);
         }
@@ -73,19 +76,16 @@ namespace Tycho
 
                 var compiledExpression = lex.Compile();
 
+                if (idComparer == null)
+                {
+                    idComparer = EqualityComparer<TId>.Default;
+                }
+
                 var idComparerFunc =
                     new Func<object, object, bool>(
                         (x1, x2) =>
-                        {
-                            if (x1 is TId id1 && x2 is TId id2)
-                            {
-                                return
-                                    idComparer?.Equals(id1, id2) ??
-                                    EqualityComparer<TId>.Default.Equals(id1, id2);
-                            }
-
-                            return false;
-                        });
+                            x1 is TId id1 && x2 is TId id2 &&
+                            idComparer.Equals(id1, id2));
 
                 var rti =
                     new RegisteredTypeInformation
@@ -116,19 +116,17 @@ namespace Tycho
         {
             var type = typeof(T);
 
+            if(idComparer == null)
+            {
+                idComparer = EqualityComparer<string>.Default;
+            }
+
             var idComparerFunc =
                 new Func<object, object, bool>(
                     (x1, x2) =>
-                    {
-                        if (x1 is string id1 && x2 is string id2)
-                        {
-                            return
-                                idComparer?.Equals(id1, id2) ??
-                                EqualityComparer<string>.Default.Equals(id1, id2);
-                        }
+                        x1 is string id1 && x2 is string id2 &&
+                        idComparer.Equals(id1, id2));
 
-                        return false;
-                    });
 
             var rti =
                 new RegisteredTypeInformation

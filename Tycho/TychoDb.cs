@@ -1192,7 +1192,7 @@ namespace Tycho
 
             var rti = _registeredTypeInformation[type];
 
-            return rti.CompareIdsFor(rti.GetIdFor(obj1), rti.GetIdFor(obj2));
+            return rti.CompareIdsFor(obj1, obj2);
         }
 
         public RegisteredTypeInformation GetRegisteredTypeInformationFor<T>()

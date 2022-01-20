@@ -154,7 +154,7 @@ namespace Tycho.UnitTests
                     IntProperty = 1984,
                 };
 
-            var successful = db.CompareIdsFor<TestClassA>(testObj1.IntProperty, testObj2.IntProperty);
+            var successful = db.CompareIdsFor<TestClassA>(testObj1, testObj2);
 
             Assert.IsTrue(successful);
         }

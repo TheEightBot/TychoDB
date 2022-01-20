@@ -62,12 +62,13 @@ namespace Tycho
                     {
                         RequiresIdMapping = false,
                         IdSelector = compiledExpression,
-                        IdProperty = GetExpressionMemberName(idProperty),
+                        IdProperty = idProperty.GetExpressionMemberName(),
                         IdPropertyPath = QueryPropertyPath.BuildPath(idProperty),
                         IsNumeric = QueryPropertyPath.IsNumeric(idProperty),
                         IsBool = QueryPropertyPath.IsBool(idProperty),
                         TypeFullName = type.FullName,
                         TypeName = type.Name,
+                        SafeTypeName = type.GetSafeTypeName(),
                         TypeNamespace = type.Namespace,
                         ObjectType = type
                     };
@@ -89,6 +90,7 @@ namespace Tycho
                     IdSelector = keySelector,
                     TypeFullName = type.FullName,
                     TypeName = type.Name,
+                    SafeTypeName = type.GetSafeTypeName(),
                     TypeNamespace = type.Namespace,
                     ObjectType = type
                 };
@@ -106,7 +108,7 @@ namespace Tycho
                     RequiresIdMapping = true,
                     TypeFullName = type.FullName,
                     TypeName = type.Name,
-                    SafeTypeName = GetSafeTypeName(type),
+                    SafeTypeName = type.GetSafeTypeName(),
                     TypeNamespace = type.Namespace,
                     ObjectType = type
                 };
@@ -114,33 +116,5 @@ namespace Tycho
             return rti;
         }
 
-
-        private static string GetExpressionMemberName(Expression method)
-        {
-            if (method is LambdaExpression lex)
-            {
-                if (lex.Body.NodeType == ExpressionType.Convert)
-                {
-                    return (((UnaryExpression)lex.Body).Operand as MemberExpression).Member.Name;
-                }
-
-                if (lex.Body.NodeType == ExpressionType.MemberAccess)
-                {
-                    return (lex.Body as MemberExpression).Member.Name;
-                }
-            }
-
-            throw new TychoDbException("The provided expression is not valid member expression");
-        }
-
-        private static string GetSafeTypeName(Type type)
-        {
-            return
-                !type.IsGenericType || type.IsGenericTypeDefinition
-                    ? !type.IsGenericTypeDefinition
-                        ? type.Name
-                        : type.Name.Replace('`', '_')
-                    : $"{GetSafeTypeName(type.GetGenericTypeDefinition())}__{string.Join(',', type.GetGenericArguments().Select(x => GetSafeTypeName(x)))}__";
-        }
     }
 }

@@ -1065,6 +1065,19 @@ namespace Tycho.UnitTests
 
         [DataTestMethod]
         [DynamicData(nameof(JsonSerializers))]
+        public void TychoDb_CreateDataIndexWithGenericAndMultipleIndexes_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+        {
+            using var db =
+                BuildDatabaseConnection(jsonSerializer)
+                    .Connect()
+                    .AddTypeRegistration<TestClassG<object>>(x => x.Id)
+                    .CreateIndex<TestClassG<object>>(x => x.Id, "id1")
+                    .CreateIndex<TestClassG<object>>(x => x.Id, "id2")
+                    .CreateIndex<TestClassG<object>>(x => x.Id, "id3");
+        }
+
+        [DataTestMethod]
+        [DynamicData(nameof(JsonSerializers))]
         public async Task TychoDb_CreateDataIndexWithMultipleProperties_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             var expected = true;

@@ -961,7 +961,12 @@ namespace Tycho
 
         public TychoDb CreateIndex<TObj> (Expression<Func<TObj, object>> propertyPath, string indexName)
         {
-            return CreateIndex(QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath), typeof(TObj).Name, indexName);
+            if (_requireTypeRegistration)
+            {
+                CheckHasRegisteredType<TObj>();
+            }
+
+            return CreateIndex(QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath), GetSafeTypeName<TObj>(), indexName);
         }
 
         public TychoDb CreateIndex(string propertyPathString, bool isNumeric, string objectTypeName, string indexName)
@@ -991,6 +996,7 @@ namespace Tycho
 
                     createIndexCommand.ExecuteNonQuery();
 
+                    transaction.Commit();
                 }
                 catch (Exception ex)
                 {
@@ -999,8 +1005,6 @@ namespace Tycho
                 }
                 finally
                 {
-                    transaction.Commit();
-
                     if (!_persistConnection)
                     {
                         _connection.Close();
@@ -1018,7 +1022,7 @@ namespace Tycho
                 CheckHasRegisteredType<TObj>();
             }
 
-            return CreateIndexAsync(QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath), _registeredTypeInformation[typeof(TObj)].SafeTypeName, indexName, cancellationToken);
+            return CreateIndexAsync(QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath), GetSafeTypeName<TObj>(), indexName, cancellationToken);
         }
 
         public ValueTask<bool> CreateIndexAsync(string propertyPathString, bool isNumeric, string objectTypeName, string indexName, CancellationToken cancellationToken = default)
@@ -1073,7 +1077,7 @@ namespace Tycho
             {
                 var transaction = _connection.BeginTransaction(IsolationLevel.Serializable);
 
-                var fullIndexName = $"idx_{indexName}_{_registeredTypeInformation[typeof(TObj)].SafeTypeName}";
+                var fullIndexName = $"idx_{indexName}_{GetSafeTypeName<TObj>()}";
                 try
                 {
                     if (!_persistConnection)
@@ -1087,6 +1091,7 @@ namespace Tycho
 
                     createIndexCommand.ExecuteNonQuery();
 
+                    transaction.Commit();
                 }
                 catch (Exception ex)
                 {
@@ -1095,8 +1100,6 @@ namespace Tycho
                 }
                 finally
                 {
-                    transaction.Commit();
-
                     if (!_persistConnection)
                     {
                         _connection.Close();
@@ -1126,7 +1129,7 @@ namespace Tycho
                     {
                         using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
 
-                        var fullIndexName = $"idx_{indexName}_{typeof(TObj).Name}";
+                        var fullIndexName = $"idx_{indexName}_{GetSafeTypeName<TObj>()}";
 
                         try
                         {
@@ -1175,6 +1178,14 @@ namespace Tycho
             CheckHasRegisteredType(type);
 
             return _registeredTypeInformation[type];
+        }
+
+        private string GetSafeTypeName<TObj>()
+        {
+            var type = typeof(TObj);
+            return _registeredTypeInformation.ContainsKey(type)
+                ? _registeredTypeInformation[type].SafeTypeName
+                : type.GetSafeTypeName();
         }
 
         protected virtual void Dispose (bool disposing)

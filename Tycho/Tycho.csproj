@@ -60,4 +60,9 @@
 	<ItemGroup>
 	  <ProjectReference Include="..\Tycho.JsonSerializer\Tycho.JsonSerializer.csproj" />
 	</ItemGroup>
+	<ItemGroup>
+	  <Compile Update="ObjectParsing.cs">
+	    <SubType></SubType>
+	  </Compile>
+	</ItemGroup>
 </Project>

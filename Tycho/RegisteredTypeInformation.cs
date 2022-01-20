@@ -64,8 +64,8 @@ namespace Tycho
         }
 
         public static RegisteredTypeInformation Create<T, TId>(
-            Expression<Func<T, TId>> idProperty,
-            Func<TId, TId, bool> idComparer = null)
+            Expression<Func<T, object>> idProperty,
+            EqualityComparer<TId> idComparer = null)
         {
             if (idProperty is LambdaExpression lex)
             {
@@ -73,18 +73,26 @@ namespace Tycho
 
                 var compiledExpression = lex.Compile();
 
-                if (idComparer == null)
-                {
-                    idComparer =
-                        new Func<TId, TId, bool>((x1, x2) => EqualityComparer<TId>.Default.Equals(x1, x2));
-                }
+                var idComparerFunc =
+                    new Func<object, object, bool>(
+                        (x1, x2) =>
+                        {
+                            if (x1 is TId id1 && x2 is TId id2)
+                            {
+                                return
+                                    idComparer?.Equals(id1, id2) ??
+                                    EqualityComparer<TId>.Default.Equals(id1, id2);
+                            }
+
+                            return false;
+                        });
 
                 var rti =
                     new RegisteredTypeInformation
                     {
                         RequiresIdMapping = false,
                         IdSelector = compiledExpression,
-                        IdComparer = idComparer,
+                        IdComparer = idComparerFunc,
                         IdProperty = idProperty.GetExpressionMemberName(),
                         IdPropertyPath = QueryPropertyPath.BuildPath(idProperty),
                         IsNumeric = QueryPropertyPath.IsNumeric(idProperty),
@@ -102,24 +110,32 @@ namespace Tycho
             throw new ArgumentException($"The expression provided is not a lambda expression for {typeof(T).Name}", nameof(idProperty));
         }
 
-        public static RegisteredTypeInformation CreateFromFunc<T, TId>(
-            Func<T, TId> keySelector,
-            Func<TId, TId, bool> idComparer = null)
+        public static RegisteredTypeInformation CreateFromFunc<T>(
+            Func<T, object> keySelector,
+            EqualityComparer<string> idComparer = null)
         {
             var type = typeof(T);
 
-            if (idComparer == null)
-            {
-                idComparer =
-                    new Func<TId, TId, bool>((x1, x2) => EqualityComparer<TId>.Default.Equals(x1, x2));
-            }
+            var idComparerFunc =
+                new Func<object, object, bool>(
+                    (x1, x2) =>
+                    {
+                        if (x1 is string id1 && x2 is string id2)
+                        {
+                            return
+                                idComparer?.Equals(id1, id2) ??
+                                EqualityComparer<string>.Default.Equals(id1, id2);
+                        }
+
+                        return false;
+                    });
 
             var rti =
                 new RegisteredTypeInformation
                 {
                     RequiresIdMapping = false,
                     IdSelector = keySelector,
-                    IdComparer = idComparer,
+                    IdComparer = idComparerFunc,
                     TypeFullName = type.FullName,
                     TypeName = type.Name,
                     SafeTypeName = type.GetSafeTypeName(),

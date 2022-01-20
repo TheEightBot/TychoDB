@@ -87,8 +87,8 @@ namespace Tycho
         }
 
         public TychoDb AddTypeRegistration<T, TId> (
-            Expression<Func<T, TId>> idPropertySelector,
-            Func<TId, TId, bool> idComparer = null)
+            Expression<Func<T, object>> idPropertySelector,
+            EqualityComparer<TId> idComparer = null)
             where T : class
         {
             var rti = RegisteredTypeInformation.Create (idPropertySelector, idComparer);
@@ -109,8 +109,8 @@ namespace Tycho
         }
 
         public TychoDb AddTypeRegistrationWithCustomKeySelector<T>(
-            Func<T, string> keySelector,
-            Func<string, string, bool> idComparer = null)
+            Func<T, object> keySelector,
+            EqualityComparer<string> idComparer = null)
             where T : class
         {
             var rti = RegisteredTypeInformation.CreateFromFunc(keySelector, idComparer);

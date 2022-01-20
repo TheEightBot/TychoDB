@@ -319,6 +319,11 @@ namespace Tycho
                     cancellationToken);
         }
 
+        public ValueTask<bool> ObjectExistsAsync<T>(T obj, string partition = null, bool withTransaction = false, CancellationToken cancellationToken = default)
+        {
+            return ObjectExistsAsync<T>(GetIdFor(obj), partition, withTransaction, cancellationToken);
+        }
+
         public ValueTask<bool> ObjectExistsAsync<T>(object key, string partition = null, bool withTransaction = false, CancellationToken cancellationToken = default)
         {
             if (key == null)
@@ -378,6 +383,11 @@ namespace Tycho
                     },
                     _persistConnection,
                     cancellationToken);
+        }
+
+        public ValueTask<T> ReadObjectAsync<T>(T obj, string partition = null, bool withTransaction = false, CancellationToken cancellationToken = default)
+        {
+            return ReadObjectAsync<T>(GetIdFor(obj), partition, withTransaction, cancellationToken);
         }
 
         public ValueTask<T> ReadObjectAsync<T> (object key, string partition = null, bool withTransaction = false, CancellationToken cancellationToken = default)
@@ -591,6 +601,11 @@ namespace Tycho
                     },
                     _persistConnection,
                     cancellationToken);
+        }
+
+        public ValueTask<bool> DeleteObjectAsync<T>(T obj, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
+        {
+            return DeleteObjectAsync(GetIdFor(obj), partition, withTransaction, cancellationToken);
         }
 
         public ValueTask<bool> DeleteObjectAsync<T> (object key, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)

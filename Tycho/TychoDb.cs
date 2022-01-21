@@ -149,12 +149,20 @@ namespace Tycho
             lock(_connectionLock)
             {
                 _connection?.Dispose ();
+                _connection = null;
             }
         }
 
-        public ValueTask DisconnectAsync ()
+        public async ValueTask DisconnectAsync ()
         {
-            return _connection?.DisposeAsync () ?? new ValueTask (Task.CompletedTask);
+            if (_connection == null)
+            {
+                return;
+            }
+
+            await _connection.DisposeAsync ().ConfigureAwait(false);
+
+            _connection = null;
         }
 
         public ValueTask<bool> WriteObjectAsync<T> (T obj, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)

@@ -7,6 +7,7 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Text;
 using System.Threading;
+using System.Threading.RateLimiting;
 using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
 
@@ -34,7 +35,14 @@ namespace Tycho
 
         private readonly Dictionary<Type, RegisteredTypeInformation> _registeredTypeInformation = new ();
 
-        private readonly ProcessingQueue _processingQueue = new ();
+        private readonly RateLimiter _rateLimiter =
+            new ConcurrencyLimiter (
+                new ConcurrencyLimiterOptions
+                {
+                    PermitLimit = 1,
+                    QueueLimit = int.MaxValue,
+                    QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                });
 
         private readonly StringBuilder _commandBuilder = new ();
 
@@ -194,7 +202,7 @@ namespace Tycho
 
             return _connection
                 .WithConnectionBlock (
-                    _processingQueue,
+                    _rateLimiter,
                     conn =>
                     {
                         var successful = false;
@@ -274,7 +282,7 @@ namespace Tycho
 
             return _connection
                 .WithConnectionBlock<int>(
-                    _processingQueue,
+                    _rateLimiter,
                     conn =>
                     {
                         SqliteTransaction transaction = null;
@@ -345,7 +353,7 @@ namespace Tycho
 
             return _connection
                 .WithConnectionBlock(
-                    _processingQueue,
+                    _rateLimiter,
                     conn =>
                     {
                         SqliteTransaction transaction = null;
@@ -411,7 +419,7 @@ namespace Tycho
 
             return _connection
                 .WithConnectionBlock (
-                    _processingQueue,
+                    _rateLimiter,
                     async conn =>
                     {
                         SqliteTransaction transaction = null;
@@ -488,7 +496,7 @@ namespace Tycho
 
             return _connection
                 .WithConnectionBlock<IEnumerable<T>> (
-                    _processingQueue,
+                    _rateLimiter,
                     async conn =>
                     {
                         SqliteTransaction transaction = null;
@@ -555,7 +563,7 @@ namespace Tycho
 
             return _connection
                 .WithConnectionBlock<IEnumerable<TOut>> (
-                    _processingQueue,
+                    _rateLimiter,
                     async conn =>
                     {
                         SqliteTransaction transaction = null;
@@ -629,7 +637,7 @@ namespace Tycho
 
             return _connection
                 .WithConnectionBlock (
-                    _processingQueue,
+                    _rateLimiter,
                     conn =>
                     {
                         SqliteTransaction transaction = null;
@@ -647,8 +655,8 @@ namespace Tycho
 
                             commandBuilder.Append (Queries.DeleteDataFromJsonValueWithKeyAndFullTypeName);
 
-                            deleteCommand.Parameters.Add (ParameterKey, SqliteType.Text).Value = key;
-                            deleteCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
+                            deleteCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
+                            deleteCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
                             deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
 
                             deleteCommand.CommandText = commandBuilder.ToString ();
@@ -684,7 +692,7 @@ namespace Tycho
 
             return _connection
                 .WithConnectionBlock (
-                    _processingQueue,
+                    _rateLimiter,
                     conn =>
                     {
                         SqliteTransaction transaction = null;
@@ -738,7 +746,7 @@ namespace Tycho
         {
             return _connection
                 .WithConnectionBlock(
-                    _processingQueue,
+                    _rateLimiter,
                     async conn =>
                     {
                         var writeCount = 0;
@@ -795,7 +803,7 @@ namespace Tycho
         {
             return _connection
                 .WithConnectionBlock(
-                    _processingQueue,
+                    _rateLimiter,
                     conn =>
                     {
                         try
@@ -837,7 +845,7 @@ namespace Tycho
         {
             return _connection
                 .WithConnectionBlock(
-                    _processingQueue,
+                    _rateLimiter,
                     conn =>
                     {
                         try
@@ -879,7 +887,7 @@ namespace Tycho
         {
             return _connection
                 .WithConnectionBlock(
-                    _processingQueue,
+                    _rateLimiter,
                     conn =>
                     {
                         SqliteTransaction transaction = null;
@@ -928,7 +936,7 @@ namespace Tycho
         {
             return _connection
                 .WithConnectionBlock(
-                    _processingQueue,
+                    _rateLimiter,
                     conn =>
                     {
                         SqliteTransaction transaction = null;
@@ -1041,7 +1049,7 @@ namespace Tycho
         {
             return _connection
                 .WithConnectionBlock(
-                    _processingQueue,
+                    _rateLimiter,
                     conn =>
                     {
                         using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
@@ -1136,7 +1144,7 @@ namespace Tycho
 
             return _connection
                 .WithConnectionBlock(
-                    _processingQueue,
+                    _rateLimiter,
                     conn =>
                     {
                         using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
@@ -1261,7 +1269,8 @@ namespace Tycho
 
                 while (reader.Read ())
                 {
-                    if (!(reader.GetString(0)?.Equals(Queries.EnableJSON1Pragma) ?? false))
+                    var json1Available = reader.GetString(0);
+                    if (!(json1Available?.Equals(Queries.EnableJSON1Pragma) ?? false))
                     {
                         continue;
                     }
@@ -1287,50 +1296,45 @@ namespace Tycho
             }
         }
 
-        private ValueTask<SqliteConnection> BuildConnectionAsync (CancellationToken cancellationToken = default)
+        private async ValueTask<SqliteConnection> BuildConnectionAsync (CancellationToken cancellationToken = default)
         {
-            return
-                _processingQueue
-                    .Queue (
-                        () =>
-                        {
-                            _connection = new SqliteConnection (_dbConnectionString);
+            using var _ = await _rateLimiter.AcquireAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 
-                            _connection.Open ();
+            _connection = new SqliteConnection(_dbConnectionString);
 
-                            var supportsJson = false;
+            _connection.Open();
 
-                            // Enable write-ahead logging
-                            using var hasJsonCommand = _connection.CreateCommand ();
-                            hasJsonCommand.CommandText = Queries.PragmaCompileOptions;
+            var supportsJson = false;
 
-                            using var reader = hasJsonCommand.ExecuteReader ();
+            // Enable write-ahead logging
+            using var hasJsonCommand = _connection.CreateCommand();
+            hasJsonCommand.CommandText = Queries.PragmaCompileOptions;
 
-                            while (reader.Read ())
-                            {
-                                if (reader.GetString (0)?.Equals (Queries.EnableJSON1Pragma) ?? false)
-                                {
-                                    supportsJson = true;
-                                    break;
-                                }
-                            }
+            using var reader = hasJsonCommand.ExecuteReader();
 
-                            if (!supportsJson)
-                            {
-                                _connection.Close();
-                                throw new TychoDbException ("JSON support is not available for this platform");
-                            }
+            while (reader.Read())
+            {
+                if (reader.GetString(0)?.Equals(Queries.EnableJSON1Pragma) ?? false)
+                {
+                    supportsJson = true;
+                    break;
+                }
+            }
 
-                            using var command = _connection.CreateCommand ();
+            if (!supportsJson)
+            {
+                _connection.Close();
+                throw new TychoDbException("JSON support is not available for this platform");
+            }
 
-                            // Enable write-ahead logging and normal synchronous mode
-                            command.CommandText = Queries.CreateDatabaseSchema;
+            using var command = _connection.CreateCommand();
 
-                            command.ExecuteNonQuery ();
+            // Enable write-ahead logging and normal synchronous mode
+            command.CommandText = Queries.CreateDatabaseSchema;
 
-                            return _connection;
-                        },
-                        cancellationToken);
+            command.ExecuteNonQuery();
+
+            return _connection;
         }
 
         private void CheckHasRegisteredType<T>()
@@ -1351,66 +1355,58 @@ namespace Tycho
 
     internal static class SqliteExtensions
     {
-        public static ValueTask<T> WithConnectionBlock<T> (this SqliteConnection connection, ProcessingQueue processingQueue, Func<SqliteConnection, T> func, bool persistConnection, CancellationToken cancellationToken = default)
+        public static async ValueTask<T> WithConnectionBlock<T> (this SqliteConnection connection, RateLimiter rateLimiter, Func<SqliteConnection, T> func, bool persistConnection, CancellationToken cancellationToken = default)
         {
             if (connection == null)
             {
                 throw new TychoDbException ("Please call 'Connect' before performing an operation");
             }
 
-            return processingQueue
-                .Queue (
-                    () =>
-                    {
-                        try
-                        {
-                            if(!persistConnection)
-                            {
-                                connection.Open();
-                            }
+            using var _ = await rateLimiter.AcquireAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 
-                            return func.Invoke (connection);
-                        }
-                        finally
-                        {
-                            if(!persistConnection)
-                            {
-                                connection.Close();
-                            }
-                        }
-                    },
-                    cancellationToken);
+            try
+            {
+                if (!persistConnection)
+                {
+                    connection.Open();
+                }
+
+                return func.Invoke(connection);
+            }
+            finally
+            {
+                if (!persistConnection)
+                {
+                    connection.Close();
+                }
+            }
         }
 
-        public static ValueTask<T> WithConnectionBlock<T> (this SqliteConnection connection, ProcessingQueue processingQueue, Func<SqliteConnection, ValueTask<T>> func, bool persistConnection, CancellationToken cancellationToken = default)
+        public static async ValueTask<T> WithConnectionBlock<T> (this SqliteConnection connection, RateLimiter rateLimiter, Func<SqliteConnection, ValueTask<T>> func, bool persistConnection, CancellationToken cancellationToken = default)
         {
             if (connection == null)
             {
                 throw new TychoDbException ("Please call 'Connect' before performing an operation");
             }
 
-            return processingQueue
-                .Queue (
-                    async () =>
-                    {
-                        try
-                        {
-                            if (!persistConnection)
-                            {
-                                connection.Open();
-                            }
+            using var _ = await rateLimiter.AcquireAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 
-                            return await func.Invoke (connection).ConfigureAwait (false);
-                        }
-                        finally
-                        {
-                            if (!persistConnection)
-                            {
-                                connection.Close();
-                            }
-                        }
-                    },
-                    cancellationToken);
+            try
+            {
+                if (!persistConnection)
+                {
+                    connection.Open();
+                }
+
+                return await func.Invoke(connection).ConfigureAwait(false);
+            }
+            finally
+            {
+                if (!persistConnection)
+                {
+                    connection.Close();
+                }
+            }
         }
 
         public static object AsValueOrDbNull<T>(this T value)

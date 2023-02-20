@@ -181,7 +181,7 @@ namespace Tycho
                     continue;
                 }
 
-                if (filter.FilterType.HasValue)
+                else if (filter.FilterType.HasValue)
                 {
                     switch (filter.FilterType.Value)
                     {

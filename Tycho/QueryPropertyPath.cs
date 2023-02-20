@@ -25,14 +25,14 @@ namespace Tycho
                 var propertyType = propInfo.PropertyType;
 
                 return
-                    propertyType == typeof(int) || propertyType == typeof(int?) ||
-                    propertyType == typeof(uint) || propertyType == typeof(uint?) ||
-                    propertyType == typeof(long) || propertyType == typeof(long?) ||
-                    propertyType == typeof(ulong) || propertyType == typeof(ulong?) ||
-                    propertyType == typeof(double) || propertyType == typeof(double?) ||
-                    propertyType == typeof(float) || propertyType == typeof(float?) ||
-                    propertyType == typeof(decimal) || propertyType == typeof(decimal?) ||
-                    propertyType == typeof(Single) || propertyType == typeof(Single?);
+                    propertyType == typeof(int) || Nullable.GetUnderlyingType(propertyType) == typeof(int) ||
+                    propertyType == typeof(uint) || Nullable.GetUnderlyingType(propertyType) == typeof(uint) ||
+                    propertyType == typeof(long) || Nullable.GetUnderlyingType(propertyType) == typeof(long) ||
+                    propertyType == typeof(ulong) || Nullable.GetUnderlyingType(propertyType) == typeof(ulong) ||
+                    propertyType == typeof(double) || Nullable.GetUnderlyingType(propertyType) == typeof(double) ||
+                    propertyType == typeof(float) || Nullable.GetUnderlyingType(propertyType) == typeof(float) ||
+                    propertyType == typeof(decimal) || Nullable.GetUnderlyingType(propertyType) == typeof(decimal) ||
+                    propertyType == typeof(Single) || Nullable.GetUnderlyingType(propertyType) == typeof(Single);
             }
 
             return false;
@@ -44,7 +44,7 @@ namespace Tycho
             {
                 var propertyType = propInfo.PropertyType;
 
-                return propertyType == typeof(bool) || propertyType == typeof(bool?);
+                return propertyType == typeof(bool) || Nullable.GetUnderlyingType(propertyType) == typeof(bool);
             }
 
             return false;
@@ -57,8 +57,8 @@ namespace Tycho
                 var propertyType = propInfo.PropertyType;
 
                 return
-                    propertyType == typeof(DateTime) || propertyType == typeof(DateTime?) ||
-                    propertyType == typeof(DateTimeOffset) || propertyType == typeof(DateTimeOffset?);
+                    propertyType == typeof(DateTime) || Nullable.GetUnderlyingType(propertyType) == typeof(DateTime) ||
+                    propertyType == typeof(DateTimeOffset) || Nullable.GetUnderlyingType(propertyType) == typeof(DateTimeOffset);
             }
 
             return false;

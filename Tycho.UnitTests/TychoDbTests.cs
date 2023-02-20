@@ -552,8 +552,6 @@ namespace Tycho.UnitTests
         [DynamicData (nameof (JsonSerializers))]
         public async Task TychoDb_ReadManyObjects_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
         {
-            var expected = 1000;
-
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
                     .Connect ();
@@ -587,7 +585,7 @@ namespace Tycho.UnitTests
 
             Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-            objs.Count ().Should ().Be (expected);
+            objs.Count ().Should ().Be (testObjs.Count);
         }
 
         [DataTestMethod]
@@ -1443,9 +1441,10 @@ namespace Tycho.UnitTests
         public static TychoDb BuildDatabaseConnection(IJsonSerializer jsonSerializer, bool requireTypeRegistration = false)
         {
 #if ENCRYPTED
-            return new TychoDb(Path.GetTempPath(), jsonSerializer, "tycho_cache_enc.db", "Password", rebuildCache: true, requireTypeRegistration: requireTypeRegistration);
+            return new TychoDb(Path.GetTempPath(), jsonSerializer, $"{Guid.NewGuid()}_cache_enc.db", "Password", rebuildCache: true, requireTypeRegistration: requireTypeRegistration);
 #else
-            return new TychoDb(Path.GetTempPath(), jsonSerializer, rebuildCache: true, requireTypeRegistration: requireTypeRegistration);
+
+            return new TychoDb(Path.GetTempPath(), jsonSerializer, dbName: $"{Guid.NewGuid()}.db", rebuildCache: true, requireTypeRegistration: requireTypeRegistration);
 #endif
         }
     }

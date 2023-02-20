@@ -1262,21 +1262,35 @@ namespace Tycho
 
                 var supportsJson = false;
 
-                // Enable write-ahead logging
-                using var hasJsonCommand = connection.CreateCommand ();
-                hasJsonCommand.CommandText = Queries.PragmaCompileOptions;
-                using var reader = hasJsonCommand.ExecuteReader ();
+                //Check version
+                using var getVersionCommand = connection.CreateCommand();
+                getVersionCommand.CommandText = Queries.SqliteVersion;
+                var version = getVersionCommand.ExecuteScalar() as string;
+                var splitVersion = version.Split('.');
 
-                while (reader.Read ())
+                if (int.TryParse(splitVersion[0], out var major) && int.TryParse(splitVersion[1], out var minor) &&
+                    (major > 3 || (major >= 3 && minor >= 38)))
                 {
-                    var json1Available = reader.GetString(0);
-                    if (!(json1Available?.Equals(Queries.EnableJSON1Pragma) ?? false))
-                    {
-                        continue;
-                    }
-                    
                     supportsJson = true;
-                    break;
+                }
+                else
+                {
+                    // Enable write-ahead logging
+                    using var hasJsonCommand = connection.CreateCommand ();
+                    hasJsonCommand.CommandText = Queries.PragmaCompileOptions;
+                    using var jsonReader = hasJsonCommand.ExecuteReader();
+
+                    while (jsonReader.Read())
+                    {
+                        var json1Available = jsonReader.GetString(0);
+                        if (!(json1Available?.Equals(Queries.EnableJSON1Pragma) ?? false))
+                        {
+                            continue;
+                        }
+
+                        supportsJson = true;
+                        break;
+                    }
                 }
 
                 if (!supportsJson)

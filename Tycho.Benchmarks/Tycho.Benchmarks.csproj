@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net5.0</TargetFramework>
+    <TargetFramework>net7.0</TargetFramework>
     <Configurations>Debug;Release;Encrypted</Configurations>
   </PropertyGroup>
 
@@ -12,10 +12,10 @@
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Encrypted|AnyCPU' ">
-    <IntermediateOutputPath>obj\Release\net5.0</IntermediateOutputPath>
+    <IntermediateOutputPath>obj\Release</IntermediateOutputPath>
     <DebugType></DebugType>
     <Optimize>true</Optimize>
-    <DefineConstants>TRACE;RELEASE;NET;NET5_0;NETCOREAPP;ENCRYPTED;</DefineConstants>
+    <DefineConstants>ENCRYPTED;</DefineConstants>
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <ItemGroup>

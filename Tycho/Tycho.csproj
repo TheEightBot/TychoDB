@@ -49,8 +49,8 @@
     </ItemGroup>
 
 	<ItemGroup Condition=" '$(Configuration)' != 'Encrypted' ">
-		<PackageReference Include="Microsoft.Data.Sqlite" Version="5.0.13" />
-		<PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.0.7" />
+		<PackageReference Include="Microsoft.Data.Sqlite" Version="7.0.2" />
+		<PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.4" />
     </ItemGroup>
 
 	<ItemGroup>

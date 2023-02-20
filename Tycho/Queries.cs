@@ -48,6 +48,8 @@ ON JsonValue (Key, Partition);
 
         public const string PragmaCompileOptions = "PRAGMA compile_options;";
 
+        public const string SqliteVersion = "select sqlite_version();";
+
         public const string EnableJSON1Pragma = "ENABLE_JSON1";
 
         public const string InsertOrReplace =

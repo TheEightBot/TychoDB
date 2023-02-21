@@ -25,16 +25,16 @@ namespace Tycho
                 };
         }
 
-        public ValueTask<T> DeserializeAsync<T> (Stream stream, CancellationToken cancellationToken)
+        public ValueTask<T> DeserializeAsync<T>(Stream stream, CancellationToken cancellationToken)
         {
-            return JsonSerializer.DeserializeAsync<T> (stream, _jsonSerializerOptions, cancellationToken);
+            return JsonSerializer.DeserializeAsync<T>(stream, _jsonSerializerOptions, cancellationToken);
         }
 
-        public object Serialize<T> (T obj)
+        public object Serialize<T>(T obj)
         {
-            return JsonSerializer.SerializeToUtf8Bytes (obj, _jsonSerializerOptions);
+            return JsonSerializer.SerializeToUtf8Bytes(obj, _jsonSerializerOptions);
         }
 
-        public override string ToString () => nameof (SystemTextJsonSerializer);
+        public override string ToString() => nameof(SystemTextJsonSerializer);
     }
 }

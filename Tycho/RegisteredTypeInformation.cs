@@ -61,11 +61,6 @@ namespace Tycho
             return ((Func<object, object, bool>)IdComparer).Invoke(id1, id2);
         }
 
-        private RegisteredTypeInformation()
-        {
-
-        }
-
         public static RegisteredTypeInformation Create<T, TId>(
             Expression<Func<T, object>> idProperty,
             EqualityComparer<TId> idComparer = null)
@@ -101,7 +96,7 @@ namespace Tycho
                         TypeName = type.Name,
                         SafeTypeName = type.GetSafeTypeName(),
                         TypeNamespace = type.Namespace,
-                        ObjectType = type
+                        ObjectType = type,
                     };
 
                 return rti;
@@ -116,7 +111,7 @@ namespace Tycho
         {
             var type = typeof(T);
 
-            if(idComparer == null)
+            if (idComparer == null)
             {
                 idComparer = EqualityComparer<string>.Default;
             }
@@ -127,8 +122,7 @@ namespace Tycho
                         x1 is string id1 && x2 is string id2 &&
                         idComparer.Equals(id1, id2));
 
-
-            var rti =
+            return
                 new RegisteredTypeInformation
                 {
                     RequiresIdMapping = false,
@@ -138,17 +132,15 @@ namespace Tycho
                     TypeName = type.Name,
                     SafeTypeName = type.GetSafeTypeName(),
                     TypeNamespace = type.Namespace,
-                    ObjectType = type
+                    ObjectType = type,
                 };
-
-            return rti;
         }
 
         public static RegisteredTypeInformation Create<T>()
         {
             var type = typeof(T);
 
-            var rti =
+            return
                 new RegisteredTypeInformation
                 {
                     RequiresIdMapping = true,
@@ -156,11 +148,8 @@ namespace Tycho
                     TypeName = type.Name,
                     SafeTypeName = type.GetSafeTypeName(),
                     TypeNamespace = type.Namespace,
-                    ObjectType = type
+                    ObjectType = type,
                 };
-
-            return rti;
         }
-
     }
 }

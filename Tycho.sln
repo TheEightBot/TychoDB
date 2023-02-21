@@ -17,6 +17,11 @@ EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "[Solution Configuration]", "[Solution Configuration]", "{CAE0A9C0-072D-4D8D-9B5F-17D30E3D7EE7}"
 	ProjectSection(SolutionItems) = preProject
 		icon.png = icon.png
+		Directory.build.props = Directory.build.props
+		stylecop.json = stylecop.json
+		.editorconfig = .editorconfig
+		.gitignore = .gitignore
+		.gitattributes = .gitattributes
 	EndProjectSection
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tycho.Benchmarks", "Tycho.Benchmarks\Tycho.Benchmarks.csproj", "{2839A1AC-3C12-44BC-80F9-8DE5670AD91A}"

@@ -14,7 +14,6 @@ namespace Tycho.Benchmarks
         public long TimestampMillis { get; set; }
     }
 
-
     public class TestClassB
     {
         public string StringProperty { get; set; }

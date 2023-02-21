@@ -25,7 +25,7 @@ namespace Tycho
             TableStreamValue = "StreamValue",
             TableStreamValueDataColumn = "Data";
 
-        private readonly object _connectionLock = new ();
+        private readonly object _connectionLock = new();
 
         private readonly string _dbConnectionString;
 
@@ -33,10 +33,10 @@ namespace Tycho
 
         private readonly bool _persistConnection;
 
-        private readonly Dictionary<Type, RegisteredTypeInformation> _registeredTypeInformation = new ();
+        private readonly Dictionary<Type, RegisteredTypeInformation> _registeredTypeInformation = new();
 
         private readonly RateLimiter _rateLimiter =
-            new ConcurrencyLimiter (
+            new ConcurrencyLimiter(
                 new ConcurrencyLimiterOptions
                 {
                     PermitLimit = 1,
@@ -44,7 +44,7 @@ namespace Tycho
                     QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
                 });
 
-        private readonly StringBuilder _commandBuilder = new ();
+        private readonly StringBuilder _commandBuilder = new();
 
         private SqliteConnection _connection;
 
@@ -63,15 +63,15 @@ namespace Tycho
 
         public TychoDb(string dbPath, IJsonSerializer jsonSerializer, string dbName = "tycho_cache.db", string password = null, bool persistConnection = true, bool rebuildCache = false, bool requireTypeRegistration = true)
         {
-            SQLitePCL.Batteries_V2.Init ();
+            SQLitePCL.Batteries_V2.Init();
 
             _jsonSerializer = jsonSerializer;
 
-            var databasePath = Path.Join (dbPath, dbName);
+            var databasePath = Path.Join(dbPath, dbName);
 
-            if(rebuildCache && File.Exists(databasePath))
+            if (rebuildCache && File.Exists(databasePath))
             {
-                File.Delete (databasePath);
+                File.Delete(databasePath);
             }
 
             var connectionStringBuilder =
@@ -82,24 +82,24 @@ namespace Tycho
                     Mode = SqliteOpenMode.ReadWriteCreate,
                 };
 
-            if(password != null)
+            if (password != null)
             {
                 connectionStringBuilder.Password = password;
             }
 
-            _dbConnectionString = connectionStringBuilder.ToString ();
+            _dbConnectionString = connectionStringBuilder.ToString();
 
             _persistConnection = persistConnection;
 
             _requireTypeRegistration = requireTypeRegistration;
         }
 
-        public TychoDb AddTypeRegistration<T, TId> (
+        public TychoDb AddTypeRegistration<T, TId>(
             Expression<Func<T, object>> idPropertySelector,
             EqualityComparer<TId> idComparer = null)
             where T : class
         {
-            var rti = RegisteredTypeInformation.Create (idPropertySelector, idComparer);
+            var rti = RegisteredTypeInformation.Create(idPropertySelector, idComparer);
 
             _registeredTypeInformation[rti.ObjectType] = rti;
 
@@ -135,92 +135,91 @@ namespace Tycho
                 return this;
             }
 
-            _connection = BuildConnection ();
+            _connection = BuildConnection();
 
             return this;
         }
 
-        public async ValueTask<TychoDb> ConnectAsync ()
+        public async ValueTask<TychoDb> ConnectAsync()
         {
             if (_connection != null)
             {
                 return this;
             }
-            
-            _connection = await BuildConnectionAsync ().ConfigureAwait(false);
+
+            _connection = await BuildConnectionAsync().ConfigureAwait(false);
 
             return this;
         }
 
-        public void Disconnect ()
+        public void Disconnect()
         {
-            lock(_connectionLock)
+            lock (_connectionLock)
             {
-                _connection?.Dispose ();
+                _connection?.Dispose();
                 _connection = null;
             }
         }
 
-        public async ValueTask DisconnectAsync ()
+        public async ValueTask DisconnectAsync()
         {
             if (_connection == null)
             {
                 return;
             }
 
-            await _connection.DisposeAsync ().ConfigureAwait(false);
+            await _connection.DisposeAsync().ConfigureAwait(false);
 
             _connection = null;
         }
 
-        public ValueTask<bool> WriteObjectAsync<T> (T obj, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
+        public ValueTask<bool> WriteObjectAsync<T>(T obj, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
         {
-            return WriteObjectsAsync (new[] { obj }, GetIdSelectorFor<T>(), partition, withTransaction, cancellationToken);
+            return WriteObjectsAsync(new[] { obj }, GetIdSelectorFor<T>(), partition, withTransaction, cancellationToken);
         }
 
-        public ValueTask<bool> WriteObjectAsync<T> (T obj, Func<T, object> keySelector, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
+        public ValueTask<bool> WriteObjectAsync<T>(T obj, Func<T, object> keySelector, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
         {
-            return WriteObjectsAsync (new[] { obj }, keySelector, partition, withTransaction, cancellationToken);
+            return WriteObjectsAsync(new[] { obj }, keySelector, partition, withTransaction, cancellationToken);
         }
 
-        public ValueTask<bool> WriteObjectsAsync<T> (IEnumerable<T> objs, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
+        public ValueTask<bool> WriteObjectsAsync<T>(IEnumerable<T> objs, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
         {
-            return WriteObjectsAsync (objs, GetIdSelectorFor<T>(), partition, withTransaction, cancellationToken);
+            return WriteObjectsAsync(objs, GetIdSelectorFor<T>(), partition, withTransaction, cancellationToken);
         }
 
         public ValueTask<bool> WriteObjectsAsync<T>(IEnumerable<T> objs, Func<T, object> keySelector, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
         {
-            if(objs == null)
+            if (objs == null)
             {
                 throw new ArgumentNullException(nameof(objs));
             }
 
-            if(keySelector == null)
+            if (keySelector == null)
             {
                 throw new ArgumentNullException(nameof(keySelector));
             }
 
             return _connection
-                .WithConnectionBlock (
+                .WithConnectionBlock(
                     _rateLimiter,
                     conn =>
                     {
                         var successful = false;
                         var writeCount = 0;
                         var objsArray = objs as T[] ?? objs.ToArray();
-                        
                         var totalCount = objsArray.Length;
 
                         SqliteTransaction transaction = null;
 
-                        if(withTransaction)
+                        if (withTransaction)
                         {
-                            transaction = conn.BeginTransaction (IsolationLevel.Serializable);
+                            transaction = conn.BeginTransaction(IsolationLevel.Serializable);
                         }
 
                         try
                         {
-                            using var insertCommand = conn.CreateCommand ();
+                            using var insertCommand = conn.CreateCommand();
                             insertCommand.CommandText = Queries.InsertOrReplace;
 
                             var keyParameter = insertCommand.Parameters.Add(ParameterKey, SqliteType.Text);
@@ -228,7 +227,7 @@ namespace Tycho
 
                             insertCommand.Parameters
                                 .Add(ParameterFullTypeName, SqliteType.Text)
-                                .Value = typeof (T).FullName;
+                                .Value = typeof(T).FullName;
 
                             insertCommand.Parameters
                                 .Add(ParameterPartition, SqliteType.Text)
@@ -239,18 +238,18 @@ namespace Tycho
                             foreach (var obj in objsArray)
                             {
                                 keyParameter.Value = keySelector(obj);
-                                jsonParameter.Value = _jsonSerializer.Serialize (obj);
+                                jsonParameter.Value = _jsonSerializer.Serialize(obj);
 
-                                var rowId = (long)insertCommand.ExecuteScalar ();
+                                var rowId = (long)insertCommand.ExecuteScalar();
 
                                 writeCount += rowId > 0 ? 1 : 0;
                             }
 
                             successful = writeCount == totalCount;
 
-                            if(successful)
+                            if (successful)
                             {
-                                transaction?.Commit ();
+                                transaction?.Commit();
                             }
                             else
                             {
@@ -259,8 +258,8 @@ namespace Tycho
                         }
                         catch (Exception ex)
                         {
-                            transaction?.Rollback ();
-                            throw new TychoDbException ($"Failed Writing Objects", ex);
+                            transaction?.Rollback();
+                            throw new TychoDbException($"Failed Writing Objects", ex);
                         }
                         finally
                         {
@@ -270,7 +269,7 @@ namespace Tycho
                         return successful;
                     },
                     _persistConnection,
-                    cancellationToken);         
+                    cancellationToken);
         }
 
         public ValueTask<int> CountObjectsAsync<T>(string partition = null, FilterBuilder<T> filter = null, bool withTransaction = false, CancellationToken cancellationToken = default)
@@ -308,7 +307,9 @@ namespace Tycho
                                 filter.Build(commandBuilder, _jsonSerializer);
                             }
 
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
                             selectCommand.CommandText = commandBuilder.ToString();
+#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
                             selectCommand.Prepare();
 
@@ -375,7 +376,9 @@ namespace Tycho
                             selectCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(T).FullName;
                             selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
 
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
                             selectCommand.CommandText = commandBuilder.ToString();
+#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
                             selectCommand.Prepare();
 
@@ -410,58 +413,60 @@ namespace Tycho
             return ReadObjectAsync<T>(GetIdFor(obj), partition, withTransaction, cancellationToken);
         }
 
-        public ValueTask<T> ReadObjectAsync<T> (object key, string partition = null, bool withTransaction = false, CancellationToken cancellationToken = default)
+        public ValueTask<T> ReadObjectAsync<T>(object key, string partition = null, bool withTransaction = false, CancellationToken cancellationToken = default)
         {
-            if(key == null)
+            if (key == null)
             {
                 throw new ArgumentNullException(nameof(key));
             }
 
             return _connection
-                .WithConnectionBlock (
+                .WithConnectionBlock(
                     _rateLimiter,
                     async conn =>
                     {
                         SqliteTransaction transaction = null;
 
-                        if(withTransaction)
+                        if (withTransaction)
                         {
-                            transaction = conn.BeginTransaction (IsolationLevel.RepeatableRead);
+                            transaction = conn.BeginTransaction(IsolationLevel.RepeatableRead);
                         }
 
                         try
                         {
-                            using var selectCommand = conn.CreateCommand ();
+                            using var selectCommand = conn.CreateCommand();
 
                             var commandBuilder = ReusableStringBuilder;
 
-                            commandBuilder.Append (Queries.SelectDataFromJsonValueWithKeyAndFullTypeName);
+                            commandBuilder.Append(Queries.SelectDataFromJsonValueWithKeyAndFullTypeName);
 
-                            selectCommand.Parameters.Add (ParameterKey, SqliteType.Text).Value = key;
-                            selectCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
-                            selectCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
-                            
-                            selectCommand.CommandText = commandBuilder.ToString ();
+                            selectCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
+                            selectCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(T).FullName;
+                            selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
+                            selectCommand.CommandText = commandBuilder.ToString();
+#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
                             selectCommand.Prepare();
 
-                            using var reader = selectCommand.ExecuteReader ();
+                            using var reader = selectCommand.ExecuteReader();
 
                             T returnValue = default(T);
-                            while (reader.Read ())
+                            while (reader.Read())
                             {
-                                using var stream = reader.GetStream (0);
-                                returnValue = await _jsonSerializer.DeserializeAsync<T>(stream, cancellationToken).ConfigureAwait (false);
+                                using var stream = reader.GetStream(0);
+                                returnValue = await _jsonSerializer.DeserializeAsync<T>(stream, cancellationToken).ConfigureAwait(false);
                             }
 
-                            transaction?.Commit ();
+                            transaction?.Commit();
 
                             return returnValue;
                         }
                         catch (Exception ex)
                         {
-                            transaction?.Rollback ();
-                            throw new TychoDbException ($"Failed Reading Object with key \"{key}\"", ex);
+                            transaction?.Rollback();
+                            throw new TychoDbException($"Failed Reading Object with key \"{key}\"", ex);
                         }
                         finally
                         {
@@ -472,22 +477,21 @@ namespace Tycho
                     cancellationToken);
         }
 
-        public async ValueTask<T> ReadObjectAsync<T> (FilterBuilder<T> filter, string partition = null, bool withTransaction = false, CancellationToken cancellationToken = default)
+        public async ValueTask<T> ReadObjectAsync<T>(FilterBuilder<T> filter, string partition = null, bool withTransaction = false, CancellationToken cancellationToken = default)
         {
-            var results = 
-                await ReadObjectsAsync (partition, filter, withTransaction, cancellationToken).ConfigureAwait(false);
+            var results = await ReadObjectsAsync(partition, filter, withTransaction, cancellationToken).ConfigureAwait(false);
 
             var resultsArray = results as T[] ?? results.ToArray();
-            
-            if(resultsArray.Length > 1)
+
+            if (resultsArray.Length > 1)
             {
-                throw new TychoDbException ("Too many matching values were found, please refine your query to limit it to a single match");
+                throw new TychoDbException("Too many matching values were found, please refine your query to limit it to a single match");
             }
 
-            return resultsArray.FirstOrDefault ();
+            return resultsArray.FirstOrDefault();
         }
 
-        public ValueTask<IEnumerable<T>> ReadObjectsAsync<T> (string partition = null, FilterBuilder<T> filter = null, bool withTransaction = false, CancellationToken cancellationToken = default)
+        public ValueTask<IEnumerable<T>> ReadObjectsAsync<T>(string partition = null, FilterBuilder<T> filter = null, bool withTransaction = false, CancellationToken cancellationToken = default)
         {
             if (_requireTypeRegistration)
             {
@@ -495,7 +499,7 @@ namespace Tycho
             }
 
             return _connection
-                .WithConnectionBlock<IEnumerable<T>> (
+                .WithConnectionBlock<IEnumerable<T>>(
                     _rateLimiter,
                     async conn =>
                     {
@@ -508,42 +512,44 @@ namespace Tycho
 
                         try
                         {
-                            using var selectCommand = conn.CreateCommand ();
+                            using var selectCommand = conn.CreateCommand();
 
                             var commandBuilder = ReusableStringBuilder;
 
                             commandBuilder.Append(Queries.SelectDataFromJsonValueWithFullTypeName);
 
-                            selectCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
-                            selectCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
-                            
+                            selectCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(T).FullName;
+                            selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+
                             if (filter != null)
                             {
-                                filter.Build (commandBuilder, _jsonSerializer);
+                                filter.Build(commandBuilder, _jsonSerializer);
                             }
 
-                            selectCommand.CommandText = commandBuilder.ToString ();
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
+                            selectCommand.CommandText = commandBuilder.ToString();
+#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
                             selectCommand.Prepare();
 
-                            using var reader = selectCommand.ExecuteReader ();
+                            using var reader = selectCommand.ExecuteReader();
 
-                            var objects = new List<T> ();
+                            var objects = new List<T>();
 
-                            while (reader.Read ())
+                            while (reader.Read())
                             {
-                                using var stream = reader.GetStream (0);
-                                objects.Add(await _jsonSerializer.DeserializeAsync<T> (stream, cancellationToken).ConfigureAwait (false));
+                                using var stream = reader.GetStream(0);
+                                objects.Add(await _jsonSerializer.DeserializeAsync<T>(stream, cancellationToken).ConfigureAwait(false));
                             }
 
-                            transaction?.Commit ();
+                            transaction?.Commit();
 
                             return objects;
                         }
                         catch (Exception ex)
                         {
-                            transaction?.Rollback ();
-                            throw new TychoDbException ($"Failed Reading Objects", ex);
+                            transaction?.Rollback();
+                            throw new TychoDbException($"Failed Reading Objects", ex);
                         }
                         finally
                         {
@@ -554,7 +560,7 @@ namespace Tycho
                     cancellationToken);
         }
 
-        public ValueTask<IEnumerable<TOut>> ReadObjectsAsync<TIn, TOut> (Expression<Func<TIn,TOut>> innerObjectSelection, string partition = null, FilterBuilder<TIn> filter = null, bool withTransaction = false, CancellationToken cancellationToken = default)
+        public ValueTask<IEnumerable<TOut>> ReadObjectsAsync<TIn, TOut>(Expression<Func<TIn, TOut>> innerObjectSelection, string partition = null, FilterBuilder<TIn> filter = null, bool withTransaction = false, CancellationToken cancellationToken = default)
         {
             if (_requireTypeRegistration)
             {
@@ -562,7 +568,7 @@ namespace Tycho
             }
 
             return _connection
-                .WithConnectionBlock<IEnumerable<TOut>> (
+                .WithConnectionBlock<IEnumerable<TOut>>(
                     _rateLimiter,
                     async conn =>
                     {
@@ -573,44 +579,46 @@ namespace Tycho
                             transaction = conn.BeginTransaction(IsolationLevel.RepeatableRead);
                         }
 
-                        var objects = new List<TOut> ();
+                        var objects = new List<TOut>();
 
                         try
                         {
-                            using var selectCommand = conn.CreateCommand ();
+                            using var selectCommand = conn.CreateCommand();
 
                             var commandBuilder = ReusableStringBuilder;
 
-                            var selectionPath = QueryPropertyPath.BuildPath (innerObjectSelection);
+                            var selectionPath = QueryPropertyPath.BuildPath(innerObjectSelection);
 
-                            commandBuilder.Append (Queries.ExtractDataFromJsonValueWithFullTypeName (selectionPath));
+                            commandBuilder.Append(Queries.ExtractDataFromJsonValueWithFullTypeName(selectionPath));
 
-                            selectCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (TIn).FullName;
-                            selectCommand.Parameters.Add (ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+                            selectCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(TIn).FullName;
+                            selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
 
                             if (filter != null)
                             {
-                                filter.Build (commandBuilder, _jsonSerializer);
+                                filter.Build(commandBuilder, _jsonSerializer);
                             }
 
-                            selectCommand.CommandText = commandBuilder.ToString ();
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
+                            selectCommand.CommandText = commandBuilder.ToString();
+#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
                             selectCommand.Prepare();
 
-                            using var reader = selectCommand.ExecuteReader ();
+                            using var reader = selectCommand.ExecuteReader();
 
-                            while (reader.Read ())
+                            while (reader.Read())
                             {
-                                using var stream = reader.GetStream (0);
-                                objects.Add (await _jsonSerializer.DeserializeAsync<TOut> (stream, cancellationToken).ConfigureAwait (false));
+                                using var stream = reader.GetStream(0);
+                                objects.Add(await _jsonSerializer.DeserializeAsync<TOut>(stream, cancellationToken).ConfigureAwait(false));
                             }
 
-                            transaction?.Commit ();
+                            transaction?.Commit();
                         }
                         catch (Exception ex)
                         {
-                            transaction?.Rollback ();
-                            throw new TychoDbException ("Failed Reading Objects", ex);
+                            transaction?.Rollback();
+                            throw new TychoDbException("Failed Reading Objects", ex);
                         }
                         finally
                         {
@@ -628,7 +636,7 @@ namespace Tycho
             return DeleteObjectAsync(GetIdFor(obj), partition, withTransaction, cancellationToken);
         }
 
-        public ValueTask<bool> DeleteObjectAsync<T> (object key, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
+        public ValueTask<bool> DeleteObjectAsync<T>(object key, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
         {
             if (_requireTypeRegistration)
             {
@@ -636,7 +644,7 @@ namespace Tycho
             }
 
             return _connection
-                .WithConnectionBlock (
+                .WithConnectionBlock(
                     _rateLimiter,
                     conn =>
                     {
@@ -649,30 +657,32 @@ namespace Tycho
 
                         try
                         {
-                            using var deleteCommand = conn.CreateCommand ();
+                            using var deleteCommand = conn.CreateCommand();
 
                             var commandBuilder = ReusableStringBuilder;
 
-                            commandBuilder.Append (Queries.DeleteDataFromJsonValueWithKeyAndFullTypeName);
+                            commandBuilder.Append(Queries.DeleteDataFromJsonValueWithKeyAndFullTypeName);
 
                             deleteCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
-                            deleteCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
+                            deleteCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(T).FullName;
                             deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
 
-                            deleteCommand.CommandText = commandBuilder.ToString ();
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
+                            deleteCommand.CommandText = commandBuilder.ToString();
+#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
                             deleteCommand.Prepare();
 
-                            var deletionCount = deleteCommand.ExecuteNonQuery ();
+                            var deletionCount = deleteCommand.ExecuteNonQuery();
 
-                            transaction?.Commit ();
+                            transaction?.Commit();
 
                             return deletionCount == 1;
                         }
                         catch (Exception ex)
                         {
-                            transaction?.Rollback ();
-                            throw new TychoDbException ($"Failed to delete object with key \"{key}\"", ex);
+                            transaction?.Rollback();
+                            throw new TychoDbException($"Failed to delete object with key \"{key}\"", ex);
                         }
                         finally
                         {
@@ -683,7 +693,7 @@ namespace Tycho
                     cancellationToken);
         }
 
-        public ValueTask<int> DeleteObjectsAsync<T> (string partition = null, FilterBuilder<T> filter = null, bool withTransaction = true, CancellationToken cancellationToken = default)
+        public ValueTask<int> DeleteObjectsAsync<T>(string partition = null, FilterBuilder<T> filter = null, bool withTransaction = true, CancellationToken cancellationToken = default)
         {
             if (_requireTypeRegistration)
             {
@@ -691,7 +701,7 @@ namespace Tycho
             }
 
             return _connection
-                .WithConnectionBlock (
+                .WithConnectionBlock(
                     _rateLimiter,
                     conn =>
                     {
@@ -704,34 +714,36 @@ namespace Tycho
 
                         try
                         {
-                            using var deleteCommand = conn.CreateCommand ();
+                            using var deleteCommand = conn.CreateCommand();
 
                             var commandBuilder = ReusableStringBuilder;
 
-                            commandBuilder.Append (Queries.DeleteDataFromJsonValueWithFullTypeName);
+                            commandBuilder.Append(Queries.DeleteDataFromJsonValueWithFullTypeName);
 
-                            deleteCommand.Parameters.Add (ParameterFullTypeName, SqliteType.Text).Value = typeof (T).FullName;
+                            deleteCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(T).FullName;
                             deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
 
                             if (filter != null)
                             {
-                                filter.Build (commandBuilder, _jsonSerializer);
+                                filter.Build(commandBuilder, _jsonSerializer);
                             }
 
-                            deleteCommand.CommandText = commandBuilder.ToString ();
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
+                            deleteCommand.CommandText = commandBuilder.ToString();
+#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
                             deleteCommand.Prepare();
 
-                            var deletionCount = deleteCommand.ExecuteNonQuery ();
+                            var deletionCount = deleteCommand.ExecuteNonQuery();
 
-                            transaction?.Commit ();
+                            transaction?.Commit();
 
                             return deletionCount;
                         }
                         catch (Exception ex)
                         {
-                            transaction?.Rollback ();
-                            throw new TychoDbException ("Failed to delete objects", ex);
+                            transaction?.Rollback();
+                            throw new TychoDbException("Failed to delete objects", ex);
                         }
                         finally
                         {
@@ -767,7 +779,7 @@ namespace Tycho
                             insertCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
                             insertCommand.Parameters.AddWithValue(ParameterBlobLength, stream.Length);
 
-                            insertCommand.Prepare ();
+                            insertCommand.Prepare();
 
                             var rowId = (long)insertCommand.ExecuteScalar();
 
@@ -818,7 +830,9 @@ namespace Tycho
 
                             selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
 
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
                             selectCommand.CommandText = commandBuilder.ToString();
+#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
                             selectCommand.Prepare();
 
@@ -860,7 +874,9 @@ namespace Tycho
 
                             selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
 
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
                             selectCommand.CommandText = commandBuilder.ToString();
+#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
                             selectCommand.Prepare();
 
@@ -908,7 +924,9 @@ namespace Tycho
                             deleteCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
                             deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
 
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
                             deleteCommand.CommandText = commandBuilder.ToString();
+#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
                             deleteCommand.Prepare();
 
@@ -955,7 +973,9 @@ namespace Tycho
                             commandBuilder.Append(Queries.DeleteDataFromStreamValueWithPartition);
                             deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
 
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
                             deleteCommand.CommandText = commandBuilder.ToString();
+#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
                             deleteCommand.Prepare();
 
@@ -979,7 +999,7 @@ namespace Tycho
                     cancellationToken);
         }
 
-        public TychoDb CreateIndex<TObj> (Expression<Func<TObj, object>> propertyPath, string indexName)
+        public TychoDb CreateIndex<TObj>(Expression<Func<TObj, object>> propertyPath, string indexName)
         {
             if (_requireTypeRegistration)
             {
@@ -1007,11 +1027,15 @@ namespace Tycho
 
                     if (isNumeric)
                     {
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
                         createIndexCommand.CommandText = Queries.CreateIndexForJsonValueAsNumeric(fullIndexName, propertyPathString);
+#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
                     }
                     else
                     {
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
                         createIndexCommand.CommandText = Queries.CreateIndexForJsonValue(fullIndexName, propertyPathString);
+#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
                     }
 
                     createIndexCommand.ExecuteNonQuery();
@@ -1053,17 +1077,19 @@ namespace Tycho
                     conn =>
                     {
                         using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
-                        
+
                         var fullIndexName = $"idx_{indexName}_{objectTypeName}";
 
                         try
                         {
                             using var createIndexCommand = conn.CreateCommand();
 
-                            createIndexCommand.CommandText = 
-                                isNumeric 
-                                    ? Queries.CreateIndexForJsonValueAsNumeric(fullIndexName, propertyPathString) 
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
+                            createIndexCommand.CommandText =
+                                isNumeric
+                                    ? Queries.CreateIndexForJsonValueAsNumeric(fullIndexName, propertyPathString)
                                     : Queries.CreateIndexForJsonValue(fullIndexName, propertyPathString);
+#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
                             createIndexCommand.ExecuteNonQuery();
 
@@ -1107,7 +1133,9 @@ namespace Tycho
 
                     using var createIndexCommand = _connection.CreateCommand();
 
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
                     createIndexCommand.CommandText = Queries.CreateIndexForJsonValue(fullIndexName, processedPaths);
+#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
                     createIndexCommand.ExecuteNonQuery();
 
@@ -1155,7 +1183,9 @@ namespace Tycho
                         {
                             using var createIndexCommand = conn.CreateCommand();
 
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
                             createIndexCommand.CommandText = Queries.CreateIndexForJsonValue(fullIndexName, processedPaths);
+#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
                             createIndexCommand.ExecuteNonQuery();
 
@@ -1229,54 +1259,55 @@ namespace Tycho
                 : type.GetSafeTypeName();
         }
 
-        protected virtual void Dispose (bool disposing)
+        protected virtual void Dispose(bool disposing)
         {
             if (_isDisposed)
             {
                 return;
             }
-                
+
             if (disposing)
             {
+                _rateLimiter?.Dispose();
                 _connection?.Close();
-                _connection?.Dispose ();
+                _connection?.Dispose();
             }
 
             _isDisposed = true;
         }
 
-        public void Dispose ()
+        public void Dispose()
         {
             // Do not change this code. Put cleanup code in 'Dispose(bool disposing)' method
-            Dispose (true);
-            GC.SuppressFinalize (this);
+            Dispose(true);
+            GC.SuppressFinalize(this);
         }
 
-        private SqliteConnection BuildConnection ()
+        private SqliteConnection BuildConnection()
         {
-            lock(_connectionLock)
+            lock (_connectionLock)
             {
-                var connection = new SqliteConnection (_dbConnectionString);
+                var connection = new SqliteConnection(_dbConnectionString);
 
-                connection.Open ();
+                connection.Open();
 
                 var supportsJson = false;
 
-                //Check version
+                // Check version
                 using var getVersionCommand = connection.CreateCommand();
                 getVersionCommand.CommandText = Queries.SqliteVersion;
                 var version = getVersionCommand.ExecuteScalar() as string;
                 var splitVersion = version.Split('.');
 
                 if (int.TryParse(splitVersion[0], out var major) && int.TryParse(splitVersion[1], out var minor) &&
-                    (major > 3 || (major >= 3 && minor >= 38)))
+                   (major > 3 || (major >= 3 && minor >= 38)))
                 {
                     supportsJson = true;
                 }
                 else
                 {
                     // Enable write-ahead logging
-                    using var hasJsonCommand = connection.CreateCommand ();
+                    using var hasJsonCommand = connection.CreateCommand();
                     hasJsonCommand.CommandText = Queries.PragmaCompileOptions;
                     using var jsonReader = hasJsonCommand.ExecuteReader();
 
@@ -1296,23 +1327,23 @@ namespace Tycho
                 if (!supportsJson)
                 {
                     connection.Close();
-                    throw new TychoDbException ("JSON support is not available for this platform");
+                    throw new TychoDbException("JSON support is not available for this platform");
                 }
 
-                using var command = connection.CreateCommand ();
+                using var command = connection.CreateCommand();
 
                 // Enable write-ahead logging and normal synchronous mode
                 command.CommandText = Queries.CreateDatabaseSchema;
 
-                command.ExecuteNonQuery ();
+                command.ExecuteNonQuery();
 
                 return connection;
             }
         }
 
-        private async ValueTask<SqliteConnection> BuildConnectionAsync (CancellationToken cancellationToken = default)
+        private async ValueTask<SqliteConnection> BuildConnectionAsync(CancellationToken cancellationToken = default)
         {
-            using var _ = await _rateLimiter.AcquireAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            using var rla = await _rateLimiter.AcquireAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 
             _connection = new SqliteConnection(_dbConnectionString);
 
@@ -1369,14 +1400,14 @@ namespace Tycho
 
     internal static class SqliteExtensions
     {
-        public static async ValueTask<T> WithConnectionBlock<T> (this SqliteConnection connection, RateLimiter rateLimiter, Func<SqliteConnection, T> func, bool persistConnection, CancellationToken cancellationToken = default)
+        public static async ValueTask<T> WithConnectionBlock<T>(this SqliteConnection connection, RateLimiter rateLimiter, Func<SqliteConnection, T> func, bool persistConnection, CancellationToken cancellationToken = default)
         {
             if (connection == null)
             {
-                throw new TychoDbException ("Please call 'Connect' before performing an operation");
+                throw new TychoDbException("Please call 'Connect' before performing an operation");
             }
 
-            using var _ = await rateLimiter.AcquireAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            using var rla = await rateLimiter.AcquireAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 
             try
             {
@@ -1396,14 +1427,14 @@ namespace Tycho
             }
         }
 
-        public static async ValueTask<T> WithConnectionBlock<T> (this SqliteConnection connection, RateLimiter rateLimiter, Func<SqliteConnection, ValueTask<T>> func, bool persistConnection, CancellationToken cancellationToken = default)
+        public static async ValueTask<T> WithConnectionBlock<T>(this SqliteConnection connection, RateLimiter rateLimiter, Func<SqliteConnection, ValueTask<T>> func, bool persistConnection, CancellationToken cancellationToken = default)
         {
             if (connection == null)
             {
-                throw new TychoDbException ("Please call 'Connect' before performing an operation");
+                throw new TychoDbException("Please call 'Connect' before performing an operation");
             }
 
-            using var _ = await rateLimiter.AcquireAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            using var rla = await rateLimiter.AcquireAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 
             try
             {

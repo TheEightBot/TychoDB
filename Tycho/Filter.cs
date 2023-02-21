@@ -48,7 +48,7 @@ namespace Tycho
 
         public object Value { get; private set; }
 
-        public Filter (FilterType filterType, string propertyPath, bool isPropertyPathNumeric, bool isPropertyPathBool, bool isPropertyPathDateTime, object value)
+        public Filter(FilterType filterType, string propertyPath, bool isPropertyPathNumeric, bool isPropertyPathBool, bool isPropertyPathDateTime, object value)
         {
             FilterType = filterType;
             PropertyPath = propertyPath;
@@ -60,16 +60,14 @@ namespace Tycho
             Value = value;
         }
 
-        public Filter (FilterType filterType, string listPropertyPath, string propertyValuePath, bool isPropertyValuePathNumeric, bool isPropertyValuePathBool, bool isPropertyValuePathDateTime, object value)
+        public Filter(FilterType filterType, string listPropertyPath, string propertyValuePath, bool isPropertyValuePathNumeric, bool isPropertyValuePathBool, bool isPropertyValuePathDateTime, object value)
         {
             FilterType = filterType;
             PropertyPath = listPropertyPath;
             PropertyValuePath = propertyValuePath;
-            
             IsPropertyValuePathNumeric = isPropertyValuePathNumeric;
             IsPropertyValuePathBool = isPropertyValuePathBool;
             IsPropertyValuePathDateTime = isPropertyValuePathDateTime;
-            
             Value = value;
         }
 

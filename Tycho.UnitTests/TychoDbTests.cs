@@ -1,22 +1,21 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
-using System.Threading.Tasks;
-using Microsoft.VisualStudio.TestTools.UnitTesting;
-using FluentAssertions;
-using System.Threading;
-using FluentAssertions.Common;
-using System.Linq;
 using System.ComponentModel;
+using System.IO;
+using System.Linq;
 using System.Linq.Expressions;
+using System.Threading;
+using System.Threading.Tasks;
+using FluentAssertions;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace Tycho.UnitTests
 {
     [TestClass]
     public class TychoDbTests
     {
-        private static readonly IJsonSerializer _systemTextJsonSerializer = new SystemTextJsonSerializer ();
-        private static readonly IJsonSerializer _newtonsoftJsonSerializer = new NewtonsoftJsonSerializer ();
+        private static readonly IJsonSerializer _systemTextJsonSerializer = new SystemTextJsonSerializer();
+        private static readonly IJsonSerializer _newtonsoftJsonSerializer = new NewtonsoftJsonSerializer();
 
         public static IEnumerable<object[]> JsonSerializers
         {
@@ -29,7 +28,7 @@ namespace Tycho.UnitTests
 
         [DataTestMethod]
         [DynamicData(nameof(JsonSerializers))]
-        public async Task TychoDb_InsertObject_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
+        public async Task TychoDb_InsertObject_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
@@ -43,19 +42,19 @@ namespace Tycho.UnitTests
                     TimestampMillis = 123451234,
                 };
 
-            var result = await db.WriteObjectAsync (testObj, x => x.StringProperty);
+            var result = await db.WriteObjectAsync(testObj, x => x.StringProperty);
 
-            result.Should ().BeTrue ();
+            result.Should().BeTrue();
         }
 
         [DataTestMethod]
-        [DynamicData (nameof (JsonSerializers))]
-        public async Task TychoDb_RegisterAndInsertObject_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_RegisterAndInsertObject_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             var db =
                 BuildDatabaseConnection(jsonSerializer)
-                    .AddTypeRegistrationWithCustomKeySelector<TestClassA> (x => x.StringProperty + "_TEST")
-                    .Connect ();
+                    .AddTypeRegistrationWithCustomKeySelector<TestClassA>(x => $"{x.StringProperty}_{x.IntProperty}_TEST")
+                    .Connect();
 
             var testObj =
                 new TestClassA
@@ -65,9 +64,9 @@ namespace Tycho.UnitTests
                     TimestampMillis = 123451234,
                 };
 
-            var result = await db.WriteObjectAsync (testObj);
+            var result = await db.WriteObjectAsync(testObj);
 
-            result.Should ().BeTrue ();
+            result.Should().BeTrue();
         }
 
         [DataTestMethod]
@@ -234,13 +233,13 @@ namespace Tycho.UnitTests
         }
 
         [DataTestMethod]
-        [DynamicData (nameof (JsonSerializers))]
-        public async Task TychoDb_RegisterPatientAndInsertObject_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_RegisterPatientAndInsertObject_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             var db =
                 BuildDatabaseConnection(jsonSerializer)
-                    .AddTypeRegistration<Patient, long> (x => x.PatientId)
-                    .Connect ();
+                    .AddTypeRegistration<Patient, long>(x => x.PatientId)
+                    .Connect();
 
             var testObj =
                 new Patient
@@ -250,9 +249,9 @@ namespace Tycho.UnitTests
                     LastName = "PATIENT",
                 };
 
-            var result = await db.WriteObjectAsync (testObj);
+            var result = await db.WriteObjectAsync(testObj);
 
-            result.Should ().BeTrue ();
+            result.Should().BeTrue();
         }
 
         [DataTestMethod]
@@ -286,24 +285,24 @@ namespace Tycho.UnitTests
         }
 
         [DataTestMethod]
-        [DynamicData (nameof (JsonSerializers))]
-        public async Task TychoDb_InsertAndReadManyObjects_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_InsertAndReadManyObjects_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             var expected = 1000;
 
             var successWrites = 0;
             var successReads = 0;
 
-            var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew();
 
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
-                    .Connect ();
+                    .Connect();
 
             var tasks =
                 Enumerable
-                    .Range (100, 1000)
-                    .Select (
+                    .Range(100, 1000)
+                    .Select(
                         async i =>
                         {
                             var testObj =
@@ -314,47 +313,46 @@ namespace Tycho.UnitTests
                                     TimestampMillis = 123451234,
                                 };
 
-
-                            var resultWrite = await db.WriteObjectAsync (testObj, x => x.StringProperty).ConfigureAwait (false);
+                            var resultWrite = await db.WriteObjectAsync(testObj, x => x.StringProperty).ConfigureAwait(false);
 
                             if (resultWrite)
                             {
-                                Interlocked.Increment (ref successWrites);
+                                Interlocked.Increment(ref successWrites);
                             }
 
-                            var resultRead = await db.ReadObjectAsync<TestClassA> (testObj.StringProperty).ConfigureAwait (false);
+                            var resultRead = await db.ReadObjectAsync<TestClassA>(testObj.StringProperty).ConfigureAwait(false);
 
                             if (resultRead != null)
                             {
-                                Interlocked.Increment (ref successReads);
+                                Interlocked.Increment(ref successReads);
                             }
                         })
-                    .ToList ();
+                    .ToList();
 
-            await Task.WhenAll (tasks).ConfigureAwait (false);
+            await Task.WhenAll(tasks).ConfigureAwait(false);
 
-            stopWatch.Stop ();
+            stopWatch.Stop();
 
-            Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
+            Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-            successWrites.Should ().Be (expected);
-            successReads.Should ().Be (expected);
+            successWrites.Should().Be(expected);
+            successReads.Should().Be(expected);
         }
 
         [DataTestMethod]
-        [DynamicData (nameof (JsonSerializers))]
-        public async Task TychoDb_InsertManyObjects_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_InsertManyObjects_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             var expected = true;
 
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
-                    .Connect ();
+                    .Connect();
 
             var testObjs =
                 Enumerable
-                    .Range (100, 1000)
-                    .Select (
+                    .Range(100, 1000)
+                    .Select(
                         i =>
                         {
                             var testObj =
@@ -367,17 +365,17 @@ namespace Tycho.UnitTests
 
                             return testObj;
                         })
-                    .ToList ();
+                    .ToList();
 
-            var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew();
 
-            var resultWrite = await db.WriteObjectsAsync (testObjs, x => x.StringProperty).ConfigureAwait (false);
+            var resultWrite = await db.WriteObjectsAsync(testObjs, x => x.StringProperty).ConfigureAwait(false);
 
-            stopWatch.Stop ();
+            stopWatch.Stop();
 
-            Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
+            Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-            resultWrite.Should ().Be (expected);
+            resultWrite.Should().Be(expected);
         }
 
         [DataTestMethod]
@@ -422,144 +420,140 @@ namespace Tycho.UnitTests
         }
 
         [DataTestMethod]
-        [DynamicData (nameof (JsonSerializers))]
-        public async Task TychoDb_InsertManyObjectsWithNesting_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_InsertManyObjectsWithNesting_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             var expected = true;
 
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
-                    .Connect ();
+                    .Connect();
 
-            var rng = new Random ();
+            var rng = new Random();
 
             var testObjs =
                 Enumerable
-                    .Range (100, 1000)
-                    .Select (
+                    .Range(100, 1000)
+                    .Select(
                         i =>
                         {
-
                             var testClassDs =
                                 Enumerable
-                                    .Range (10, 100)
-                                    .Select (
+                                    .Range(10, 100)
+                                    .Select(
                                         i =>
                                         {
                                             var testObj =
                                                 new TestClassD
                                                 {
-                                                    DoubleProperty = rng.NextDouble (),
-                                                    FloatProperty = (float)rng.NextDouble (),
+                                                    DoubleProperty = rng.NextDouble(),
+                                                    FloatProperty = (float)rng.NextDouble(),
                                                 };
 
                                             return testObj;
                                         })
-                                    .ToList ();
-
+                                    .ToList();
 
                             var testObj =
                                 new TestClassE
                                 {
-                                    TestClassId = Guid.NewGuid (),
+                                    TestClassId = Guid.NewGuid(),
                                     Values = testClassDs,
                                 };
 
                             return testObj;
                         })
-                    .ToList ();
+                    .ToList();
 
-            var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew();
 
-            var resultWrite = await db.WriteObjectsAsync (testObjs, x => x.TestClassId.ToString ()).ConfigureAwait (false);
+            var resultWrite = await db.WriteObjectsAsync(testObjs, x => x.TestClassId.ToString()).ConfigureAwait(false);
 
-            stopWatch.Stop ();
+            stopWatch.Stop();
 
-            Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
+            Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-            resultWrite.Should ().Be (expected);
+            resultWrite.Should().Be(expected);
         }
 
         [DataTestMethod]
-        [DynamicData (nameof (JsonSerializers))]
-        public async Task TychoDb_InsertManyObjectsWithNestingAndFilterUsingGreaterThan_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_InsertManyObjectsWithNestingAndFilterUsingGreaterThan_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             var expected = 500;
 
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
-                    .Connect ();
+                    .Connect();
 
-            var rng = new Random ();
+            var rng = new Random();
 
             var testObjs =
                 Enumerable
-                    .Range (100, 1000)
-                    .Select (
+                    .Range(100, 1000)
+                    .Select(
                         i =>
                         {
-
                             var testClassDs =
                                 Enumerable
-                                    .Range (10, 10)
-                                    .Select (
+                                    .Range(10, 10)
+                                    .Select(
                                         ii =>
                                         {
                                             var testObj =
                                                 new TestClassD
                                                 {
-                                                    DoubleProperty = rng.NextDouble (),
+                                                    DoubleProperty = rng.NextDouble(),
                                                     FloatProperty = i % 2 == 0 ? 251 : 0,
                                                 };
 
                                             return testObj;
                                         })
-                                    .ToList ();
-
+                                    .ToList();
 
                             var testObj =
                                 new TestClassE
                                 {
-                                    TestClassId = Guid.NewGuid (),
+                                    TestClassId = Guid.NewGuid(),
                                     Values = testClassDs,
                                 };
 
                             return testObj;
                         })
-                    .ToList ();
+                    .ToList();
 
-            var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew();
 
-            var resultWrite = await db.WriteObjectsAsync (testObjs, x => x.TestClassId.ToString ()).ConfigureAwait (false);
+            var resultWrite = await db.WriteObjectsAsync(testObjs, x => x.TestClassId.ToString()).ConfigureAwait(false);
 
             var resultRead =
                 await db
-                    .ReadObjectsAsync<TestClassE> (
+                    .ReadObjectsAsync<TestClassE>(
                         filter: FilterBuilder<TestClassE>
                             .Create()
-                            .Filter (FilterType.GreaterThan, x => x.Values, x => x.FloatProperty, 250d));
+                            .Filter(FilterType.GreaterThan, x => x.Values, x => x.FloatProperty, 250d));
 
-            var resultReadCount = resultRead.Count ();
+            var resultReadCount = resultRead.Count();
 
-            stopWatch.Stop ();
+            stopWatch.Stop();
 
-            Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
+            Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-            resultReadCount.Should ().Be (expected);
+            resultReadCount.Should().Be(expected);
         }
 
         [DataTestMethod]
-        [DynamicData (nameof (JsonSerializers))]
-        public async Task TychoDb_ReadManyObjects_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_ReadManyObjects_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
-                    .Connect ();
+                    .Connect();
 
             var testObjs =
                 Enumerable
-                    .Range (100, 1000)
-                    .Select (
+                    .Range(100, 1000)
+                    .Select(
                         i =>
                         {
                             var testObj =
@@ -572,20 +566,19 @@ namespace Tycho.UnitTests
 
                             return testObj;
                         })
-                    .ToList ();
+                    .ToList();
 
+            await db.WriteObjectsAsync(testObjs, x => x.StringProperty).ConfigureAwait(false);
 
-            await db.WriteObjectsAsync (testObjs, x => x.StringProperty).ConfigureAwait (false);
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew();
 
-            var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
+            var objs = await db.ReadObjectsAsync<TestClassA>().ConfigureAwait(false);
 
-            var objs = await db.ReadObjectsAsync<TestClassA> ().ConfigureAwait (false);
+            stopWatch.Stop();
 
-            stopWatch.Stop ();
+            Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-            Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
-
-            objs.Count ().Should ().Be (testObjs.Count);
+            objs.Count().Should().Be(testObjs.Count);
         }
 
         [DataTestMethod]
@@ -618,8 +611,7 @@ namespace Tycho.UnitTests
                         })
                     .ToList();
 
-
-            //Insert without partition, then with
+            // Insert without partition, then with
             await db.WriteObjectsAsync(testObjs.Take(100), x => x.StringProperty).ConfigureAwait(false);
             await db.WriteObjectsAsync(testObjs, x => x.StringProperty, partition).ConfigureAwait(false);
 
@@ -664,8 +656,7 @@ namespace Tycho.UnitTests
                         })
                     .ToList();
 
-
-            //Insert without partition, then with
+            // Insert without partition, then with
             await db.WriteObjectsAsync(testObjs.Take(100), x => x.StringProperty).ConfigureAwait(false);
             await db.WriteObjectsAsync(testObjs, x => x.StringProperty, partition).ConfigureAwait(false);
 
@@ -681,19 +672,19 @@ namespace Tycho.UnitTests
         }
 
         [DataTestMethod]
-        [DynamicData (nameof (JsonSerializers))]
-        public async Task TychoDb_ReadManyGenericObjects_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_ReadManyGenericObjects_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             var expected = 1000;
 
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
-                    .Connect ();
+                    .Connect();
 
             var testObjs =
                 Enumerable
-                    .Range (100, 1000)
-                    .Select (
+                    .Range(100, 1000)
+                    .Select(
                         i =>
                         {
                             var testObj =
@@ -706,26 +697,26 @@ namespace Tycho.UnitTests
 
                             return testObj;
                         })
-                    .ToList ();
+                    .ToList();
 
-            await db.WriteObjectAsync (testObjs, x => x.GetHashCode ()).ConfigureAwait (false);
+            await db.WriteObjectAsync(testObjs, x => x.GetHashCode()).ConfigureAwait(false);
 
-            var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew();
 
-            var obj = await db.ReadObjectAsync<List<TestClassA>> (testObjs.GetHashCode ()).ConfigureAwait (false);
+            var obj = await db.ReadObjectAsync<List<TestClassA>>(testObjs.GetHashCode()).ConfigureAwait(false);
 
-            stopWatch.Stop ();
+            stopWatch.Stop();
 
-            Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
+            Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-            obj.Count ().Should ().Be (expected);
+            obj.Count().Should().Be(expected);
         }
 
         [DataTestMethod]
         [DynamicData(nameof(JsonSerializers))]
         public async Task TychoDb_CountManyGenericObjects_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
-            var expected = 1000;
+            var expected = true;
 
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
@@ -759,29 +750,29 @@ namespace Tycho.UnitTests
 
             Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-            exists.Should().Be(true);
+            exists.Should().Be(expected);
         }
 
         [DataTestMethod]
-        [DynamicData (nameof (JsonSerializers))]
-        public async Task TychoDb_ReadManyInnerObjects_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_ReadManyInnerObjects_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             var expected = 1000;
 
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
-                    .Connect ();
+                    .Connect();
 
             var testObjs =
                 Enumerable
-                    .Range (100, 1000)
-                    .Select (
+                    .Range(100, 1000)
+                    .Select(
                         i =>
                         {
                             var testObj =
                                 new TestClassF
                                 {
-                                    TestClassId = Guid.NewGuid (),
+                                    TestClassId = Guid.NewGuid(),
                                     Value =
                                         new TestClassD
                                         {
@@ -792,42 +783,41 @@ namespace Tycho.UnitTests
 
                             return testObj;
                         })
-                    .ToList ();
+                    .ToList();
 
+            await db.WriteObjectsAsync(testObjs, x => x.TestClassId).ConfigureAwait(false);
 
-            await db.WriteObjectsAsync (testObjs, x => x.TestClassId).ConfigureAwait (false);
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew();
 
-            var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
+            var objs = await db.ReadObjectsAsync<TestClassF, TestClassD>(x => x.Value).ConfigureAwait(false);
 
-            var objs = await db.ReadObjectsAsync<TestClassF, TestClassD> (x => x.Value).ConfigureAwait (false);
+            stopWatch.Stop();
 
-            stopWatch.Stop ();
+            Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-            Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
-
-            objs.Count ().Should ().Be (expected);
+            objs.Count().Should().Be(expected);
         }
 
         [DataTestMethod]
-        [DynamicData (nameof (JsonSerializers))]
-        public async Task TychoDb_ReadManyInnerObjectsWithLessThanFilter_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_ReadManyInnerObjectsWithLessThanFilter_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             var expected = 500;
 
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
-                    .Connect ();
+                    .Connect();
 
             var testObjs =
                 Enumerable
-                    .Range (0, 1000)
-                    .Select (
+                    .Range(0, 1000)
+                    .Select(
                         i =>
                         {
                             var testObj =
                                 new TestClassF
                                 {
-                                    TestClassId = Guid.NewGuid (),
+                                    TestClassId = Guid.NewGuid(),
                                     Value =
                                         new TestClassD
                                         {
@@ -837,59 +827,58 @@ namespace Tycho.UnitTests
                                                 new TestClassC
                                                 {
                                                     IntProperty = i * 2,
-                                                }
+                                                },
                                         },
                                 };
 
                             return testObj;
                         })
-                    .ToList ();
+                    .ToList();
 
+            await db.WriteObjectsAsync(testObjs, x => x.TestClassId).ConfigureAwait(false);
 
-            await db.WriteObjectsAsync (testObjs, x => x.TestClassId).ConfigureAwait (false);
-
-            var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew();
 
             var objs =
                 await db
-                    .ReadObjectsAsync<TestClassF, TestClassC> (
+                    .ReadObjectsAsync<TestClassF, TestClassC>(
                         x => x.Value.ValueC,
                         filter: FilterBuilder<TestClassF>
                             .Create()
-                            .Filter (FilterType.GreaterThan, x => x.Value.DoubleProperty, 250d)
-                            .And ()
-                            .Filter (FilterType.LessThanOrEqualTo, x => x.Value.DoubleProperty, 750d));
+                            .Filter(FilterType.GreaterThan, x => x.Value.DoubleProperty, 250d)
+                            .And()
+                            .Filter(FilterType.LessThanOrEqualTo, x => x.Value.DoubleProperty, 750d));
 
-            var count = objs.Count ();
+            var count = objs.Count();
 
-            stopWatch.Stop ();
+            stopWatch.Stop();
 
-            Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
+            Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-            count.Should ().Be (expected);
+            count.Should().Be(expected);
         }
 
         [DataTestMethod]
-        [DynamicData (nameof (JsonSerializers))]
-        public async Task TychoDb_ReadManyInnerObjectsWithLessThanFilterAndIndex_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_ReadManyInnerObjectsWithLessThanFilterAndIndex_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             var expected = 750;
 
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
-                    .Connect ()
-                    .CreateIndex<TestClassF> (x => x.Value.ValueC.IntProperty, "ValueCInt");
+                    .Connect()
+                    .CreateIndex<TestClassF>(x => x.Value.ValueC.IntProperty, "ValueCInt");
 
             var testObjs =
                 Enumerable
-                    .Range (0, 1000)
-                    .Select (
+                    .Range(0, 1000)
+                    .Select(
                         i =>
                         {
                             var testObj =
                                 new TestClassF
                                 {
-                                    TestClassId = Guid.NewGuid (),
+                                    TestClassId = Guid.NewGuid(),
                                     Value =
                                         new TestClassD
                                         {
@@ -899,43 +888,42 @@ namespace Tycho.UnitTests
                                                 new TestClassC
                                                 {
                                                     IntProperty = i,
-                                                }
+                                                },
                                         },
                                 };
 
                             return testObj;
                         })
-                    .ToList ();
+                    .ToList();
 
+            await db.WriteObjectsAsync(testObjs, x => x.TestClassId).ConfigureAwait(false);
 
-            await db.WriteObjectsAsync (testObjs, x => x.TestClassId).ConfigureAwait (false);
-
-            var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew();
 
             var objs =
                 await db
-                    .ReadObjectsAsync<TestClassF, TestClassC> (
+                    .ReadObjectsAsync<TestClassF, TestClassC>(
                         x => x.Value.ValueC,
                         filter: FilterBuilder<TestClassF>
                             .Create()
-                            .Filter (FilterType.GreaterThanOrEqualTo, x => x.Value.ValueC.IntProperty, 250d));
+                            .Filter(FilterType.GreaterThanOrEqualTo, x => x.Value.ValueC.IntProperty, 250d));
 
-            var count = objs.Count ();
+            var count = objs.Count();
 
-            stopWatch.Stop ();
+            stopWatch.Stop();
 
-            Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
+            Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-            count.Should ().Be (expected);
+            count.Should().Be(expected);
         }
 
         [DataTestMethod]
-        [DynamicData (nameof (JsonSerializers))]
-        public async Task TychoDb_InsertObjectAndQuery_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_InsertObjectAndQuery_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
-                    .Connect ();
+                    .Connect();
 
             var testObj =
                 new TestClassA
@@ -945,30 +933,30 @@ namespace Tycho.UnitTests
                     TimestampMillis = 123451234,
                 };
 
-            var writeResult = await db.WriteObjectAsync (testObj, x => x.StringProperty);
-            var readResult = await db.ReadObjectAsync<TestClassA> (testObj.StringProperty);
+            var writeResult = await db.WriteObjectAsync(testObj, x => x.StringProperty);
+            var readResult = await db.ReadObjectAsync<TestClassA>(testObj.StringProperty);
 
-            writeResult.Should ().BeTrue ();
-            readResult.Should ().NotBeNull ();
-            readResult.StringProperty.Should ().Be (testObj.StringProperty);
-            readResult.IntProperty.Should ().Be (testObj.IntProperty);
-            readResult.TimestampMillis.Should ().Be (testObj.TimestampMillis);
+            writeResult.Should().BeTrue();
+            readResult.Should().NotBeNull();
+            readResult.StringProperty.Should().Be(testObj.StringProperty);
+            readResult.IntProperty.Should().Be(testObj.IntProperty);
+            readResult.TimestampMillis.Should().Be(testObj.TimestampMillis);
         }
 
         [DataTestMethod]
-        [DynamicData (nameof (JsonSerializers))]
-        public async Task TychoDb_QueryUsingContains_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_QueryUsingContains_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             var expected = 1000;
 
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
-                    .Connect ();
+                    .Connect();
 
             var testObjs =
                 Enumerable
-                    .Range (100, 1000)
-                    .Select (
+                    .Range(100, 1000)
+                    .Select(
                         i =>
                         {
                             var testObj =
@@ -981,26 +969,25 @@ namespace Tycho.UnitTests
 
                             return testObj;
                         })
-                    .ToList ();
+                    .ToList();
 
+            await db.WriteObjectsAsync(testObjs, x => x.GetHashCode().ToString()).ConfigureAwait(false);
 
-            await db.WriteObjectsAsync (testObjs, x => x.GetHashCode ().ToString ()).ConfigureAwait (false);
-
-            var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew();
 
             var objs =
                 await db
-                    .ReadObjectsAsync<TestClassA> (
+                    .ReadObjectsAsync<TestClassA>(
                         filter: FilterBuilder<TestClassA>
                             .Create()
-                            .Filter (FilterType.Contains, x => x.StringProperty, " String "))
-                    .ConfigureAwait (false);
+                            .Filter(FilterType.Contains, x => x.StringProperty, " String "))
+                    .ConfigureAwait(false);
 
-            stopWatch.Stop ();
+            stopWatch.Stop();
 
-            Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
+            Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-            objs.Count ().Should ().Be (expected);
+            objs.Count().Should().Be(expected);
         }
 
         [DataTestMethod]
@@ -1034,8 +1021,8 @@ namespace Tycho.UnitTests
         }
 
         [DataTestMethod]
-        [DynamicData (nameof (JsonSerializers))]
-        public async Task TychoDb_QueryInnerObjectUsingEquals_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_QueryInnerObjectUsingEquals_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             var expected = 1;
 
@@ -1043,12 +1030,12 @@ namespace Tycho.UnitTests
 
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
-                    .Connect ();
+                    .Connect();
 
             var testObj =
                 new TestClassF
                 {
-                    TestClassId = Guid.NewGuid (),
+                    TestClassId = Guid.NewGuid(),
                     Value =
                         new TestClassD
                         {
@@ -1057,23 +1044,23 @@ namespace Tycho.UnitTests
                         },
                 };
 
-            await db.WriteObjectAsync (testObj, x => x.TestClassId).ConfigureAwait (false);
+            await db.WriteObjectAsync(testObj, x => x.TestClassId).ConfigureAwait(false);
 
-            var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew();
 
             var objs =
                 await db
-                    .ReadObjectsAsync<TestClassF> (
+                    .ReadObjectsAsync<TestClassF>(
                         filter: FilterBuilder<TestClassF>
                             .Create()
-                            .Filter (FilterType.Equals, x => x.Value.DoubleProperty, doubleProperty))
-                    .ConfigureAwait (false);
+                            .Filter(FilterType.Equals, x => x.Value.DoubleProperty, doubleProperty))
+                    .ConfigureAwait(false);
 
-            stopWatch.Stop ();
+            stopWatch.Stop();
 
-            Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
+            Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-            objs.Count ().Should ().Be (expected);
+            objs.Count().Should().Be(expected);
         }
 
         [DataTestMethod]
@@ -1090,7 +1077,7 @@ namespace Tycho.UnitTests
             var testObj =
                 new Patient
                 {
-                    PatientId= 12345,
+                    PatientId = 12345,
                     DOB = dobValue,
                 };
 
@@ -1108,19 +1095,19 @@ namespace Tycho.UnitTests
         }
 
         [DataTestMethod]
-        [DynamicData (nameof (JsonSerializers))]
-        public async Task TychoDb_CreateDataIndex_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_CreateDataIndex_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             var expected = true;
 
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
                     .AddTypeRegistration<TestClassD>()
-                    .Connect ();
+                    .Connect();
 
-            var successful = await db.CreateIndexAsync<TestClassD> (x => x.DoubleProperty, "double_index");
+            var successful = await db.CreateIndexAsync<TestClassD>(x => x.DoubleProperty, "double_index");
 
-            successful.Should ().Be (expected);
+            successful.Should().Be(expected);
         }
 
         [DataTestMethod]
@@ -1145,8 +1132,8 @@ namespace Tycho.UnitTests
         {
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
-                    .Connect()
                     .AddTypeRegistration<TestClassG<object>, Guid>(x => x.Id)
+                    .Connect()
                     .CreateIndex<TestClassG<object>>(x => x.Id, "id1")
                     .CreateIndex<TestClassG<object>>(x => x.Id, "id2")
                     .CreateIndex<TestClassG<object>>(x => x.Id, "id3");
@@ -1163,18 +1150,25 @@ namespace Tycho.UnitTests
                     .AddTypeRegistration<TestClassB>()
                     .Connect();
 
-            var successful = await db.CreateIndexAsync<TestClassB>(new Expression<Func<TestClassB, object>>[] { x => x.StringProperty, x => x.DoubleProperty, } , "string_double_index");
+            var successful =
+                await db.CreateIndexAsync<TestClassB>(
+                    new Expression<Func<TestClassB, object>>[]
+                    {
+                        x => x.StringProperty,
+                        x => x.DoubleProperty,
+                    },
+                    "string_double_index");
 
             successful.Should().Be(expected);
         }
 
         [DataTestMethod]
-        [DynamicData (nameof (JsonSerializers))]
-        public async Task TychoDb_DeleteObject_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_DeleteObject_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
-                    .Connect ();
+                    .Connect();
 
             var testObj =
                 new TestClassA
@@ -1184,28 +1178,27 @@ namespace Tycho.UnitTests
                     TimestampMillis = 123451234,
                 };
 
-            var writeResult = await db.WriteObjectAsync (testObj, x => x.StringProperty);
-            var deleteResult = await db.DeleteObjectAsync<TestClassA> (testObj.StringProperty);
+            var writeResult = await db.WriteObjectAsync(testObj, x => x.StringProperty);
+            var deleteResult = await db.DeleteObjectAsync<TestClassA>(testObj.StringProperty);
 
-            writeResult.Should ().BeTrue ();
-            deleteResult.Should ().BeTrue ();
+            writeResult.Should().BeTrue();
+            deleteResult.Should().BeTrue();
         }
 
         [DataTestMethod]
-        [DynamicData (nameof (JsonSerializers))]
-        public async Task TychoDb_DeleteManyObjects_ShouldBeSuccessful (IJsonSerializer jsonSerializer)
+        [DynamicData(nameof(JsonSerializers))]
+        public async Task TychoDb_DeleteManyObjects_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
         {
-            var expectedSuccess = true;
             var expectedCount = 1000;
 
             using var db =
                 BuildDatabaseConnection(jsonSerializer)
-                    .Connect ();
+                    .Connect();
 
             var testObjs =
                 Enumerable
-                    .Range (100, 1000)
-                    .Select (
+                    .Range(100, 1000)
+                    .Select(
                         i =>
                         {
                             var testObj =
@@ -1218,20 +1211,19 @@ namespace Tycho.UnitTests
 
                             return testObj;
                         })
-                    .ToList ();
+                    .ToList();
 
+            await db.WriteObjectsAsync(testObjs, x => x.StringProperty).ConfigureAwait(false);
 
-            await db.WriteObjectsAsync (testObjs, x => x.StringProperty).ConfigureAwait (false);
+            var stopWatch = System.Diagnostics.Stopwatch.StartNew();
 
-            var stopWatch = System.Diagnostics.Stopwatch.StartNew ();
+            var objsDeleted = await db.DeleteObjectsAsync<TestClassA>().ConfigureAwait(false);
 
-            var objsDeleted = await db.DeleteObjectsAsync<TestClassA> ().ConfigureAwait (false);
+            stopWatch.Stop();
 
-            stopWatch.Stop ();
+            Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-            Console.WriteLine ($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
-
-            objsDeleted.Should ().Be (expectedCount);
+            objsDeleted.Should().Be(expectedCount);
         }
 
         [DataTestMethod]
@@ -1328,7 +1320,6 @@ namespace Tycho.UnitTests
             existsResult.Should().BeTrue();
         }
 
-
         [DataTestMethod]
         [DynamicData(nameof(JsonSerializers))]
         public async Task TychoDb_InsertManyBlobsAndDeleteManyBlobs_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
@@ -1363,9 +1354,7 @@ namespace Tycho.UnitTests
         [DynamicData(nameof(JsonSerializers))]
         public async Task TychoDb_InsertMultipleObjectsWithSameKey_ShouldBeAbleToFindBoth(IJsonSerializer jsonSerializer)
         {
-            using var db =
-                BuildDatabaseConnection(jsonSerializer)
-                    .Connect();
+            using var db = BuildDatabaseConnection(jsonSerializer).Connect();
 
             var key = "key";
 
@@ -1458,7 +1447,6 @@ namespace Tycho.UnitTests
         public long TimestampMillis { get; set; }
     }
 
-
     public class TestClassB
     {
         public string StringProperty { get; set; }
@@ -1506,12 +1494,19 @@ namespace Tycho.UnitTests
     public class Patient : ModelBase
     {
         public long PatientId { get; set; }
+
         public string MRN { get; set; }
+
         public string LastName { get; set; }
+
         public string FirstName { get; set; }
+
         public string Gender { get; set; }
+
         public DateTime? DOB { get; set; }
+
         public bool CanAddScic { get; set; }
+
         public bool IsDirty { get; set; }
     }
 

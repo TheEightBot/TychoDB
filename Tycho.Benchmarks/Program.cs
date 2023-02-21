@@ -3,11 +3,11 @@ using BenchmarkDotNet.Running;
 
 namespace Tycho.Benchmarks
 {
-    class Program
+    public static class Program
     {
-        static void Main (string[] args)
+        public static void Main(string[] args)
         {
-            var summary = BenchmarkRunner.Run<Benchmarks.Insertion> ();
+            var summary = BenchmarkRunner.Run<Benchmarks.Insertion>();
         }
     }
 }

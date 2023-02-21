@@ -22,67 +22,67 @@ namespace Tycho
             return new FilterBuilder<TObj>();
         }
 
-        public FilterBuilder<TObj> Filter<TProp> (FilterType filterType, Expression<Func<TObj, TProp>> propertyPath, object value)
+        public FilterBuilder<TObj> Filter<TProp>(FilterType filterType, Expression<Func<TObj, TProp>> propertyPath, object value)
         {
-            var propertyPathString = QueryPropertyPath.BuildPath (propertyPath);
-            var isPropertyPathNumeric = QueryPropertyPath.IsNumeric (propertyPath);
+            var propertyPathString = QueryPropertyPath.BuildPath(propertyPath);
+            var isPropertyPathNumeric = QueryPropertyPath.IsNumeric(propertyPath);
             var isPropertyPathBool = QueryPropertyPath.IsBool(propertyPath);
             var isPropertyPathDateTime = QueryPropertyPath.IsDateTime(propertyPath);
 
-            _filters.Add (new Filter (filterType, propertyPathString, isPropertyPathNumeric, isPropertyPathBool, isPropertyPathDateTime, value));
+            _filters.Add(new Filter(filterType, propertyPathString, isPropertyPathNumeric, isPropertyPathBool, isPropertyPathDateTime, value));
 
             return this;
         }
 
-        public FilterBuilder<TObj> Filter<TItem, TItemProp> (FilterType filterType, Expression<Func<TObj, IEnumerable<TItem>>> propertyPath, Expression<Func<TItem, TItemProp>> propertyValuePath, object value)
+        public FilterBuilder<TObj> Filter<TItem, TItemProp>(FilterType filterType, Expression<Func<TObj, IEnumerable<TItem>>> propertyPath, Expression<Func<TItem, TItemProp>> propertyValuePath, object value)
         {
-            var propertyPathString = QueryPropertyPath.BuildPath (propertyPath);
-            var propertyValuePathString = QueryPropertyPath.BuildPath (propertyValuePath);
-            var isPropertyValuePathNumeric = QueryPropertyPath.IsNumeric (propertyValuePath);
+            var propertyPathString = QueryPropertyPath.BuildPath(propertyPath);
+            var propertyValuePathString = QueryPropertyPath.BuildPath(propertyValuePath);
+            var isPropertyValuePathNumeric = QueryPropertyPath.IsNumeric(propertyValuePath);
             var isPropertyValuePathBool = QueryPropertyPath.IsBool(propertyValuePath);
             var isPropertyValuePathDateTime = QueryPropertyPath.IsDateTime(propertyValuePath);
 
-            _filters.Add (new Filter (filterType, propertyPathString, propertyValuePathString, isPropertyValuePathNumeric, isPropertyValuePathBool, isPropertyValuePathDateTime, value));
+            _filters.Add(new Filter(filterType, propertyPathString, propertyValuePathString, isPropertyValuePathNumeric, isPropertyValuePathBool, isPropertyValuePathDateTime, value));
 
             return this;
         }
 
-        public FilterBuilder<TObj> Filter (FilterType filterType, string propertyPath, bool isPropertyPathNumeric, bool isPropertyPathBool, bool isPropertyPathDateTime, object value)
+        public FilterBuilder<TObj> Filter(FilterType filterType, string propertyPath, bool isPropertyPathNumeric, bool isPropertyPathBool, bool isPropertyPathDateTime, object value)
         {
-            _filters.Add (new Filter (filterType, propertyPath, isPropertyPathNumeric, isPropertyPathBool, isPropertyPathDateTime, value));
+            _filters.Add(new Filter(filterType, propertyPath, isPropertyPathNumeric, isPropertyPathBool, isPropertyPathDateTime, value));
 
             return this;
         }
 
-        public FilterBuilder<TObj> And ()
+        public FilterBuilder<TObj> And()
         {
-            _filters.Add (new Filter (FilterJoin.And));
+            _filters.Add(new Filter(FilterJoin.And));
             return this;
         }
 
-        public FilterBuilder<TObj> Or ()
+        public FilterBuilder<TObj> Or()
         {
-            _filters.Add (new Filter (FilterJoin.Or));
+            _filters.Add(new Filter(FilterJoin.Or));
             return this;
         }
 
-        public FilterBuilder<TObj> StartGroup ()
+        public FilterBuilder<TObj> StartGroup()
         {
-            _filters.Add (new Filter (FilterJoin.StartGroup));
+            _filters.Add(new Filter(FilterJoin.StartGroup));
             return this;
         }
 
-        public FilterBuilder<TObj> EndGroup ()
+        public FilterBuilder<TObj> EndGroup()
         {
-            _filters.Add (new Filter (FilterJoin.EndGroup));
+            _filters.Add(new Filter(FilterJoin.EndGroup));
             return this;
         }
 
-        internal void Build (StringBuilder commandBuilder, IJsonSerializer jsonSerializer)
+        internal void Build(StringBuilder commandBuilder, IJsonSerializer jsonSerializer)
         {
             if (_filters.Any())
             {
-                commandBuilder.AppendLine ("\nAND");
+                commandBuilder.AppendLine("\nAND");
             }
 
             foreach (var filter in _filters)
@@ -92,30 +92,31 @@ namespace Tycho
                     switch (filter.Join.Value)
                     {
                         case FilterJoin.And:
-                            commandBuilder.AppendLine ($"AND");
+                            commandBuilder.AppendLine($"AND");
                             break;
                         case FilterJoin.Or:
-                            commandBuilder.AppendLine ($"OR");
+                            commandBuilder.AppendLine($"OR");
                             break;
                         case FilterJoin.StartGroup:
-                            commandBuilder.AppendLine ($"(");
+                            commandBuilder.AppendLine($"(");
                             break;
                         case FilterJoin.EndGroup:
-                            commandBuilder.AppendLine ($")");
+                            commandBuilder.AppendLine($")");
                             break;
                     }
+
                     continue;
                 }
 
-                if(filter.FilterType.HasValue && !string.IsNullOrEmpty(filter.PropertyValuePath))
+                if (filter.FilterType.HasValue && !string.IsNullOrEmpty(filter.PropertyValuePath))
                 {
                     switch (filter.FilterType.Value)
                     {
                         case FilterType.Contains:
-                            commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value like \'%{filter.Value}%\')");
+                            commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value like \'%{filter.Value}%\')");
                             break;
                         case FilterType.EndsWith:
-                            commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value like \'%{filter.Value}\')");
+                            commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value like \'%{filter.Value}\')");
                             break;
                         case FilterType.Equals:
                             if (filter.IsPropertyValuePathBool)
@@ -124,9 +125,9 @@ namespace Tycho
                                 break;
                             }
 
-                            if(filter.IsPropertyValuePathNumeric)
+                            if (filter.IsPropertyValuePathNumeric)
                             {
-                                commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) = \'{filter.Value}\')");
+                                commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) = \'{filter.Value}\')");
                                 break;
                             }
 
@@ -134,7 +135,7 @@ namespace Tycho
                             {
                                 var dateTimeString = string.Empty;
 
-                                if(filter.Value is DateTime dt)
+                                if (filter.Value is DateTime dt)
                                 {
                                     dateTimeString = dt.ToString(jsonSerializer.DateTimeSerializationFormat);
                                 }
@@ -147,23 +148,27 @@ namespace Tycho
                                 break;
                             }
 
-                            commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value = \'{filter.Value}\')");
+                            commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value = \'{filter.Value}\')");
                             break;
-                        //TODO: This is an attack vector and should be parameterized
+
+                        // TODO: This is an attack vector and should be parameterized
                         case FilterType.GreaterThan:
-                            commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) > {filter.Value})");
+                            commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) > {filter.Value})");
                             break;
-                        //TODO: This is an attack vector and should be parameterized
+
+                        // TODO: This is an attack vector and should be parameterized
                         case FilterType.GreaterThanOrEqualTo:
-                            commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) >= {filter.Value})");
+                            commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) >= {filter.Value})");
                             break;
-                        //TODO: This is an attack vector and should be parameterized
+
+                        // TODO: This is an attack vector and should be parameterized
                         case FilterType.LessThan:
-                            commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) < {filter.Value})");
+                            commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) < {filter.Value})");
                             break;
-                        //TODO: This is an attack vector and should be parameterized
+
+                        // TODO: This is an attack vector and should be parameterized
                         case FilterType.LessThanOrEqualTo:
-                            commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) <= {filter.Value})");
+                            commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) <= {filter.Value})");
                             break;
                         case FilterType.NotEquals:
                             if (filter.IsPropertyValuePathBool)
@@ -171,36 +176,36 @@ namespace Tycho
                                 commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value <> {filter.Value})");
                                 break;
                             }
-                            commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value <> \'{filter.Value}\')");
+
+                            commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value <> \'{filter.Value}\')");
                             break;
                         case FilterType.StartsWith:
-                            commandBuilder.AppendLine ($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value like \'{filter.Value}%\')");
+                            commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value like \'{filter.Value}%\')");
                             break;
                     }
 
                     continue;
                 }
-
                 else if (filter.FilterType.HasValue)
                 {
                     switch (filter.FilterType.Value)
                     {
                         case FilterType.Contains:
-                            commandBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'%{filter.Value}%\'");
+                            commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'%{filter.Value}%\'");
                             break;
                         case FilterType.EndsWith:
-                            commandBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'%{filter.Value}\'");
+                            commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'%{filter.Value}\'");
                             break;
                         case FilterType.Equals:
-                            if(filter.IsPropertyPathBool)
+                            if (filter.IsPropertyPathBool)
                             {
                                 commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') = {filter.Value}");
                                 break;
                             }
 
-                            if(filter.IsPropertyPathNumeric)
+                            if (filter.IsPropertyPathNumeric)
                             {
-                                commandBuilder.AppendLine ($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) = \'{filter.Value}\'");
+                                commandBuilder.AppendLine($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) = \'{filter.Value}\'");
                                 break;
                             }
 
@@ -221,23 +226,27 @@ namespace Tycho
                                 break;
                             }
 
-                            commandBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') = \'{filter.Value}\'");
+                            commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') = \'{filter.Value}\'");
                             break;
-                        //TODO: This is an attack vector and should be parameterized
+
+                        // TODO: This is an attack vector and should be parameterized
                         case FilterType.GreaterThan:
-                            commandBuilder.AppendLine ($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) > {filter.Value}");
+                            commandBuilder.AppendLine($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) > {filter.Value}");
                             break;
-                        //TODO: This is an attack vector and should be parameterized
+
+                        // TODO: This is an attack vector and should be parameterized
                         case FilterType.GreaterThanOrEqualTo:
-                            commandBuilder.AppendLine ($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) >= {filter.Value}");
+                            commandBuilder.AppendLine($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) >= {filter.Value}");
                             break;
-                        //TODO: This is an attack vector and should be parameterized
+
+                        // TODO: This is an attack vector and should be parameterized
                         case FilterType.LessThan:
-                            commandBuilder.AppendLine ($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) < {filter.Value}");
+                            commandBuilder.AppendLine($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) < {filter.Value}");
                             break;
-                        //TODO: This is an attack vector and should be parameterized
+
+                        // TODO: This is an attack vector and should be parameterized
                         case FilterType.LessThanOrEqualTo:
-                            commandBuilder.AppendLine ($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) <= {filter.Value}");
+                            commandBuilder.AppendLine($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) <= {filter.Value}");
                             break;
                         case FilterType.NotEquals:
                             if (filter.IsPropertyPathBool)
@@ -246,10 +255,10 @@ namespace Tycho
                                 break;
                             }
 
-                            commandBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') <> \'{filter.Value}\'");
+                            commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') <> \'{filter.Value}\'");
                             break;
                         case FilterType.StartsWith:
-                            commandBuilder.AppendLine ($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'{filter.Value}%\'");
+                            commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'{filter.Value}%\'");
                             break;
                     }
                 }

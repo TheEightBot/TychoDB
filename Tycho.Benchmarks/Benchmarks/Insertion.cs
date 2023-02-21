@@ -11,71 +11,69 @@ using SQLite;
 namespace Tycho.Benchmarks.Benchmarks
 {
     [MemoryDiagnoser]
-    [SimpleJob (launchCount: 1, warmupCount: 1, targetCount: 10)]
+    [SimpleJob(launchCount: 1, warmupCount: 1, targetCount: 10)]
     public class Insertion
     {
-        [ParamsSource (nameof (JsonSerializers))]
+        [ParamsSource(nameof(JsonSerializers))]
         public IJsonSerializer JsonSerializer { get; set; }
 
-        public static IEnumerable<IJsonSerializer> JsonSerializers ()
-            => new IJsonSerializer[] { new SystemTextJsonSerializer (), new NewtonsoftJsonSerializer() };
+        public static IEnumerable<IJsonSerializer> JsonSerializers()
+            => new IJsonSerializer[] { new SystemTextJsonSerializer(), new NewtonsoftJsonSerializer() };
 
         private static TestClassE _largeTestObject =
             new TestClassE()
             {
                 TestClassId = Guid.NewGuid(),
-                Values = 
-                    new []
+                Values =
+                    new[]
                     {
                         new TestClassD()
                         {
                             DoubleProperty = 1d,
                             FloatProperty = 2f,
-                            ValueC = 
+                            ValueC =
                                 new TestClassC()
                                 {
                                     DoubleProperty = 3d,
                                     IntProperty = 4,
-                                }
+                                },
                         },
                         new TestClassD()
                         {
                             DoubleProperty = 5d,
                             FloatProperty = 6f,
-                            ValueC = 
+                            ValueC =
                                 new TestClassC()
                                 {
                                     DoubleProperty = 7d,
                                     IntProperty = 8,
-                                }
+                                },
                         },
                         new TestClassD()
                         {
                             DoubleProperty = 9d,
                             FloatProperty = 10f,
-                            ValueC = 
+                            ValueC =
                                 new TestClassC()
                                 {
                                     DoubleProperty = 11d,
                                     IntProperty = 12,
-                                }
+                                },
                         },
                         new TestClassD()
                         {
                             DoubleProperty = 13d,
                             FloatProperty = 14f,
-                            ValueC = 
+                            ValueC =
                                 new TestClassC()
                                 {
                                     DoubleProperty = 15d,
                                     IntProperty = 16,
-                                }
-                        }
-                    }
-                
-                
+                                },
+                        },
+                    },
             };
-        
+
         internal static TestClassE LargeTestObject => _largeTestObject;
 
         internal string TempPath { get; } = Path.GetTempPath();
@@ -118,7 +116,6 @@ namespace Tycho.Benchmarks.Benchmarks
                     TimestampMillis = 123451234,
                 };
 
-
             await db.WriteObjectAsync(testObj, x => x.StringProperty).ConfigureAwait(false);
         }
 
@@ -137,7 +134,6 @@ namespace Tycho.Benchmarks.Benchmarks
                     TimestampMillis = 123451234,
                 };
 
-
             await db.WriteObjectAsync(testObj, x => x.StringProperty, withTransaction: false).ConfigureAwait(false);
         }
 
@@ -155,28 +151,23 @@ namespace Tycho.Benchmarks.Benchmarks
                     TimestampMillis = 123451234,
                 };
 
-
             await db.InsertOrReplaceAsync(testObj).ConfigureAwait(false);
 
             await db.CloseAsync().ConfigureAwait(false);
         }
 
         [Benchmark]
-        public async Task InsertSingularLargeObjectAsync ()
+        public async Task InsertSingularLargeObjectAsync()
         {
-            using var db =
-                BuildDatabaseConnection()
-                    .Connect();
+            using var db = BuildDatabaseConnection().Connect();
 
-            await db.WriteObjectAsync (LargeTestObject, x => x.TestClassId).ConfigureAwait (false);
+            await db.WriteObjectAsync(LargeTestObject, x => x.TestClassId).ConfigureAwait(false);
         }
 
         [Benchmark]
-        public async Task InsertManyAsync ()
+        public async Task InsertManyAsync()
         {
-            using var db =
-                BuildDatabaseConnection()
-                    .Connect ();
+            using var db = BuildDatabaseConnection().Connect();
 
             for (int i = 100; i < 1100; i++)
             {
@@ -188,8 +179,7 @@ namespace Tycho.Benchmarks.Benchmarks
                         TimestampMillis = 123451234,
                     };
 
-
-                await db.WriteObjectAsync (testObj, x => x.StringProperty).ConfigureAwait (false);
+                await db.WriteObjectAsync(testObj, x => x.StringProperty).ConfigureAwait(false);
             }
         }
 
@@ -214,23 +204,20 @@ namespace Tycho.Benchmarks.Benchmarks
 
                         conn.InsertOrReplace(testObj);
                     }
-
                 });
 
             await db.CloseAsync().ConfigureAwait(false);
         }
 
         [Benchmark]
-        public async Task InsertManyConcurrentAsync ()
+        public async Task InsertManyConcurrentAsync()
         {
-            using var db =
-                BuildDatabaseConnection()
-                    .Connect ();
-            
+            using var db = BuildDatabaseConnection().Connect();
+
             var tasks =
                 Enumerable
-                    .Range (100, 1000)
-                    .Select (
+                    .Range(100, 1000)
+                    .Select(
                         async i =>
                         {
                             var testObj =
@@ -241,40 +228,12 @@ namespace Tycho.Benchmarks.Benchmarks
                                     TimestampMillis = 123451234,
                                 };
 
-
-                            await db.WriteObjectAsync (testObj, x => x.StringProperty).ConfigureAwait (false);
+                            await db.WriteObjectAsync(testObj, x => x.StringProperty).ConfigureAwait(false);
                         })
-                    .ToList ();
+                    .ToList();
 
-            await Task.WhenAll (tasks).ConfigureAwait (false);
+            await Task.WhenAll(tasks).ConfigureAwait(false);
         }
-
-        //[Benchmark]
-        //public async Task InsertManyConcurrentSqliteAsync()
-        //{
-        //    var db = new SQLiteAsyncConnection(Path.Combine(TempPath, "sqlitenet.db"), SQLiteOpenFlags.Create | SQLiteOpenFlags.ReadWrite | SQLiteOpenFlags.FullMutex);
-        //    await db.CreateTableAsync<TestClassA>().ConfigureAwait(false);
-
-        //    var tasks =
-        //        Enumerable
-        //            .Range(100, 1000)
-        //            .Select(
-        //                async i =>
-        //                {
-        //                    var testObj =
-        //                        new TestClassA
-        //                        {
-        //                            StringProperty = $"Test String {i}",
-        //                            IntProperty = i,
-        //                            TimestampMillis = 123451234,
-        //                        };
-
-        //                    await db.InsertOrReplaceAsync(testObj).ConfigureAwait(false);
-        //                })
-        //            .ToList();
-
-        //    await Task.WhenAll(tasks).ConfigureAwait(false);
-        //}
 
         [Benchmark]
         public async Task InsertManyBulkAsync()

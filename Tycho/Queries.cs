@@ -164,7 +164,6 @@ AND
 Partition = $partition
 ";
 
-
         public const string DeleteDataFromStreamValueWithPartition =
 @"
 DELETE
@@ -232,6 +231,5 @@ CREATE INDEX IF NOT EXISTS {fullIndexName}
 ON JsonValue(FullTypeName{propertyPathStringsJoined});
 ";
         }
-
     }
 }

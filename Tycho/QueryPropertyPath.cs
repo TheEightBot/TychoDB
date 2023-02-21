@@ -9,16 +9,16 @@ namespace Tycho
 {
     internal static class QueryPropertyPath
     {
-        public static string BuildPath<TPathObj, TProp> (Expression<Func<TPathObj, TProp>> expression)
+        public static string BuildPath<TPathObj, TProp>(Expression<Func<TPathObj, TProp>> expression)
         {
-            var visitor = new PropertyPathVisitor ();
+            var visitor = new PropertyPathVisitor();
 
-            visitor.Visit (expression.Body);
+            visitor.Visit(expression.Body);
 
             return $"$.{string.Join('.', visitor.PathBuilder)}";
         }
 
-        public static bool IsNumeric<TPathObj, TProp> (Expression<Func<TPathObj, TProp>> expression)
+        public static bool IsNumeric<TPathObj, TProp>(Expression<Func<TPathObj, TProp>> expression)
         {
             if (expression.Body is MemberExpression memEx && memEx.Member is PropertyInfo propInfo)
             {
@@ -31,8 +31,7 @@ namespace Tycho
                     propertyType == typeof(ulong) || Nullable.GetUnderlyingType(propertyType) == typeof(ulong) ||
                     propertyType == typeof(double) || Nullable.GetUnderlyingType(propertyType) == typeof(double) ||
                     propertyType == typeof(float) || Nullable.GetUnderlyingType(propertyType) == typeof(float) ||
-                    propertyType == typeof(decimal) || Nullable.GetUnderlyingType(propertyType) == typeof(decimal) ||
-                    propertyType == typeof(Single) || Nullable.GetUnderlyingType(propertyType) == typeof(Single);
+                    propertyType == typeof(decimal) || Nullable.GetUnderlyingType(propertyType) == typeof(decimal);
             }
 
             return false;
@@ -68,16 +67,16 @@ namespace Tycho
         {
             internal readonly List<string> PathBuilder = new List<string>();
 
-            protected override Expression VisitMember (MemberExpression node)
+            protected override Expression VisitMember(MemberExpression node)
             {
                 if (!(node.Member is PropertyInfo))
                 {
-                    throw new ArgumentException ("The path can only contain properties", nameof (node));
+                    throw new ArgumentException("The path can only contain properties", nameof(node));
                 }
 
                 PathBuilder.Insert(0, node.Member.Name);
 
-                return base.VisitMember (node);
+                return base.VisitMember(node);
             }
         }
     }

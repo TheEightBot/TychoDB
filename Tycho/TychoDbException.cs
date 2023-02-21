@@ -5,15 +5,22 @@ namespace Tycho
 {
     public class TychoDbException : Exception
     {
-        public TychoDbException (string message) : base (message)
+        public TychoDbException()
         {
         }
 
-        public TychoDbException (string message, Exception innerException) : base (message, innerException)
+        public TychoDbException(string message)
+            : base(message)
         {
         }
 
-        protected TychoDbException (SerializationInfo info, StreamingContext context) : base (info, context)
+        public TychoDbException(string message, Exception innerException)
+            : base(message, innerException)
+        {
+        }
+
+        protected TychoDbException(SerializationInfo info, StreamingContext context)
+            : base(info, context)
         {
         }
     }

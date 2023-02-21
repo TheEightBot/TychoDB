@@ -14,7 +14,7 @@ namespace Tycho
 
         public string DateTimeSerializationFormat => _jsonSerializerSettings.DateFormatString;
 
-        public NewtonsoftJsonSerializer (JsonSerializer jsonSerializer = null, JsonSerializerSettings jsonSerializerSettings = null)
+        public NewtonsoftJsonSerializer(JsonSerializer jsonSerializer = null, JsonSerializerSettings jsonSerializerSettings = null)
         {
             _jsonSerializer =
                 jsonSerializer ??
@@ -33,19 +33,18 @@ namespace Tycho
                 };
         }
 
-
-        public ValueTask<T> DeserializeAsync<T> (Stream stream, CancellationToken cancellationToken)
+        public ValueTask<T> DeserializeAsync<T>(Stream stream, CancellationToken cancellationToken)
         {
-            using var streamReader = new StreamReader (stream);
-            using var jsonTextReader = new JsonTextReader (streamReader);
-            return new ValueTask<T> (_jsonSerializer.Deserialize<T> (jsonTextReader));
-        }      
+            using var streamReader = new StreamReader(stream);
+            using var jsonTextReader = new JsonTextReader(streamReader);
+            return new ValueTask<T>(_jsonSerializer.Deserialize<T>(jsonTextReader));
+        }
 
-        public object Serialize<T> (T obj)
+        public object Serialize<T>(T obj)
         {
             return JsonConvert.SerializeObject(obj, _jsonSerializerSettings);
         }
 
-        public override string ToString () => nameof (NewtonsoftJsonSerializer);
+        public override string ToString() => nameof(NewtonsoftJsonSerializer);
     }
 }

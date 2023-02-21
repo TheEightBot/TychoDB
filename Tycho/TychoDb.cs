@@ -33,6 +33,8 @@ namespace Tycho
 
         private readonly bool _persistConnection;
 
+        private readonly bool _requireTypeRegistration;
+
         private readonly Dictionary<Type, RegisteredTypeInformation> _registeredTypeInformation = new();
 
         private readonly RateLimiter _rateLimiter =
@@ -49,8 +51,6 @@ namespace Tycho
         private SqliteConnection _connection;
 
         private bool _isDisposed;
-
-        private bool _requireTypeRegistration;
 
         private StringBuilder ReusableStringBuilder
         {

@@ -98,6 +98,7 @@ Global
 		{7F92AAB7-3F45-47CE-BACA-E95E73416ABF}.Debug|iPhone.ActiveCfg = Debug|Any CPU
 		{7F92AAB7-3F45-47CE-BACA-E95E73416ABF}.Debug|iPhone.Build.0 = Debug|Any CPU
 		{7F92AAB7-3F45-47CE-BACA-E95E73416ABF}.Encrypted|Any CPU.ActiveCfg = Release|Any CPU
+		{7F92AAB7-3F45-47CE-BACA-E95E73416ABF}.Encrypted|Any CPU.Build.0 = Release|Any CPU
 		{884A1B40-F40F-41B2-B149-A8FBF36BE2FD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{884A1B40-F40F-41B2-B149-A8FBF36BE2FD}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{884A1B40-F40F-41B2-B149-A8FBF36BE2FD}.Release|Any CPU.ActiveCfg = Release|Any CPU
@@ -107,6 +108,7 @@ Global
 		{884A1B40-F40F-41B2-B149-A8FBF36BE2FD}.Debug|iPhone.ActiveCfg = Debug|Any CPU
 		{884A1B40-F40F-41B2-B149-A8FBF36BE2FD}.Debug|iPhone.Build.0 = Debug|Any CPU
 		{884A1B40-F40F-41B2-B149-A8FBF36BE2FD}.Encrypted|Any CPU.ActiveCfg = Release|Any CPU
+		{884A1B40-F40F-41B2-B149-A8FBF36BE2FD}.Encrypted|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

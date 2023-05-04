@@ -1,13 +1,12 @@
 ﻿using System;
 using BenchmarkDotNet.Running;
 
-namespace Tycho.Benchmarks
+namespace Tycho.Benchmarks;
+
+public static class Program
 {
-    public static class Program
+    public static void Main(string[] args)
     {
-        public static void Main(string[] args)
-        {
-            var summary = BenchmarkRunner.Run<Benchmarks.Insertion>();
-        }
+        var summary = BenchmarkRunner.Run<Benchmarks.Insertion>();
     }
 }

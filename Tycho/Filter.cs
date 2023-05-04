@@ -3,26 +3,26 @@ using System.Linq.Expressions;
 
 namespace Tycho
 {
-    public enum FilterJoin
-    {
-        And,
-        Or,
-        StartGroup,
-        EndGroup,
-    }
+public enum FilterJoin
+{
+    And = 0,
+    Or = 1,
+    StartGroup = 2,
+    EndGroup = 3,
+}
 
-    public enum FilterType
-    {
-        Equals,
-        NotEquals,
-        StartsWith,
-        EndsWith,
-        Contains,
-        GreaterThan,
-        GreaterThanOrEqualTo,
-        LessThan,
-        LessThanOrEqualTo,
-    }
+public enum FilterType
+{
+    Equals = 0,
+    NotEquals = 1,
+    StartsWith = 2,
+    EndsWith = 3,
+    Contains = 4,
+    GreaterThan = 5,
+    GreaterThanOrEqualTo = 6,
+    LessThan = 7,
+    LessThanOrEqualTo = 8,
+}
 
     internal class Filter
     {

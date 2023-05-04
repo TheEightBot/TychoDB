@@ -12,7 +12,11 @@ namespace Tycho
 
         private readonly JsonSerializerSettings _jsonSerializerSettings;
 
-        public string DateTimeSerializationFormat => _jsonSerializerSettings.DateFormatString;
+        public string DateTimeSerializationFormat
+        {
+            get => _jsonSerializerSettings.DateFormatString;
+            set => _jsonSerializerSettings.DateFormatString = value;
+        }
 
         public NewtonsoftJsonSerializer(JsonSerializer jsonSerializer = null, JsonSerializerSettings jsonSerializerSettings = null)
         {

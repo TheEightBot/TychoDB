@@ -15,7 +15,7 @@
 		<Description>Lightweight and highly opioninated NoSQL database written on top of SQLite</Description>
 	</PropertyGroup>
 	<ItemGroup>
-		<PackageReference Include="Newtonsoft.Json" Version="13.0.2" />
+		<PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
 	</ItemGroup>
 	<ItemGroup>
 		<None Include="..\icon.png" PackagePath="icon.png" Pack="true" />

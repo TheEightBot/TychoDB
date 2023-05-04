@@ -1,9 +1,9 @@
-﻿using System;
+using System;
 using System.Linq;
 
-namespace Tycho
-{
-    internal static class Queries
+namespace Tycho;
+
+internal static class Queries
     {
         public const string CreateDatabaseSchema =
 @"
@@ -230,6 +230,5 @@ ON JsonValue(FullTypeName, JSON_EXTRACT(Data, '{propertyPathString}'));
 CREATE INDEX IF NOT EXISTS {fullIndexName}
 ON JsonValue(FullTypeName{propertyPathStringsJoined});
 ";
-        }
     }
 }

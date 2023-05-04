@@ -11,8 +11,8 @@ using System.Threading.RateLimiting;
 using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
 
-namespace Tycho
-{
+namespace Tycho;
+
     public class TychoDb : IDisposable
     {
         private const string
@@ -1463,6 +1463,5 @@ namespace Tycho
         public static string AsValueOrEmptyString(this string value)
         {
             return value ?? string.Empty;
-        }
     }
 }

@@ -139,16 +139,7 @@ public class FilterBuilder<TObj>
 
                         if (filter.IsPropertyValuePathDateTime)
                         {
-                            var dateTimeString = string.Empty;
-
-                            if (filter.Value is DateTime dt)
-                            {
-                                dateTimeString = dt.ToString(jsonSerializer.DateTimeSerializationFormat);
-                            }
-                            else if (filter.Value is DateTimeOffset dto)
-                            {
-                                dateTimeString = dto.ToString(jsonSerializer.DateTimeSerializationFormat);
-                            }
+                            var dateTimeString = filter.Value.GetDateTimeQueryString(jsonSerializer);
 
                             commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value = \'{dateTimeString}\')");
                             break;
@@ -186,6 +177,20 @@ public class FilterBuilder<TObj>
                         if (filter.IsPropertyValuePathBool)
                         {
                             commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value <> {filter.Value})");
+                            break;
+                        }
+
+                        if (filter.IsPropertyValuePathNumeric)
+                        {
+                            commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) <> \'{filter.Value}\')");
+                            break;
+                        }
+
+                        if (filter.IsPropertyValuePathDateTime)
+                        {
+                            var dateTimeString = filter.Value.GetDateTimeQueryString(jsonSerializer);
+
+                            commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value <> \'{dateTimeString}\')");
                             break;
                         }
 
@@ -229,16 +234,7 @@ public class FilterBuilder<TObj>
 
                         if (filter.IsPropertyPathDateTime)
                         {
-                            var dateTimeString = string.Empty;
-
-                            if (filter.Value is DateTime dt)
-                            {
-                                dateTimeString = dt.ToString(jsonSerializer.DateTimeSerializationFormat);
-                            }
-                            else if (filter.Value is DateTimeOffset dto)
-                            {
-                                dateTimeString = dto.ToString(jsonSerializer.DateTimeSerializationFormat);
-                            }
+                            var dateTimeString = filter.Value.GetDateTimeQueryString(jsonSerializer);
 
                             commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') = \'{dateTimeString}\'");
                             break;
@@ -267,9 +263,29 @@ public class FilterBuilder<TObj>
                         commandBuilder.AppendLine($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) <= {filter.Value}");
                         break;
                     case FilterType.NotEquals:
+                        if (filter.Value == null)
+                        {
+                            commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') IS NOT NULL");
+                            break;
+                        }
+
                         if (filter.IsPropertyPathBool)
                         {
                             commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') <> {filter.Value}");
+                            break;
+                        }
+
+                        if (filter.IsPropertyPathNumeric)
+                        {
+                            commandBuilder.AppendLine($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) <> \'{filter.Value}\'");
+                            break;
+                        }
+
+                        if (filter.IsPropertyValuePathDateTime)
+                        {
+                            var dateTimeString = filter.Value.GetDateTimeQueryString(jsonSerializer);
+
+                            commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') <> \'{dateTimeString}\'");
                             break;
                         }
 

@@ -1163,6 +1163,42 @@ public class TychoDbTests
 
     [DataTestMethod]
     [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_QueryInnerObjectCheckIsNotNull_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        var expected = 1;
+
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var testObj =
+            new TestClassF
+            {
+                TestClassId = Guid.NewGuid(),
+                Value = new TestClassD(),
+            };
+
+        await db.WriteObjectAsync(testObj, x => x.TestClassId).ConfigureAwait(false);
+
+        var stopWatch = System.Diagnostics.Stopwatch.StartNew();
+
+        var objs =
+            await db
+                .ReadObjectsAsync<TestClassF>(
+                    filter: FilterBuilder<TestClassF>
+                        .Create()
+                        .Filter(FilterType.NotEquals, x => x.Value, null))
+                .ConfigureAwait(false);
+
+        stopWatch.Stop();
+
+        Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
+
+        objs.Count().Should().Be(expected);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
     public async Task TychoDb_QueryInnerObjectUsingEqualsWithDateTime_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
     {
         var writeSuccessful = false;
@@ -1190,6 +1226,42 @@ public class TychoDbTests
                     filter: FilterBuilder<Patient>
                         .Create()
                         .Filter(FilterType.Equals, x => x.DOB, testObj.DOB))
+                .ConfigureAwait(false);
+
+        objs.Count().Should().Be(expected);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_QueryInnerObjectUsingNotEqualsWithDateTime_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        var writeSuccessful = false;
+        var expected = 1;
+        var dobValue1 = DateTime.Now;
+
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var testObj =
+            new Patient
+            {
+                PatientId = 12345,
+                DOB = dobValue1,
+            };
+
+        writeSuccessful = await db.WriteObjectAsync(testObj, x => x.PatientId).ConfigureAwait(false);
+
+        writeSuccessful.Should().BeTrue();
+
+        var dobValue2 = dobValue1.AddDays(1);
+
+        var objs =
+            await db
+                .ReadObjectsAsync<Patient>(
+                    filter: FilterBuilder<Patient>
+                        .Create()
+                        .Filter(FilterType.NotEquals, x => x.DOB, dobValue2))
                 .ConfigureAwait(false);
 
         objs.Count().Should().Be(expected);

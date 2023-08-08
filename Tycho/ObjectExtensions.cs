@@ -33,4 +33,18 @@ internal static class ObjectExtensions
                     : type.Name.Replace('`', '_')
                 : $"{GetSafeTypeName(type.GetGenericTypeDefinition())}__{string.Join(',', type.GetGenericArguments().Select(x => x.GetSafeTypeName()))}__";
     }
+
+    public static string GetDateTimeQueryString(this object value, IJsonSerializer jsonSerializer)
+    {
+        if (value is DateTime dt)
+        {
+            return dt.ToString(jsonSerializer.DateTimeSerializationFormat);
+        }
+        else if (value is DateTimeOffset dto)
+        {
+            return dto.ToString(jsonSerializer.DateTimeSerializationFormat);
+        }
+
+        return string.Empty;
+    }
 }

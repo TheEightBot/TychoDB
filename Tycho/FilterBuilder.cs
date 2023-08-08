@@ -209,6 +209,12 @@ public class FilterBuilder<TObj>
                         commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'%{filter.Value}\'");
                         break;
                     case FilterType.Equals:
+                        if (filter.Value == null)
+                        {
+                            commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') IS NULL");
+                            break;
+                        }
+
                         if (filter.IsPropertyPathBool)
                         {
                             commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') = {filter.Value}");

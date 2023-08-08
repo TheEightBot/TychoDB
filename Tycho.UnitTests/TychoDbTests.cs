@@ -1127,6 +1127,42 @@ public class TychoDbTests
 
     [DataTestMethod]
     [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_QueryInnerObjectCheckIsNull_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        var expected = 1;
+
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var testObj =
+            new TestClassF
+            {
+                TestClassId = Guid.NewGuid(),
+                Value = null,
+            };
+
+        await db.WriteObjectAsync(testObj, x => x.TestClassId).ConfigureAwait(false);
+
+        var stopWatch = System.Diagnostics.Stopwatch.StartNew();
+
+        var objs =
+            await db
+                .ReadObjectsAsync<TestClassF>(
+                    filter: FilterBuilder<TestClassF>
+                        .Create()
+                        .Filter(FilterType.Equals, x => x.Value, null))
+                .ConfigureAwait(false);
+
+        stopWatch.Stop();
+
+        Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
+
+        objs.Count().Should().Be(expected);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
     public async Task TychoDb_QueryInnerObjectUsingEqualsWithDateTime_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
     {
         var writeSuccessful = false;

@@ -15,10 +15,15 @@ namespace Tycho
 
         private readonly Dictionary<Type, JsonTypeInfo> _jsonTypeSerializers;
 
-        public string DateTimeSerializationFormat { get; set; } = "O";
+        public string DateTimeSerializationFormat { get; }
 
-        public SystemTextJsonSerializer(JsonSerializerOptions jsonSerializerOptions = null, Dictionary<Type, JsonTypeInfo> jsonTypeSerializers = null)
+        public SystemTextJsonSerializer(
+            JsonSerializerOptions jsonSerializerOptions = null,
+            Dictionary<Type, JsonTypeInfo> jsonTypeSerializers = null,
+            string dateTimeSerializationFormat = "yyyy'-'MM'-'dd'T'HH':'mm':'ss.FFFFFFFK")
         {
+            DateTimeSerializationFormat = dateTimeSerializationFormat;
+
             _jsonSerializerOptions =
                 jsonSerializerOptions ??
                 new JsonSerializerOptions

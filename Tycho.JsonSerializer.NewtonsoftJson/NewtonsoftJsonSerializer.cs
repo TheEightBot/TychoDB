@@ -12,20 +12,22 @@ namespace Tycho
 
         private readonly JsonSerializerSettings _jsonSerializerSettings;
 
-        public string DateTimeSerializationFormat
-        {
-            get => _jsonSerializerSettings.DateFormatString;
-            set => _jsonSerializerSettings.DateFormatString = value;
-        }
+        public string DateTimeSerializationFormat { get; }
 
-        public NewtonsoftJsonSerializer(JsonSerializer jsonSerializer = null, JsonSerializerSettings jsonSerializerSettings = null)
+        public NewtonsoftJsonSerializer(
+            JsonSerializer jsonSerializer = null,
+            JsonSerializerSettings jsonSerializerSettings = null,
+            string dateTimeSerializationFormat = "O")
         {
+            DateTimeSerializationFormat = dateTimeSerializationFormat;
+
             _jsonSerializer =
                 jsonSerializer ??
                 new JsonSerializer
                 {
                     DefaultValueHandling = DefaultValueHandling.Include,
                     NullValueHandling = NullValueHandling.Ignore,
+                    DateFormatString = dateTimeSerializationFormat,
                 };
 
             _jsonSerializerSettings =
@@ -34,13 +36,19 @@ namespace Tycho
                 {
                     DefaultValueHandling = DefaultValueHandling.Include,
                     NullValueHandling = NullValueHandling.Include,
+                    DateFormatString = dateTimeSerializationFormat,
                 };
         }
 
         public ValueTask<T> DeserializeAsync<T>(Stream stream, CancellationToken cancellationToken)
         {
             using var streamReader = new StreamReader(stream);
-            using var jsonTextReader = new JsonTextReader(streamReader);
+            using var jsonTextReader =
+                new JsonTextReader(streamReader)
+                {
+                    DateFormatString = DateTimeSerializationFormat,
+                };
+
             return new ValueTask<T>(_jsonSerializer.Deserialize<T>(jsonTextReader));
         }
 

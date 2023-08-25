@@ -201,7 +201,7 @@ public class TychoDb : IDisposable
         }
 
         return _connection
-            .WithConnectionBlock(
+            .WithConnectionBlockAsync(
                 _rateLimiter,
                 conn =>
                 {
@@ -278,7 +278,7 @@ public class TychoDb : IDisposable
         }
 
         return _connection
-            .WithConnectionBlock<int>(
+            .WithConnectionBlockAsync<int>(
                 _rateLimiter,
                 conn =>
                 {
@@ -349,7 +349,7 @@ public class TychoDb : IDisposable
         }
 
         return _connection
-            .WithConnectionBlock(
+            .WithConnectionBlockAsync(
                 _rateLimiter,
                 conn =>
                 {
@@ -415,7 +415,7 @@ public class TychoDb : IDisposable
         }
 
         return _connection
-            .WithConnectionBlock(
+            .WithConnectionBlockAsync(
                 _rateLimiter,
                 async conn =>
                 {
@@ -491,7 +491,7 @@ public class TychoDb : IDisposable
         }
 
         return _connection
-            .WithConnectionBlock<IEnumerable<T>>(
+            .WithConnectionBlockAsync<IEnumerable<T>>(
                 _rateLimiter,
                 async conn =>
                 {
@@ -558,7 +558,7 @@ public class TychoDb : IDisposable
         }
 
         return _connection
-            .WithConnectionBlock<IEnumerable<TOut>>(
+            .WithConnectionBlockAsync<IEnumerable<TOut>>(
                 _rateLimiter,
                 async conn =>
                 {
@@ -632,7 +632,7 @@ public class TychoDb : IDisposable
         }
 
         return _connection
-            .WithConnectionBlock(
+            .WithConnectionBlockAsync(
                 _rateLimiter,
                 conn =>
                 {
@@ -687,7 +687,7 @@ public class TychoDb : IDisposable
         }
 
         return _connection
-            .WithConnectionBlock(
+            .WithConnectionBlockAsync(
                 _rateLimiter,
                 conn =>
                 {
@@ -741,7 +741,7 @@ public class TychoDb : IDisposable
     public ValueTask<bool> WriteBlobAsync(Stream stream, object key, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
     {
         return _connection
-            .WithConnectionBlock(
+            .WithConnectionBlockAsync(
                 _rateLimiter,
                 async conn =>
                 {
@@ -796,7 +796,7 @@ public class TychoDb : IDisposable
     public ValueTask<bool> BlobExistsAsync(object key, string partition = null, CancellationToken cancellationToken = default)
     {
         return _connection
-            .WithConnectionBlock(
+            .WithConnectionBlockAsync(
                 _rateLimiter,
                 conn =>
                 {
@@ -838,7 +838,7 @@ public class TychoDb : IDisposable
     public ValueTask<Stream> ReadBlobAsync(object key, string partition = null, CancellationToken cancellationToken = default)
     {
         return _connection
-            .WithConnectionBlock(
+            .WithConnectionBlockAsync(
                 _rateLimiter,
                 conn =>
                 {
@@ -880,7 +880,7 @@ public class TychoDb : IDisposable
     public ValueTask<bool> DeleteBlobAsync(object key, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
     {
         return _connection
-            .WithConnectionBlock(
+            .WithConnectionBlockAsync(
                 _rateLimiter,
                 conn =>
                 {
@@ -929,7 +929,7 @@ public class TychoDb : IDisposable
     public ValueTask<(bool Successful, int Count)> DeleteBlobsAsync(string partition, bool withTransaction = true, CancellationToken cancellationToken = default)
     {
         return _connection
-            .WithConnectionBlock(
+            .WithConnectionBlockAsync(
                 _rateLimiter,
                 conn =>
                 {
@@ -985,50 +985,42 @@ public class TychoDb : IDisposable
 
     public TychoDb CreateIndex(string propertyPathString, bool isNumeric, string objectTypeName, string indexName)
     {
-        lock (_connectionLock)
-        {
-            var transaction = _connection.BeginTransaction(IsolationLevel.Serializable);
-
-            var fullIndexName = $"idx_{indexName}_{objectTypeName}";
-            try
-            {
-                if (!_persistConnection)
+        _connection
+            .WithConnectionBlock(
+                _rateLimiter,
+                conn =>
                 {
-                    _connection.Open();
-                }
+                    var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
 
-                using var createIndexCommand = _connection.CreateCommand();
+                    var fullIndexName = $"idx_{indexName}_{objectTypeName}";
+                    try
+                    {
+                        using var createIndexCommand = conn.CreateCommand();
 
-                if (isNumeric)
-                {
+                        if (isNumeric)
+                        {
 #pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
-                    createIndexCommand.CommandText = Queries.CreateIndexForJsonValueAsNumeric(fullIndexName, propertyPathString);
+                            createIndexCommand.CommandText = Queries.CreateIndexForJsonValueAsNumeric(fullIndexName, propertyPathString);
 #pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
-                }
-                else
-                {
+                        }
+                        else
+                        {
 #pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
-                    createIndexCommand.CommandText = Queries.CreateIndexForJsonValue(fullIndexName, propertyPathString);
+                            createIndexCommand.CommandText = Queries.CreateIndexForJsonValue(fullIndexName, propertyPathString);
 #pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
-                }
+                        }
 
-                createIndexCommand.ExecuteNonQuery();
+                        createIndexCommand.ExecuteNonQuery();
 
-                transaction.Commit();
-            }
-            catch (Exception ex)
-            {
-                transaction.Rollback();
-                throw new TychoDbException($"Failed to Create Index: {fullIndexName}", ex);
-            }
-            finally
-            {
-                if (!_persistConnection)
-                {
-                    _connection.Close();
-                }
-            }
-        }
+                        transaction.Commit();
+                    }
+                    catch (Exception ex)
+                    {
+                        transaction.Rollback();
+                        throw new TychoDbException($"Failed to Create Index: {fullIndexName}", ex);
+                    }
+                },
+                _persistConnection);
 
         return this;
     }
@@ -1046,7 +1038,7 @@ public class TychoDb : IDisposable
     public ValueTask<bool> CreateIndexAsync(string propertyPathString, bool isNumeric, string objectTypeName, string indexName, CancellationToken cancellationToken = default)
     {
         return _connection
-            .WithConnectionBlock(
+            .WithConnectionBlockAsync(
                 _rateLimiter,
                 conn =>
                 {
@@ -1093,41 +1085,33 @@ public class TychoDb : IDisposable
                     .Select(x => (QueryPropertyPath.BuildPath(x), QueryPropertyPath.IsNumeric(x)))
                     .ToArray();
 
-        lock (_connectionLock)
-        {
-            var transaction = _connection.BeginTransaction(IsolationLevel.Serializable);
-
-            var fullIndexName = $"idx_{indexName}_{GetSafeTypeName<TObj>()}";
-            try
-            {
-                if (!_persistConnection)
+        _connection
+            .WithConnectionBlock(
+                _rateLimiter,
+                conn =>
                 {
-                    _connection.Open();
-                }
+                    var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
 
-                using var createIndexCommand = _connection.CreateCommand();
+                    var fullIndexName = $"idx_{indexName}_{GetSafeTypeName<TObj>()}";
+                    try
+                    {
+                        using var createIndexCommand = conn.CreateCommand();
 
 #pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
-                createIndexCommand.CommandText = Queries.CreateIndexForJsonValue(fullIndexName, processedPaths);
+                        createIndexCommand.CommandText = Queries.CreateIndexForJsonValue(fullIndexName, processedPaths);
 #pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
-                createIndexCommand.ExecuteNonQuery();
+                        createIndexCommand.ExecuteNonQuery();
 
-                transaction.Commit();
-            }
-            catch (Exception ex)
-            {
-                transaction.Rollback();
-                throw new TychoDbException($"Failed to Create Index: {fullIndexName}", ex);
-            }
-            finally
-            {
-                if (!_persistConnection)
-                {
-                    _connection.Close();
-                }
-            }
-        }
+                        transaction.Commit();
+                    }
+                    catch (Exception ex)
+                    {
+                        transaction.Rollback();
+                        throw new TychoDbException($"Failed to Create Index: {fullIndexName}", ex);
+                    }
+                },
+                _persistConnection);
 
         return this;
     }
@@ -1145,7 +1129,7 @@ public class TychoDb : IDisposable
                     .ToArray();
 
         return _connection
-            .WithConnectionBlock(
+            .WithConnectionBlockAsync(
                 _rateLimiter,
                 conn =>
                 {
@@ -1175,6 +1159,43 @@ public class TychoDb : IDisposable
                 },
                 _persistConnection,
                 cancellationToken);
+    }
+
+    public void Cleanup(bool shrinkMemory = true, bool vacuum = false)
+    {
+        _connection
+            .WithConnectionBlock(
+                _rateLimiter,
+                conn =>
+                {
+                    try
+                    {
+                        using var createIndexCommand = conn.CreateCommand();
+
+                        string command = null;
+
+                        if (shrinkMemory)
+                        {
+                            command += "PRAGMA shrink_memory; ";
+                        }
+
+                        if (vacuum)
+                        {
+                            command += "PRAGMA incremental_vacuum; ";
+                        }
+
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
+                        createIndexCommand.CommandText = command;
+#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
+
+                        createIndexCommand.ExecuteNonQuery();
+                    }
+                    catch (Exception ex)
+                    {
+                        throw new TychoDbException($"Failed to shrink memory", ex);
+                    }
+                },
+                _persistConnection);
     }
 
     public Func<T, object> GetIdSelectorFor<T>()
@@ -1259,60 +1280,64 @@ public class TychoDb : IDisposable
 
     private SqliteConnection BuildConnection()
     {
-        lock (_connectionLock)
-        {
-            var connection = new SqliteConnection(_dbConnectionString);
+        var connection = new SqliteConnection(_dbConnectionString);
 
-            connection.Open();
-
-            var supportsJson = false;
-
-            // Check version
-            using var getVersionCommand = connection.CreateCommand();
-            getVersionCommand.CommandText = Queries.SqliteVersion;
-            var version = getVersionCommand.ExecuteScalar() as string;
-            var splitVersion = version.Split('.');
-
-            if (int.TryParse(splitVersion[0], out var major) && int.TryParse(splitVersion[1], out var minor) &&
-               (major > 3 || (major >= 3 && minor >= 38)))
-            {
-                supportsJson = true;
-            }
-            else
-            {
-                // Enable write-ahead logging
-                using var hasJsonCommand = connection.CreateCommand();
-                hasJsonCommand.CommandText = Queries.PragmaCompileOptions;
-                using var jsonReader = hasJsonCommand.ExecuteReader();
-
-                while (jsonReader.Read())
+        connection
+            .WithConnectionBlock(
+                _rateLimiter,
+                conn =>
                 {
-                    var json1Available = jsonReader.GetString(0);
-                    if (!(json1Available?.Equals(Queries.EnableJSON1Pragma) ?? false))
+                    conn.Open();
+
+                    var supportsJson = false;
+
+                    // Check version
+                    using var getVersionCommand = conn.CreateCommand();
+                    getVersionCommand.CommandText = Queries.SqliteVersion;
+                    var version = getVersionCommand.ExecuteScalar() as string;
+                    var splitVersion = version.Split('.');
+
+                    if (int.TryParse(splitVersion[0], out var major) && int.TryParse(splitVersion[1], out var minor) &&
+                        (major > 3 || (major >= 3 && minor >= 38)))
                     {
-                        continue;
+                        supportsJson = true;
+                    }
+                    else
+                    {
+                        // Enable write-ahead logging
+                        using var hasJsonCommand = conn.CreateCommand();
+                        hasJsonCommand.CommandText = Queries.PragmaCompileOptions;
+                        using var jsonReader = hasJsonCommand.ExecuteReader();
+
+                        while (jsonReader.Read())
+                        {
+                            var json1Available = jsonReader.GetString(0);
+                            if (!(json1Available?.Equals(Queries.EnableJSON1Pragma) ?? false))
+                            {
+                                continue;
+                            }
+
+                            supportsJson = true;
+                            break;
+                        }
                     }
 
-                    supportsJson = true;
-                    break;
-                }
-            }
+                    if (!supportsJson)
+                    {
+                        conn.Close();
+                        throw new TychoDbException("JSON support is not available for this platform");
+                    }
 
-            if (!supportsJson)
-            {
-                connection.Close();
-                throw new TychoDbException("JSON support is not available for this platform");
-            }
+                    using var command = connection.CreateCommand();
 
-            using var command = connection.CreateCommand();
+                    // Enable write-ahead logging and normal synchronous mode
+                    command.CommandText = Queries.CreateDatabaseSchema;
 
-            // Enable write-ahead logging and normal synchronous mode
-            command.CommandText = Queries.CreateDatabaseSchema;
+                    command.ExecuteNonQuery();
+                },
+                _persistConnection);
 
-            command.ExecuteNonQuery();
-
-            return connection;
-        }
+        return connection;
     }
 
     private async ValueTask<SqliteConnection> BuildConnectionAsync(CancellationToken cancellationToken = default)
@@ -1374,7 +1399,61 @@ public class TychoDb : IDisposable
 
 internal static class SqliteExtensions
 {
-    public static async ValueTask<T> WithConnectionBlock<T>(this SqliteConnection connection, RateLimiter rateLimiter, Func<SqliteConnection, T> func, bool persistConnection, CancellationToken cancellationToken = default)
+    public static T WithConnectionBlock<T>(this SqliteConnection connection, RateLimiter rateLimiter, Func<SqliteConnection, T> func, bool persistConnection)
+    {
+        if (connection == null)
+        {
+            throw new TychoDbException("Please call 'Connect' before performing an operation");
+        }
+
+        using var rla = rateLimiter.AttemptAcquire();
+
+        try
+        {
+            if (!persistConnection)
+            {
+                connection.Open();
+            }
+
+            return func.Invoke(connection);
+        }
+        finally
+        {
+            if (!persistConnection)
+            {
+                connection.Close();
+            }
+        }
+    }
+
+    public static void WithConnectionBlock(this SqliteConnection connection, RateLimiter rateLimiter, Action<SqliteConnection> action, bool persistConnection)
+    {
+        if (connection == null)
+        {
+            throw new TychoDbException("Please call 'Connect' before performing an operation");
+        }
+
+        using var rla = rateLimiter.AttemptAcquire();
+
+        try
+        {
+            if (!persistConnection)
+            {
+                connection.Open();
+            }
+
+            action.Invoke(connection);
+        }
+        finally
+        {
+            if (!persistConnection)
+            {
+                connection.Close();
+            }
+        }
+    }
+
+    public static async ValueTask<T> WithConnectionBlockAsync<T>(this SqliteConnection connection, RateLimiter rateLimiter, Func<SqliteConnection, T> func, bool persistConnection, CancellationToken cancellationToken = default)
     {
         if (connection == null)
         {
@@ -1401,7 +1480,7 @@ internal static class SqliteExtensions
         }
     }
 
-    public static async ValueTask<T> WithConnectionBlock<T>(this SqliteConnection connection, RateLimiter rateLimiter, Func<SqliteConnection, ValueTask<T>> func, bool persistConnection, CancellationToken cancellationToken = default)
+    public static async ValueTask<T> WithConnectionBlockAsync<T>(this SqliteConnection connection, RateLimiter rateLimiter, Func<SqliteConnection, ValueTask<T>> func, bool persistConnection, CancellationToken cancellationToken = default)
     {
         if (connection == null)
         {

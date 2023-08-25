@@ -8,8 +8,9 @@ internal static class Queries
     public const string CreateDatabaseSchema =
         """
         PRAGMA journal_mode = WAL;
-        PRAGMA synchronous = normal;
+        PRAGMA synchronous = NORMAL;
         PRAGMA locking_mode = EXCLUSIVE;
+        PRAGMA auto_vacuum = INCREMENTAL;
 
         CREATE TABLE IF NOT EXISTS JsonValue
         (

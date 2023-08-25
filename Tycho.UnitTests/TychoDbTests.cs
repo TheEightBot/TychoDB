@@ -1528,6 +1528,17 @@ public class TychoDbTests
         readB.IntProperty.Should().Be(obj2IntProperty);
     }
 
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public void TychoDb_ShouldShrinkMemory_IsSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        db.Cleanup();
+    }
+
     public static TychoDb BuildDatabaseConnection(IJsonSerializer jsonSerializer, bool requireTypeRegistration = false)
     {
 #if ENCRYPTED

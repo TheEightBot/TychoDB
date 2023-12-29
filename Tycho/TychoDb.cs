@@ -483,9 +483,14 @@ public class TychoDb : IDisposable
         bool enforceSingleResult = false,
         CancellationToken cancellationToken = default)
     {
-        if (enforceSingleResult && await CountObjectsAsync(partition, filter, withTransaction, cancellationToken) > 1)
+        if (enforceSingleResult)
         {
-            throw new TychoDbException("Too many matching values were found, please refine your query to limit it to a single match");
+            var matches = await CountObjectsAsync(partition, filter, withTransaction, cancellationToken).ConfigureAwait(false);
+
+            if (matches > 1)
+            {
+                throw new TychoDbException("Too many matching values were found, please refine your query to limit it to a single match");
+            }
         }
 
         var results =

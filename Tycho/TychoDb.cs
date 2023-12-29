@@ -483,7 +483,12 @@ public class TychoDb : IDisposable
         return resultsArray.FirstOrDefault();
     }
 
-    public ValueTask<IEnumerable<T>> ReadObjectsAsync<T>(string partition = null, FilterBuilder<T> filter = null, bool withTransaction = false, CancellationToken cancellationToken = default)
+    public ValueTask<IEnumerable<T>> ReadObjectsAsync<T>(
+        string partition = null,
+        FilterBuilder<T> filter = null,
+        SortBuilder<T> sort = null,
+        bool withTransaction = false,
+        CancellationToken cancellationToken = default)
     {
         if (_requireTypeRegistration)
         {
@@ -516,6 +521,11 @@ public class TychoDb : IDisposable
                         if (filter != null)
                         {
                             filter.Build(commandBuilder, _jsonSerializer);
+                        }
+
+                        if (sort != null)
+                        {
+                            sort.Build(commandBuilder);
                         }
 
 #pragma warning disable CA2100 // Review SQL queries for security vulnerabilities

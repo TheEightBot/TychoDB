@@ -1197,6 +1197,58 @@ public class TychoDbTests
 
     [DataTestMethod]
     [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_QueryInnerObjectUsingSortWithStringAndLong_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        Console.WriteLine($"Serializer: {jsonSerializer}");
+
+        var expectedFirstId = 12L;
+        var expectedLastId = 11L;
+
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var testObjs =
+            Enumerable
+                .Range(1, 22)
+                .Select(
+                    i =>
+                    {
+                        var testObj =
+                            new Patient
+                            {
+                                PatientId = i,
+                                MRN = i < 12 ? "11111" : "99999",
+                                DOB = DateTime.Now.AddDays(i),
+                            };
+
+                        return testObj;
+                    })
+                .ToList();
+
+        await db.WriteObjectsAsync(testObjs, x => x.PatientId).ConfigureAwait(false);
+
+        var stopWatch = System.Diagnostics.Stopwatch.StartNew();
+
+        var objs =
+            await db
+                .ReadObjectsAsync<Patient>(
+                    sort: SortBuilder<Patient>
+                        .Create()
+                        .OrderBy(SortDirection.Descending, x => x.MRN)
+                        .OrderBy(SortDirection.Ascending, x => x.PatientId))
+                .ConfigureAwait(false);
+
+        stopWatch.Stop();
+
+        Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
+
+        objs.First().PatientId.Should().Be(expectedFirstId);
+        objs.Last().PatientId.Should().Be(expectedLastId);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
     public async Task TychoDb_CreateDataIndex_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
     {
         var expected = true;

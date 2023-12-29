@@ -29,7 +29,7 @@ namespace Tycho
                 new JsonSerializerOptions
                 {
                     IgnoreReadOnlyProperties = true,
-                    NumberHandling = JsonNumberHandling.AllowReadingFromString | JsonNumberHandling.WriteAsString,
+                    NumberHandling = JsonNumberHandling.AllowReadingFromString | JsonNumberHandling.AllowNamedFloatingPointLiterals,
                     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
                 };
 

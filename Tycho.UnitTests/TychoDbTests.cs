@@ -860,6 +860,7 @@ public class TychoDbTests
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
         objs.Count().Should().Be(expected);
+        objs.All(x => Guid.Parse(x.Key) == Guid.Parse(x.InnerObject.StringProperty)).Should().BeTrue();
     }
 
     [DataTestMethod]

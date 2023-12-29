@@ -542,7 +542,7 @@ public class TychoDb : IDisposable
 
                         if (top != null)
                         {
-                            commandBuilder.AppendLine($"LIMIT {top}");
+                            commandBuilder.AppendLine(Queries.Limit(top.Value));
                         }
 
 #pragma warning disable CA2100 // Review SQL queries for security vulnerabilities

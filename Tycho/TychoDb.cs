@@ -487,6 +487,7 @@ public class TychoDb : IDisposable
         string partition = null,
         FilterBuilder<T> filter = null,
         SortBuilder<T> sort = null,
+        int? top = null,
         bool withTransaction = false,
         CancellationToken cancellationToken = default)
     {
@@ -526,6 +527,11 @@ public class TychoDb : IDisposable
                         if (sort != null)
                         {
                             sort.Build(commandBuilder);
+                        }
+
+                        if (top != null)
+                        {
+                            commandBuilder.AppendLine($"LIMIT {top}");
                         }
 
 #pragma warning disable CA2100 // Review SQL queries for security vulnerabilities

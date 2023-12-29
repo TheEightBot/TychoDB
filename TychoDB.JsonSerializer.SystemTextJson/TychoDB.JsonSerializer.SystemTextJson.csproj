@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="MSBuild.Sdk.Extras/3.0.22">
+    <PropertyGroup>
+        <TargetFrameworks>netstandard2.1;NET8.0</TargetFrameworks>
+        <LangVersion>Latest</LangVersion>
+        <PackageId>TychoDB.JsonSerializer.SystemTextJson</PackageId>
+    </PropertyGroup>
+    <ItemGroup>
+        <PackageReference Include="System.Text.Json" Version="8.0.0" />
+    </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="../TychoDB.JsonSerializer/TychoDB.JsonSerializer.csproj" />
+    </ItemGroup>
+</Project>

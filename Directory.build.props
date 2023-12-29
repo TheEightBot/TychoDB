@@ -1,0 +1,41 @@
+<Project>
+    <PropertyGroup>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <LangVersion>latest</LangVersion>
+        <NoWarn>$(NoWarn);CS1591</NoWarn>
+    </PropertyGroup>
+    <PropertyGroup>
+        <Authors>Eight-Bot, Inc.</Authors>
+        <Copyright>2023 Eight-Bot</Copyright>
+        <PackageIcon>icon.png</PackageIcon>
+        <Owners>Eight-Bot, Inc.</Owners>
+        <PackageProjectUrl>https://eight.bot</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/TheEightBot/TychoDB</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageTags>nosql;database;json</PackageTags>
+        <Title>Tycho DB</Title>
+        <Summary>Lightweight and highly opioninated NoSQL database written on top of SQLite</Summary>
+        <Description>Lightweight and highly opioninated NoSQL database written on top of SQLite</Description>
+        <PackageIcon>logo.png</PackageIcon>
+    </PropertyGroup>
+    <ItemGroup>
+        <PackageReference Include="stylecop.analyzers"
+                          Version="1.2.0-beta.435"
+                          PrivateAssets="all" />
+        <PackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers"
+                          Version="8.0.0"
+                          PrivateAssets="all" />
+        <PackageReference Include="Roslynator.Analyzers"
+                          Version="4.7.0"
+                          PrivateAssets="All" />
+    </ItemGroup>
+    <ItemGroup>
+        <None Include="..\images\logo.png"
+              Pack="true"
+              PackagePath="\" />
+    </ItemGroup>
+    <ItemGroup>
+        <AdditionalFiles Include="$(MSBuildThisFileDirectory)stylecop.json"
+                         Link="stylecop.json" />
+    </ItemGroup>
+</Project>

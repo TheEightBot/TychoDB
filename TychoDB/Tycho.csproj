@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="MSBuild.Sdk.Extras/3.0.22">
+    <PropertyGroup>
+        <TargetFrameworks>netstandard2.1;NET7.0</TargetFrameworks>
+        <LangVersion>Latest</LangVersion>
+        <PackageId>Tycho</PackageId>
+        <Configurations>Encrypted;Debug;Release</Configurations>
+    </PropertyGroup>
+    <PropertyGroup Condition=" '$(Configuration)' == 'Encrypted' ">
+        <IntermediateOutputPath>obj\Encrypted</IntermediateOutputPath>
+        <Optimize>true</Optimize>
+        <OutputPath>bin\Encrypted</OutputPath>
+        <DefineConstants>TRACE;RELEASE;ENCRYPTED;NETSTANDARD;NETSTANDARD2_1;</DefineConstants>
+        <LangVersion>Latest</LangVersion>
+        <NoStdLib>true</NoStdLib>
+        <PackageId>TychoDB.Encrypted</PackageId>
+    </PropertyGroup>
+    <PropertyGroup>
+        <ContentSQLiteInteropFiles>true</ContentSQLiteInteropFiles>
+        <CopySQLiteInteropFiles>false</CopySQLiteInteropFiles>
+        <CleanSQLiteInteropFiles>false</CleanSQLiteInteropFiles>
+        <CollectSQLiteInteropFiles>false</CollectSQLiteInteropFiles>
+    </PropertyGroup>
+    <ItemGroup>
+        <PackageReference Include="System.Threading.RateLimiting"
+                          Version="7.0.0" />
+    </ItemGroup>
+    <ItemGroup Condition=" '$(Configuration)' == 'Encrypted' ">
+        <PackageReference Include="Microsoft.Data.Sqlite.Core"
+                          Version="7.0.3" />
+        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher"
+                          Version="2.1.4" />
+    </ItemGroup>
+    <ItemGroup Condition=" '$(Configuration)' != 'Encrypted' ">
+        <PackageReference Include="Microsoft.Data.Sqlite"
+                          Version="7.0.10" />
+        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3"
+                          Version="2.1.6" />
+    </ItemGroup>
+    <ItemGroup>
+        <None Include="..\icon.png"
+              PackagePath="icon.png"
+              Pack="true" />
+    </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\TychoDB.JsonSerializer\TychoDB.JsonSerializer.csproj" />
+    </ItemGroup>
+</Project>

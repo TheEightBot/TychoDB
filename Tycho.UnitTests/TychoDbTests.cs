@@ -1084,6 +1084,36 @@ public class TychoDbTests
 
     [DataTestMethod]
     [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_QueryFirstUsingEqualsOnAGuid_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        var expected = Guid.NewGuid();
+
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var testObj =
+            new TestClassF
+            {
+                TestClassId = expected,
+            };
+
+        await db.WriteObjectAsync(testObj, x => x.TestClassId).ConfigureAwait(false);
+
+        var obj =
+            await db
+                .ReadFirstObjectAsync<TestClassF>(
+                    filter: FilterBuilder<TestClassF>
+                        .Create()
+                        .Filter(FilterType.Equals, x => x.TestClassId, expected))
+                .ConfigureAwait(false);
+
+        obj.Should().NotBeNull();
+        obj.TestClassId.Should().Be(expected);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
     public async Task TychoDb_QueryInnerObjectUsingEquals_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
     {
         var expected = 1;

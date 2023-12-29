@@ -469,28 +469,29 @@ public class TychoDb : IDisposable
                 cancellationToken);
     }
 
-    /// <summary>
-    /// Read in single object of type T from database.
-    /// </summary>
-    /// <param name="enforceSingleResult">
-    /// Ensures that only 1 item matches the filter. If multiple items are found, an exception will be thrown.
-    /// Warning: for large datasets this may be slow.
-    /// </param>
+    public async ValueTask<T> ReadFirstObjectAsync<T>(
+        FilterBuilder<T> filter,
+        string partition = null,
+        bool withTransaction = false,
+        CancellationToken cancellationToken = default)
+    {
+        var results =
+            await ReadObjectsAsync(partition, filter, null, 1, withTransaction, cancellationToken).ConfigureAwait(false);
+
+        return results.FirstOrDefault();
+    }
+
     public async ValueTask<T> ReadObjectAsync<T>(
         FilterBuilder<T> filter,
         string partition = null,
         bool withTransaction = false,
-        bool enforceSingleResult = false,
         CancellationToken cancellationToken = default)
     {
-        if (enforceSingleResult)
-        {
-            var matches = await CountObjectsAsync(partition, filter, withTransaction, cancellationToken).ConfigureAwait(false);
+        var matches = await CountObjectsAsync(partition, filter, withTransaction, cancellationToken).ConfigureAwait(false);
 
-            if (matches > 1)
-            {
-                throw new TychoDbException("Too many matching values were found, please refine your query to limit it to a single match");
-            }
+        if (matches > 1)
+        {
+            throw new TychoDbException("Too many matching values were found, please refine your query to limit it to a single match");
         }
 
         var results =

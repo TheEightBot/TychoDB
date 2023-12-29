@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Linq;
 
 namespace Tycho;
@@ -189,6 +189,19 @@ internal static class Queries
         return
             $"""
             SELECT JSON_EXTRACT(Data, '{selectionPath}') AS Data
+            FROM JsonValue
+            Where
+            FullTypeName = $fullTypeName
+            AND
+            Partition = $partition
+            """;
+    }
+
+    public static string ExtractDataAndKeyFromJsonValueWithFullTypeName(string selectionPath)
+    {
+        return
+            $"""
+            SELECT Key, JSON_EXTRACT(Data, '{selectionPath}') AS Data
             FROM JsonValue
             Where
             FullTypeName = $fullTypeName

@@ -469,21 +469,44 @@ public class TychoDb : IDisposable
                 cancellationToken);
     }
 
-    public async ValueTask<T> ReadObjectAsync<T>(FilterBuilder<T> filter, string partition = null, bool withTransaction = false, CancellationToken cancellationToken = default)
+    public async ValueTask<T> ReadFirstObjectAsync<T>(
+        FilterBuilder<T> filter,
+        string partition = null,
+        bool withTransaction = false,
+        CancellationToken cancellationToken = default)
     {
-        var results = await ReadObjectsAsync(partition, filter, withTransaction, cancellationToken).ConfigureAwait(false);
+        var results =
+            await ReadObjectsAsync(partition, filter, null, 1, withTransaction, cancellationToken).ConfigureAwait(false);
 
-        var resultsArray = results as T[] ?? results.ToArray();
+        return results.FirstOrDefault();
+    }
 
-        if (resultsArray.Length > 1)
+    public async ValueTask<T> ReadObjectAsync<T>(
+        FilterBuilder<T> filter,
+        string partition = null,
+        bool withTransaction = false,
+        CancellationToken cancellationToken = default)
+    {
+        var matches = await CountObjectsAsync(partition, filter, withTransaction, cancellationToken).ConfigureAwait(false);
+
+        if (matches > 1)
         {
             throw new TychoDbException("Too many matching values were found, please refine your query to limit it to a single match");
         }
 
-        return resultsArray.FirstOrDefault();
+        var results =
+            await ReadObjectsAsync(partition, filter, null, 1, withTransaction, cancellationToken).ConfigureAwait(false);
+
+        return results.FirstOrDefault();
     }
 
-    public ValueTask<IEnumerable<T>> ReadObjectsAsync<T>(string partition = null, FilterBuilder<T> filter = null, bool withTransaction = false, CancellationToken cancellationToken = default)
+    public ValueTask<IEnumerable<T>> ReadObjectsAsync<T>(
+        string partition = null,
+        FilterBuilder<T> filter = null,
+        SortBuilder<T> sort = null,
+        int? top = null,
+        bool withTransaction = false,
+        CancellationToken cancellationToken = default)
     {
         if (_requireTypeRegistration)
         {
@@ -516,6 +539,16 @@ public class TychoDb : IDisposable
                         if (filter != null)
                         {
                             filter.Build(commandBuilder, _jsonSerializer);
+                        }
+
+                        if (sort != null)
+                        {
+                            sort.Build(commandBuilder);
+                        }
+
+                        if (top != null)
+                        {
+                            commandBuilder.AppendLine(Queries.Limit(top.Value));
                         }
 
 #pragma warning disable CA2100 // Review SQL queries for security vulnerabilities

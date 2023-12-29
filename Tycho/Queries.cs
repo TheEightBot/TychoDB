@@ -246,4 +246,9 @@ internal static class Queries
             ON JsonValue(FullTypeName{propertyPathStringsJoined});
             """;
     }
+
+    public static string Limit(int count)
+    {
+        return $"LIMIT {count}";
+    }
 }

@@ -15,19 +15,9 @@ internal class SortInfo
 
     public string PropertyPath { get; private set; }
 
-    public bool IsPropertyPathNumeric { get; private set; }
-
-    public bool IsPropertyPathBool { get; private set; }
-
-    public bool IsPropertyPathDateTime { get; private set; }
-
-    public SortInfo(SortDirection sortDirection, string propertyPath, bool isPropertyPathNumeric, bool isPropertyPathBool, bool isPropertyPathDateTime)
+    public SortInfo(SortDirection sortDirection, string propertyPath)
     {
         SortDirection = sortDirection;
         PropertyPath = propertyPath;
-
-        IsPropertyPathNumeric = isPropertyPathNumeric;
-        IsPropertyPathBool = isPropertyPathBool;
-        IsPropertyPathDateTime = isPropertyPathDateTime;
     }
 }

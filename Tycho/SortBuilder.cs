@@ -25,18 +25,15 @@ public class SortBuilder<TObj>
     public SortBuilder<TObj> OrderBy<TProp>(SortDirection sortDirection, Expression<Func<TObj, TProp>> propertyPath)
     {
         var propertyPathString = QueryPropertyPath.BuildPath(propertyPath);
-        var isPropertyPathNumeric = QueryPropertyPath.IsNumeric(propertyPath);
-        var isPropertyPathBool = QueryPropertyPath.IsBool(propertyPath);
-        var isPropertyPathDateTime = QueryPropertyPath.IsDateTime(propertyPath);
 
-        _sortInfos.Add(new SortInfo(sortDirection, propertyPathString, isPropertyPathNumeric, isPropertyPathBool, isPropertyPathDateTime));
+        _sortInfos.Add(new SortInfo(sortDirection, propertyPathString));
 
         return this;
     }
 
-    public SortBuilder<TObj> OrderBy(SortDirection sortDirection, string propertyPath, bool isPropertyPathNumeric, bool isPropertyPathBool, bool isPropertyPathDateTime)
+    public SortBuilder<TObj> OrderBy(SortDirection sortDirection, string propertyPath)
     {
-        _sortInfos.Add(new SortInfo(sortDirection, propertyPath, isPropertyPathNumeric, isPropertyPathBool, isPropertyPathDateTime));
+        _sortInfos.Add(new SortInfo(sortDirection, propertyPath));
 
         return this;
     }

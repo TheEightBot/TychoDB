@@ -55,7 +55,7 @@ jobs:
             - name: Build Tycho
               run: dotnet build TychoDB/TychoDB.csproj
             - name: Create the package
-              run: dotnet pack --configuration Release  /p:AssemblyVersion=${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.${{ steps.version.outputs.patch }} /p:Version=${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.${{ steps.version.outputs.patch }} Tycho/TychoDB.csproj
+              run: dotnet pack --configuration Release  /p:AssemblyVersion=${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.${{ steps.version.outputs.patch }} /p:Version=${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.${{ steps.version.outputs.patch }} TychoDB/TychoDB.csproj
             - name: Publish the package to GPR
               run: dotnet nuget push TychoDB/bin/Release/*.nupkg
             - name: Publish the package to NuGet

@@ -25,7 +25,7 @@ var buildType = Argument<string>("build_type", "Release");
 //////////////////////////////////////////////////////////////////////
 // PREPARATION
 //////////////////////////////////////////////////////////////////////
-var mainSolution = "Tycho.sln";
+var mainSolution = "TychoDB.sln";
 
 var eightbotNugetUsername = "eightbot";
 var eightbotNugetSourceName = "Eight-Bot";
@@ -37,7 +37,7 @@ var eightbotNugetSourceUrl = "https://eightbot.pkgs.visualstudio.com/_packaging/
 Setup(context =>
 {
     Information("Building Tycho");
-    Information("Nuget API Key: "+ eightbotNugetApiKey);
+    Information("Nuget API Key: " + eightbotNugetApiKey);
 });
 
 Teardown(context =>
@@ -48,61 +48,62 @@ Teardown(context =>
 //////////////////////////////////////////////////////////////////////
 // TASKS
 //////////////////////////////////////////////////////////////////////
-Task ("Clean")
-.Does (() =>
+Task("Clean")
+.Does(() =>
 {
-    CleanDirectories ("./Tycho/bin");
-	CleanDirectories ("./Tycho/obj");
-	CleanDirectories ("./Tycho*/bin");
-	CleanDirectories ("./Tycho*/obj");
+    CleanDirectories("./Tycho/bin");
+    CleanDirectories("./Tycho/obj");
+    CleanDirectories("./Tycho*/bin");
+    CleanDirectories("./Tycho*/obj");
 
     var nugetPackages = GetFiles("./*.nupkg");
     DeleteFiles(nugetPackages);
 });
 
-Task ("RestorePackages")
-.Does (() =>
+Task("RestorePackages")
+.Does(() =>
 {
-    if(NuGetHasSource(source:eightbotNugetSourceUrl)) {
+    if (NuGetHasSource(source: eightbotNugetSourceUrl))
+    {
         NuGetRemoveSource(eightbotNugetSourceName, eightbotNugetSourceUrl);
     }
 
     NuGetAddSource(
         name: eightbotNugetSourceName,
         source: eightbotNugetSourceUrl,
-        settings:  new NuGetSourcesSettings
-            {
-                UserName = eightbotNugetUsername,
-                Password = eightbotNugetApiKey,
-                IsSensitiveSource = true,
-                Verbosity = NuGetVerbosity.Detailed
-            });
+        settings: new NuGetSourcesSettings
+        {
+            UserName = eightbotNugetUsername,
+            Password = eightbotNugetApiKey,
+            IsSensitiveSource = true,
+            Verbosity = NuGetVerbosity.Detailed
+        });
 
-	NuGetRestore(mainSolution);
+    NuGetRestore(mainSolution);
 });
 
-Task ("BuildCore")
+Task("BuildCore")
 .IsDependentOn("Clean")
 .IsDependentOn("RestorePackages")
-.Does (() =>
+.Does(() =>
 {
     var buildSettings =
-        new MSBuildSettings{}
-				.WithProperty("Version", version)
-				.WithProperty("ReleaseVersion", version)
-				.WithProperty("PackageVersion", version)
-				.SetMaxCpuCount(1)
-				.SetVerbosity(Verbosity.Quiet)
-				.SetConfiguration(buildType)
-				.SetPlatformTarget(PlatformTarget.MSIL);
+        new MSBuildSettings { }
+                .WithProperty("Version", version)
+                .WithProperty("ReleaseVersion", version)
+                .WithProperty("PackageVersion", version)
+                .SetMaxCpuCount(1)
+                .SetVerbosity(Verbosity.Quiet)
+                .SetConfiguration(buildType)
+                .SetPlatformTarget(PlatformTarget.MSIL);
 
-	if (IsRunningOnWindows())
-	{
+    if (IsRunningOnWindows())
+    {
         buildSettings =
             buildSettings
-				.UseToolVersion(MSBuildToolVersion.VS2019)
-				.SetMSBuildPlatform(MSBuildPlatform.x86);
-	}
+                .UseToolVersion(MSBuildToolVersion.VS2019)
+                .SetMSBuildPlatform(MSBuildPlatform.x86);
+    }
 
     MSBuild(mainSolution, buildSettings);
 });
@@ -111,11 +112,12 @@ Task("NuGet")
 .IsDependentOn("BuildCore")
 .Does(() =>
 {
-    var nugetPackages = GetFiles("./**/EightBot.Tycho.*.nupkg");
+    var nugetPackages = GetFiles("./**/EightBot.TychoDB.*.nupkg");
 
-    foreach(var package in nugetPackages) {
+    foreach (var package in nugetPackages)
+    {
 
-        var processArguments = new ProcessArgumentBuilder{};
+        var processArguments = new ProcessArgumentBuilder { };
 
         processArguments
             .Append("push")
@@ -127,10 +129,11 @@ Task("NuGet")
             .Append("-SkipDuplicate");
 
 
-        using(var process =
+        using (var process =
             StartAndReturnProcess(
                 "nuget",
-                new ProcessSettings{
+                new ProcessSettings
+                {
                     Arguments = processArguments
                 }
             ))

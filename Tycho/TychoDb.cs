@@ -563,7 +563,7 @@ public class TychoDb : IDisposable
         return results.Select(x => x.InnerObject);
     }
 
-    public ValueTask<IEnumerable<(object Key, TOut InnerObject)>> ReadObjectsWithKeysAsync<TIn, TOut>(
+    public ValueTask<IEnumerable<(string Key, TOut InnerObject)>> ReadObjectsWithKeysAsync<TIn, TOut>(
         Expression<Func<TIn, TOut>> innerObjectSelection,
         string partition = null,
         FilterBuilder<TIn> filter = null,
@@ -576,7 +576,7 @@ public class TychoDb : IDisposable
         }
 
         return _connection
-            .WithConnectionBlockAsync<IEnumerable<(object Key, TOut InnerObject)>>(
+            .WithConnectionBlockAsync<IEnumerable<(string Key, TOut InnerObject)>>(
                 _rateLimiter,
                 async conn =>
                 {
@@ -587,7 +587,7 @@ public class TychoDb : IDisposable
                         transaction = conn.BeginTransaction(IsolationLevel.RepeatableRead);
                     }
 
-                    var objects = new List<(object, TOut)>();
+                    var objects = new List<(string, TOut)>();
 
                     try
                     {
@@ -615,7 +615,7 @@ public class TychoDb : IDisposable
 
                         while (reader.Read())
                         {
-                            var key = reader.GetValue(0);
+                            var key = reader.GetString(0);
 
                             using var innerObjectStream = reader.GetStream(1);
                             var innerObject = await _jsonSerializer.DeserializeAsync<TOut>(innerObjectStream, cancellationToken).ConfigureAwait(false);

@@ -550,7 +550,25 @@ public class TychoDb : IDisposable
                 cancellationToken);
     }
 
-    public ValueTask<IEnumerable<TOut>> ReadObjectsAsync<TIn, TOut>(Expression<Func<TIn, TOut>> innerObjectSelection, string partition = null, FilterBuilder<TIn> filter = null, bool withTransaction = false, CancellationToken cancellationToken = default)
+    public async ValueTask<IEnumerable<TOut>> ReadObjectsAsync<TIn, TOut>(
+        Expression<Func<TIn, TOut>> innerObjectSelection,
+        string partition = null,
+        FilterBuilder<TIn> filter = null,
+        bool withTransaction = false,
+        CancellationToken cancellationToken = default)
+    {
+        var results =
+            await ReadObjectsWithKeysAsync(innerObjectSelection, partition, filter, withTransaction, cancellationToken).ConfigureAwait(false);
+
+        return results.Select(x => x.InnerObject);
+    }
+
+    public ValueTask<IEnumerable<(object Key, TOut InnerObject)>> ReadObjectsWithKeysAsync<TIn, TOut>(
+        Expression<Func<TIn, TOut>> innerObjectSelection,
+        string partition = null,
+        FilterBuilder<TIn> filter = null,
+        bool withTransaction = false,
+        CancellationToken cancellationToken = default)
     {
         if (_requireTypeRegistration)
         {
@@ -558,7 +576,7 @@ public class TychoDb : IDisposable
         }
 
         return _connection
-            .WithConnectionBlockAsync<IEnumerable<TOut>>(
+            .WithConnectionBlockAsync<IEnumerable<(object Key, TOut InnerObject)>>(
                 _rateLimiter,
                 async conn =>
                 {
@@ -569,7 +587,7 @@ public class TychoDb : IDisposable
                         transaction = conn.BeginTransaction(IsolationLevel.RepeatableRead);
                     }
 
-                    var objects = new List<TOut>();
+                    var objects = new List<(object, TOut)>();
 
                     try
                     {
@@ -579,7 +597,7 @@ public class TychoDb : IDisposable
 
                         var selectionPath = QueryPropertyPath.BuildPath(innerObjectSelection);
 
-                        commandBuilder.Append(Queries.ExtractDataFromJsonValueWithFullTypeName(selectionPath));
+                        commandBuilder.Append(Queries.ExtractDataAndKeyFromJsonValueWithFullTypeName(selectionPath));
 
                         selectCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(TIn).FullName;
                         selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
@@ -597,8 +615,12 @@ public class TychoDb : IDisposable
 
                         while (reader.Read())
                         {
-                            using var stream = reader.GetStream(0);
-                            objects.Add(await _jsonSerializer.DeserializeAsync<TOut>(stream, cancellationToken).ConfigureAwait(false));
+                            var key = reader.GetValue(0);
+
+                            using var innerObjectStream = reader.GetStream(1);
+                            var innerObject = await _jsonSerializer.DeserializeAsync<TOut>(innerObjectStream, cancellationToken).ConfigureAwait(false);
+
+                            objects.Add((key, innerObject));
                         }
 
                         transaction?.Commit();

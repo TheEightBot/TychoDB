@@ -817,6 +817,53 @@ public class TychoDbTests
 
     [DataTestMethod]
     [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_ReadManyInnerObjectsWithKeys_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        var expected = 1000;
+
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var testObjs =
+            Enumerable
+                .Range(100, 1000)
+                .Select(
+                    i =>
+                    {
+                        var id = Guid.NewGuid();
+                        var testObj =
+                            new TestClassF
+                            {
+                                TestClassId = id,
+                                Value =
+                                    new TestClassD
+                                    {
+                                        DoubleProperty = 1234d,
+                                        FloatProperty = 4567f,
+                                        StringProperty = id.ToString(),
+                                    },
+                            };
+
+                        return testObj;
+                    })
+                .ToList();
+
+        await db.WriteObjectsAsync(testObjs, x => x.TestClassId).ConfigureAwait(false);
+
+        var stopWatch = System.Diagnostics.Stopwatch.StartNew();
+
+        var objs = await db.ReadObjectsWithKeysAsync<TestClassF, TestClassD>(x => x.Value).ConfigureAwait(false);
+
+        stopWatch.Stop();
+
+        Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
+
+        objs.Count().Should().Be(expected);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
     public async Task TychoDb_ReadManyInnerObjectProperty_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
     {
         var expected = 1000;
@@ -1578,6 +1625,8 @@ public class TestClassD
     public float FloatProperty { get; set; }
 
     public double DoubleProperty { get; set; }
+
+    public string StringProperty { get; set; }
 
     public TestClassC ValueC { get; set; }
 }

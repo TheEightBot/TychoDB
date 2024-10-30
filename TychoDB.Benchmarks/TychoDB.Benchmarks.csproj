@@ -23,8 +23,8 @@
         <Folder Include="Benchmarks\" />
     </ItemGroup>
     <ItemGroup>
-        <PackageReference Include="BenchmarkDotNet" Version="0.13.11" />
-        <PackageReference Include="sqlite-net-pcl" Version="1.8.116" />
+        <PackageReference Include="BenchmarkDotNet" Version="0.14.0" />
+        <PackageReference Include="sqlite-net-pcl" Version="1.9.172" />
     </ItemGroup>
     <ItemGroup>
         <ProjectReference Include="../TychoDB.JsonSerializer.NewtonsoftJson/TychoDB.JsonSerializer.NewtonsoftJson.csproj" />

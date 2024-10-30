@@ -29,8 +29,8 @@
         <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.4" />
     </ItemGroup>
     <ItemGroup Condition=" '$(Configuration)' != 'Encrypted' ">
-        <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.0" />
-        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.7" />
+        <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.10" />
     </ItemGroup>
     <ItemGroup>
         <ProjectReference Include="../TychoDB.JsonSerializer/TychoDB.JsonSerializer.csproj" />

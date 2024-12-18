@@ -802,6 +802,100 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
+    public ValueTask<int> DeleteObjectsAsync(string partition, bool withTransaction = true, CancellationToken cancellationToken = default)
+    {
+        return _connection
+            .WithConnectionBlockAsync(
+                _rateLimiter,
+                conn =>
+                {
+                    SqliteTransaction transaction = null;
+
+                    if (withTransaction)
+                    {
+                        transaction = conn.BeginTransaction(IsolationLevel.Serializable);
+                    }
+
+                    try
+                    {
+                        using var deleteCommand = conn.CreateCommand();
+
+                        var commandBuilder = ReusableStringBuilder;
+
+                        commandBuilder.Append(Queries.DeleteDataFromJsonValueWithPartition);
+
+                        deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
+                        deleteCommand.CommandText = commandBuilder.ToString();
+#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
+
+                        var deletionCount = deleteCommand.ExecuteNonQuery();
+
+                        transaction?.Commit();
+
+                        return deletionCount;
+                    }
+                    catch (Exception ex)
+                    {
+                        transaction?.Rollback();
+                        throw new TychoException("Failed to delete objects", ex);
+                    }
+                    finally
+                    {
+                        transaction?.Dispose();
+                    }
+                },
+                _persistConnection,
+                cancellationToken);
+    }
+
+    public ValueTask<int> DeleteObjectsAsync(bool withTransaction = true, CancellationToken cancellationToken = default)
+    {
+        return _connection
+            .WithConnectionBlockAsync(
+                _rateLimiter,
+                conn =>
+                {
+                    SqliteTransaction transaction = null;
+
+                    if (withTransaction)
+                    {
+                        transaction = conn.BeginTransaction(IsolationLevel.Serializable);
+                    }
+
+                    try
+                    {
+                        using var deleteCommand = conn.CreateCommand();
+
+                        var commandBuilder = ReusableStringBuilder;
+
+                        commandBuilder.Append(Queries.DeleteDataFromJsonValue);
+
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
+                        deleteCommand.CommandText = commandBuilder.ToString();
+#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
+
+                        var deletionCount = deleteCommand.ExecuteNonQuery();
+
+                        transaction?.Commit();
+
+                        return deletionCount;
+                    }
+                    catch (Exception ex)
+                    {
+                        transaction?.Rollback();
+                        throw new TychoException("Failed to delete objects", ex);
+                    }
+                    finally
+                    {
+                        transaction?.Dispose();
+                    }
+                },
+                _persistConnection,
+                cancellationToken);
+    }
+
     public ValueTask<bool> WriteBlobAsync(Stream stream, object key, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
     {
         return _connection

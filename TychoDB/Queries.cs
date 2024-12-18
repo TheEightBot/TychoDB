@@ -156,6 +156,20 @@ internal static class Queries
         Partition = $partition
         """;
 
+    public const string DeleteDataFromJsonValueWithPartition =
+        """
+        DELETE
+        FROM JsonValue
+        Where
+        Partition = $partition
+        """;
+
+    public const string DeleteDataFromJsonValue =
+        """
+        DELETE
+        FROM JsonValue
+        """;
+
     public const string DeleteDataFromStreamValueWithKey =
         """
         DELETE

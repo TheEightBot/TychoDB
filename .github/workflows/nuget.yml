@@ -17,9 +17,6 @@ jobs:
             - uses: actions/setup-dotnet@v3
               with:
                   dotnet-version: "8.x"
-                  source-url: https://nuget.pkg.github.com/theeightbot/index.json
-              env:
-                  NUGET_AUTH_TOKEN: ${{secrets.GITHUB_TOKEN}}
 
             - name: Semver Parse
               id: version
@@ -30,7 +27,7 @@ jobs:
             - name: Create the package
               run: dotnet pack --configuration Release /p:AssemblyVersion=${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.${{ steps.version.outputs.patch }} /p:Version=${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.${{ steps.version.outputs.patch }} TychoDB.JsonSerializer/TychoDB.JsonSerializer.csproj
             - name: Publish the package to GPR
-              run: dotnet nuget push TychoDB.JsonSerializer/bin/Release/*.nupkg
+              run: dotnet nuget push TychoDB.JsonSerializer/bin/Release/*.nupkg --api-key "${{secrets.GITHUB_TOKEN}}" --source https://nuget.pkg.github.com/theeightbot/index.json
             - name: Publish the package to NuGet
               run: dotnet nuget push TychoDB.JsonSerializer/bin/Release/*.nupkg --api-key "${{ secrets.EIGHTBOT_NUGET_APIKEY }}" --source https://api.nuget.org/v3/index.json
 
@@ -39,7 +36,7 @@ jobs:
             - name: Create the package
               run: dotnet pack --configuration Release /p:AssemblyVersion=${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.${{ steps.version.outputs.patch }} /p:Version=${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.${{ steps.version.outputs.patch }} TychoDB.JsonSerializer.NewtonsoftJson/TychoDB.JsonSerializer.NewtonsoftJson.csproj
             - name: Publish the package to GPR
-              run: dotnet nuget push TychoDB.JsonSerializer.NewtonsoftJson/bin/Release/*.nupkg
+              run: dotnet nuget push TychoDB.JsonSerializer.NewtonsoftJson/bin/Release/*.nupkg --api-key "${{secrets.GITHUB_TOKEN}}" --source https://nuget.pkg.github.com/theeightbot/index.json
             - name: Publish the package to NuGet
               run: dotnet nuget push TychoDB.JsonSerializer.NewtonsoftJson/bin/Release/*.nupkg --api-key "${{ secrets.EIGHTBOT_NUGET_APIKEY }}" --source https://api.nuget.org/v3/index.json
 
@@ -48,7 +45,7 @@ jobs:
             - name: Create the package
               run: dotnet pack --configuration Release /p:AssemblyVersion=${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.${{ steps.version.outputs.patch }} /p:Version=${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.${{ steps.version.outputs.patch }} TychoDB.JsonSerializer.SystemTextJson/TychoDB.JsonSerializer.SystemTextJson.csproj
             - name: Publish the package to GPR
-              run: dotnet nuget push TychoDB.JsonSerializer.SystemTextJson/bin/Release/*.nupkg
+              run: dotnet nuget push TychoDB.JsonSerializer.SystemTextJson/bin/Release/*.nupkg --api-key "${{secrets.GITHUB_TOKEN}}" --source https://nuget.pkg.github.com/theeightbot/index.json
             - name: Publish the package to NuGet
               run: dotnet nuget push TychoDB.JsonSerializer.SystemTextJson/bin/Release/*.nupkg --api-key "${{ secrets.EIGHTBOT_NUGET_APIKEY }}" --source https://api.nuget.org/v3/index.json
 
@@ -57,6 +54,6 @@ jobs:
             - name: Create the package
               run: dotnet pack --configuration Release  /p:AssemblyVersion=${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.${{ steps.version.outputs.patch }} /p:Version=${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.${{ steps.version.outputs.patch }} TychoDB/TychoDB.csproj
             - name: Publish the package to GPR
-              run: dotnet nuget push TychoDB/bin/Release/*.nupkg
+              run: dotnet nuget push TychoDB/bin/Release/*.nupkg --api-key "${{secrets.GITHUB_TOKEN}}" --source https://nuget.pkg.github.com/theeightbot/index.json
             - name: Publish the package to NuGet
               run: dotnet nuget push TychoDB/bin/Release/*.nupkg --api-key "${{ secrets.EIGHTBOT_NUGET_APIKEY }}" --source https://api.nuget.org/v3/index.json

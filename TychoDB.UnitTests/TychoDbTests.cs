@@ -1776,6 +1776,8 @@ public abstract class ModelBase : INotifyPropertyChanged
 [JsonSerializable(typeof(TestClassF))]
 [JsonSerializable(typeof(TestClassF))]
 [JsonSerializable(typeof(Patient))]
+[JsonSerializable(typeof(User))]
+[JsonSerializable(typeof(List<User>))]
 internal partial class TestJsonContext : JsonSerializerContext
 {
 }

@@ -31,21 +31,21 @@ public class Tycho : IDisposable
     private readonly IJsonSerializer _jsonSerializer;
 
     private readonly bool _persistConnection;
-
     private readonly bool _requireTypeRegistration;
+    private readonly bool _useConnectionPooling;
+    private readonly int _commandTimeout;
 
     private readonly Dictionary<Type, RegisteredTypeInformation> _registeredTypeInformation = new();
+
+    // Using a ThreadLocal StringBuilder for better performance with multi-threading
+    private readonly ThreadLocal<StringBuilder> _commandBuilder = new(() => new StringBuilder(1024));
 
     private readonly RateLimiter _rateLimiter =
         new ConcurrencyLimiter(
             new ConcurrencyLimiterOptions
             {
-                PermitLimit = 1,
-                QueueLimit = int.MaxValue,
-                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                PermitLimit = 1, QueueLimit = int.MaxValue, QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
             });
-
-    private readonly StringBuilder _commandBuilder = new();
 
     private SqliteConnection _connection;
 
@@ -55,8 +55,9 @@ public class Tycho : IDisposable
     {
         get
         {
-            _commandBuilder.Clear();
-            return _commandBuilder;
+            var builder = _commandBuilder.Value;
+            builder.Clear();
+            return builder;
         }
     }
 
@@ -70,11 +71,24 @@ public class Tycho : IDisposable
     /// <param name="persistConnection">Indicates whether the database connection should be persisted. Default is true.</param>
     /// <param name="rebuildCache">Indicates whether to rebuild the cache by deleting the existing database file. Default is false.</param>
     /// <param name="requireTypeRegistration">Indicates whether type registration is required. Default is true.</param>
-    public Tycho(string dbPath, IJsonSerializer jsonSerializer, string dbName = "tycho_cache.db", string password = null, bool persistConnection = true, bool rebuildCache = false, bool requireTypeRegistration = true)
+    /// <param name="useConnectionPooling">Indicates whether to use connection pooling. Default is true.</param>
+    /// <param name="commandTimeout">The timeout for commands in seconds. Default is 30 seconds.</param>
+    public Tycho(
+        string dbPath,
+        IJsonSerializer jsonSerializer,
+        string dbName = "tycho_cache.db",
+        string password = null,
+        bool persistConnection = true,
+        bool rebuildCache = false,
+        bool requireTypeRegistration = true,
+        bool useConnectionPooling = true,
+        int commandTimeout = 30)
     {
         SQLitePCL.Batteries_V2.Init();
 
-        _jsonSerializer = jsonSerializer;
+        _jsonSerializer = jsonSerializer ?? throw new ArgumentNullException(nameof(jsonSerializer));
+        _useConnectionPooling = useConnectionPooling;
+        _commandTimeout = commandTimeout;
 
         var databasePath = Path.Join(dbPath, dbName);
 
@@ -95,6 +109,9 @@ public class Tycho : IDisposable
         {
             connectionStringBuilder.Password = password;
         }
+
+        // Add pooling configuration
+        connectionStringBuilder.Pooling = useConnectionPooling;
 
         _dbConnectionString = connectionStringBuilder.ToString();
 
@@ -182,22 +199,26 @@ public class Tycho : IDisposable
         _connection = null;
     }
 
-    public ValueTask<bool> WriteObjectAsync<T>(T obj, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
+    public ValueTask<bool> WriteObjectAsync<T>(T obj, string partition = null, bool withTransaction = true,
+        CancellationToken cancellationToken = default)
     {
         return WriteObjectsAsync(new[] { obj }, GetIdSelectorFor<T>(), partition, withTransaction, cancellationToken);
     }
 
-    public ValueTask<bool> WriteObjectAsync<T>(T obj, Func<T, object> keySelector, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
+    public ValueTask<bool> WriteObjectAsync<T>(T obj, Func<T, object> keySelector, string partition = null,
+        bool withTransaction = true, CancellationToken cancellationToken = default)
     {
         return WriteObjectsAsync(new[] { obj }, keySelector, partition, withTransaction, cancellationToken);
     }
 
-    public ValueTask<bool> WriteObjectsAsync<T>(IEnumerable<T> objs, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
+    public ValueTask<bool> WriteObjectsAsync<T>(IEnumerable<T> objs, string partition = null,
+        bool withTransaction = true, CancellationToken cancellationToken = default)
     {
         return WriteObjectsAsync(objs, GetIdSelectorFor<T>(), partition, withTransaction, cancellationToken);
     }
 
-    public ValueTask<bool> WriteObjectsAsync<T>(IEnumerable<T> objs, Func<T, object> keySelector, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
+    public ValueTask<bool> WriteObjectsAsync<T>(IEnumerable<T> objs, Func<T, object> keySelector,
+        string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
     {
         if (objs == null)
         {
@@ -227,7 +248,19 @@ public class Tycho : IDisposable
 
                     try
                     {
+                        // Convert to list to avoid multiple enumeration
+                        var objsList = objs as IList<T> ?? objs.ToList();
+                        potentialTotalCount = objsList.Count;
+
+                        if (potentialTotalCount == 0)
+                        {
+                            // Nothing to write
+                            transaction?.Commit();
+                            return true;
+                        }
+
                         using var insertCommand = conn.CreateCommand();
+                        insertCommand.CommandTimeout = _commandTimeout;
                         insertCommand.CommandText = Queries.InsertOrReplace;
 
                         var keyParameter = insertCommand.Parameters.Add(ParameterKey, SqliteType.Text);
@@ -241,20 +274,33 @@ public class Tycho : IDisposable
                             .Add(ParameterPartition, SqliteType.Text)
                             .Value = partition.AsValueOrEmptyString();
 
-                        foreach (var obj in objs)
+                        // Batch processing for large datasets
+                        const int batchSize = 100;
+
+                        for (int i = 0; i < potentialTotalCount; i += batchSize)
                         {
-                            ++potentialTotalCount;
-                            keyParameter.Value = keySelector(obj);
-                            jsonParameter.Value = _jsonSerializer.Serialize(obj);
+                            int currentBatchSize = Math.Min(batchSize, potentialTotalCount - i);
 
-                            var rowId = (long)insertCommand.ExecuteScalar();
+                            for (int j = 0; j < currentBatchSize; j++)
+                            {
+                                var obj = objsList[i + j];
+                                keyParameter.Value = keySelector(obj);
+                                jsonParameter.Value = _jsonSerializer.Serialize(obj);
 
-                            writeCount += rowId > 0 ? 1 : 0;
+                                var rowId = (long)insertCommand.ExecuteScalar();
+                                writeCount += rowId > 0 ? 1 : 0;
+                            }
+
+                            // Check for cancellation between batches
+                            if (cancellationToken.IsCancellationRequested)
+                            {
+                                break;
+                            }
                         }
 
                         successful = writeCount == potentialTotalCount;
 
-                        if (successful)
+                        if (successful && !cancellationToken.IsCancellationRequested)
                         {
                             transaction?.Commit();
                         }
@@ -279,7 +325,8 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
-    public ValueTask<int> CountObjectsAsync<T>(string partition = null, FilterBuilder<T> filter = null, bool withTransaction = false, CancellationToken cancellationToken = default)
+    public ValueTask<int> CountObjectsAsync<T>(string partition = null, FilterBuilder<T> filter = null,
+        bool withTransaction = false, CancellationToken cancellationToken = default)
     {
         if (_requireTypeRegistration)
         {
@@ -307,7 +354,8 @@ public class Tycho : IDisposable
                         commandBuilder.Append(Queries.SelectCountFromJsonValueWithFullTypeName);
 
                         selectCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(T).FullName;
-                        selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+                        selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
+                            partition.AsValueOrEmptyString();
 
                         if (filter != null)
                         {
@@ -345,12 +393,14 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
-    public ValueTask<bool> ObjectExistsAsync<T>(T obj, string partition = null, bool withTransaction = false, CancellationToken cancellationToken = default)
+    public ValueTask<bool> ObjectExistsAsync<T>(T obj, string partition = null, bool withTransaction = false,
+        CancellationToken cancellationToken = default)
     {
         return ObjectExistsAsync<T>(GetIdFor(obj), partition, withTransaction, cancellationToken);
     }
 
-    public ValueTask<bool> ObjectExistsAsync<T>(object key, string partition = null, bool withTransaction = false, CancellationToken cancellationToken = default)
+    public ValueTask<bool> ObjectExistsAsync<T>(object key, string partition = null, bool withTransaction = false,
+        CancellationToken cancellationToken = default)
     {
         if (key == null)
         {
@@ -379,7 +429,8 @@ public class Tycho : IDisposable
 
                         selectCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
                         selectCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(T).FullName;
-                        selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+                        selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
+                            partition.AsValueOrEmptyString();
 
 #pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
                         selectCommand.CommandText = commandBuilder.ToString();
@@ -411,12 +462,14 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
-    public ValueTask<T> ReadObjectAsync<T>(T obj, string partition = null, bool withTransaction = false, CancellationToken cancellationToken = default)
+    public ValueTask<T> ReadObjectAsync<T>(T obj, string partition = null, bool withTransaction = false,
+        CancellationToken cancellationToken = default)
     {
         return ReadObjectAsync<T>(GetIdFor(obj), partition, withTransaction, cancellationToken);
     }
 
-    public ValueTask<T> ReadObjectAsync<T>(object key, string partition = null, bool withTransaction = false, CancellationToken cancellationToken = default)
+    public ValueTask<T> ReadObjectAsync<T>(object key, string partition = null, bool withTransaction = false,
+        CancellationToken cancellationToken = default)
     {
         if (key == null)
         {
@@ -445,7 +498,8 @@ public class Tycho : IDisposable
 
                         selectCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
                         selectCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(T).FullName;
-                        selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+                        selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
+                            partition.AsValueOrEmptyString();
 
 #pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
                         selectCommand.CommandText = commandBuilder.ToString();
@@ -457,7 +511,8 @@ public class Tycho : IDisposable
                         while (reader.Read())
                         {
                             using var stream = reader.GetStream(0);
-                            returnValue = await _jsonSerializer.DeserializeAsync<T>(stream, cancellationToken).ConfigureAwait(false);
+                            returnValue = await _jsonSerializer.DeserializeAsync<T>(stream, cancellationToken)
+                                .ConfigureAwait(false);
                         }
 
                         transaction?.Commit();
@@ -485,7 +540,8 @@ public class Tycho : IDisposable
         CancellationToken cancellationToken = default)
     {
         var results =
-            await ReadObjectsAsync(partition, filter, null, 1, withTransaction, cancellationToken).ConfigureAwait(false);
+            await ReadObjectsAsync(partition, filter, null, 1, withTransaction, cancellationToken)
+                .ConfigureAwait(false);
 
         return results.FirstOrDefault();
     }
@@ -496,15 +552,18 @@ public class Tycho : IDisposable
         bool withTransaction = false,
         CancellationToken cancellationToken = default)
     {
-        var matches = await CountObjectsAsync(partition, filter, withTransaction, cancellationToken).ConfigureAwait(false);
+        var matches = await CountObjectsAsync(partition, filter, withTransaction, cancellationToken)
+            .ConfigureAwait(false);
 
         if (matches > 1)
         {
-            throw new TychoException("Too many matching values were found, please refine your query to limit it to a single match");
+            throw new TychoException(
+                "Too many matching values were found, please refine your query to limit it to a single match");
         }
 
         var results =
-            await ReadObjectsAsync(partition, filter, null, 1, withTransaction, cancellationToken).ConfigureAwait(false);
+            await ReadObjectsAsync(partition, filter, null, 1, withTransaction, cancellationToken)
+                .ConfigureAwait(false);
 
         return results.FirstOrDefault();
     }
@@ -537,13 +596,15 @@ public class Tycho : IDisposable
                     try
                     {
                         using var selectCommand = conn.CreateCommand();
+                        selectCommand.CommandTimeout = _commandTimeout;
 
                         var commandBuilder = ReusableStringBuilder;
 
                         commandBuilder.Append(Queries.SelectDataFromJsonValueWithFullTypeName);
 
                         selectCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(T).FullName;
-                        selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+                        selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
+                            partition.AsValueOrEmptyString();
 
                         if (filter != null)
                         {
@@ -564,14 +625,46 @@ public class Tycho : IDisposable
                         selectCommand.CommandText = commandBuilder.ToString();
 #pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
-                        using var reader = selectCommand.ExecuteReader();
+                        // Use CommandBehavior.SequentialAccess for better performance
+                        using var reader = selectCommand.ExecuteReader(CommandBehavior.SequentialAccess);
 
-                        var objects = new List<T>();
+                        // Pre-allocate collection to prevent resizing
+                        List<T> objects;
+
+                        // Try to determine list size beforehand for better memory efficiency
+                        if (top.HasValue)
+                        {
+                            objects = new List<T>(top.Value);
+                        }
+                        else
+                        {
+                            objects = new List<T>();
+                        }
+
+                        // Use buffered reading for optimal performance
+                        const int bufferSize = 1024 * 32; // 32 KB buffer
+                        byte[] buffer = new byte[bufferSize];
 
                         while (reader.Read())
                         {
+                            if (cancellationToken.IsCancellationRequested)
+                            {
+                                break;
+                            }
+
                             using var stream = reader.GetStream(0);
-                            objects.Add(await _jsonSerializer.DeserializeAsync<T>(stream, cancellationToken).ConfigureAwait(false));
+                            using var memoryStream = new MemoryStream();
+
+                            int bytesRead;
+                            while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken)
+                                       .ConfigureAwait(false)) > 0)
+                            {
+                                memoryStream.Write(buffer, 0, bytesRead);
+                            }
+
+                            memoryStream.Position = 0;
+                            objects.Add(await _jsonSerializer.DeserializeAsync<T>(memoryStream, cancellationToken)
+                                .ConfigureAwait(false));
                         }
 
                         transaction?.Commit();
@@ -600,7 +693,8 @@ public class Tycho : IDisposable
         CancellationToken cancellationToken = default)
     {
         var results =
-            await ReadObjectsWithKeysAsync(innerObjectSelection, partition, filter, withTransaction, cancellationToken).ConfigureAwait(false);
+            await ReadObjectsWithKeysAsync(innerObjectSelection, partition, filter, withTransaction, cancellationToken)
+                .ConfigureAwait(false);
 
         return results.Select(x => x.InnerObject);
     }
@@ -641,8 +735,10 @@ public class Tycho : IDisposable
 
                         commandBuilder.Append(Queries.ExtractDataAndKeyFromJsonValueWithFullTypeName(selectionPath));
 
-                        selectCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(TIn).FullName;
-                        selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+                        selectCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value =
+                            typeof(TIn).FullName;
+                        selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
+                            partition.AsValueOrEmptyString();
 
                         if (filter != null)
                         {
@@ -660,7 +756,8 @@ public class Tycho : IDisposable
                             var key = reader.GetString(0);
 
                             using var innerObjectStream = reader.GetStream(1);
-                            var innerObject = await _jsonSerializer.DeserializeAsync<TOut>(innerObjectStream, cancellationToken).ConfigureAwait(false);
+                            var innerObject = await _jsonSerializer
+                                .DeserializeAsync<TOut>(innerObjectStream, cancellationToken).ConfigureAwait(false);
 
                             objects.Add((key, innerObject));
                         }
@@ -683,12 +780,14 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
-    public ValueTask<bool> DeleteObjectAsync<T>(T obj, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
+    public ValueTask<bool> DeleteObjectAsync<T>(T obj, string partition = null, bool withTransaction = true,
+        CancellationToken cancellationToken = default)
     {
         return DeleteObjectAsync(GetIdFor(obj), partition, withTransaction, cancellationToken);
     }
 
-    public ValueTask<bool> DeleteObjectAsync<T>(object key, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
+    public ValueTask<bool> DeleteObjectAsync<T>(object key, string partition = null, bool withTransaction = true,
+        CancellationToken cancellationToken = default)
     {
         if (_requireTypeRegistration)
         {
@@ -717,7 +816,8 @@ public class Tycho : IDisposable
 
                         deleteCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
                         deleteCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(T).FullName;
-                        deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+                        deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
+                            partition.AsValueOrEmptyString();
 
 #pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
                         deleteCommand.CommandText = commandBuilder.ToString();
@@ -743,7 +843,8 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
-    public ValueTask<int> DeleteObjectsAsync<T>(string partition = null, FilterBuilder<T> filter = null, bool withTransaction = true, CancellationToken cancellationToken = default)
+    public ValueTask<int> DeleteObjectsAsync<T>(string partition = null, FilterBuilder<T> filter = null,
+        bool withTransaction = true, CancellationToken cancellationToken = default)
     {
         if (_requireTypeRegistration)
         {
@@ -771,7 +872,8 @@ public class Tycho : IDisposable
                         commandBuilder.Append(Queries.DeleteDataFromJsonValueWithFullTypeName);
 
                         deleteCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(T).FullName;
-                        deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+                        deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
+                            partition.AsValueOrEmptyString();
 
                         if (filter != null)
                         {
@@ -802,7 +904,8 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
-    public ValueTask<int> DeleteObjectsAsync(string partition, bool withTransaction = true, CancellationToken cancellationToken = default)
+    public ValueTask<int> DeleteObjectsAsync(string partition, bool withTransaction = true,
+        CancellationToken cancellationToken = default)
     {
         return _connection
             .WithConnectionBlockAsync(
@@ -824,7 +927,8 @@ public class Tycho : IDisposable
 
                         commandBuilder.Append(Queries.DeleteDataFromJsonValueWithPartition);
 
-                        deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+                        deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
+                            partition.AsValueOrEmptyString();
 
 #pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
                         deleteCommand.CommandText = commandBuilder.ToString();
@@ -896,7 +1000,8 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
-    public ValueTask<bool> WriteBlobAsync(Stream stream, object key, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
+    public ValueTask<bool> WriteBlobAsync(Stream stream, object key, string partition = null,
+        bool withTransaction = true, CancellationToken cancellationToken = default)
     {
         return _connection
             .WithConnectionBlockAsync(
@@ -918,7 +1023,8 @@ public class Tycho : IDisposable
                         insertCommand.CommandText = Queries.InsertOrReplaceBlob;
 
                         insertCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
-                        insertCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+                        insertCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
+                            partition.AsValueOrEmptyString();
                         insertCommand.Parameters.AddWithValue(ParameterBlobLength, stream.Length);
 
                         var rowId = (long)insertCommand.ExecuteScalar();
@@ -927,7 +1033,8 @@ public class Tycho : IDisposable
 
                         if (writeCount > 0)
                         {
-                            using (var writeStream = new SqliteBlob(conn, TableStreamValue, TableStreamValueDataColumn, rowId))
+                            using (var writeStream = new SqliteBlob(conn, TableStreamValue, TableStreamValueDataColumn,
+                                       rowId))
                             {
                                 await stream.CopyToAsync(writeStream, cancellationToken).ConfigureAwait(false);
                             }
@@ -951,7 +1058,8 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
-    public ValueTask<bool> BlobExistsAsync(object key, string partition = null, CancellationToken cancellationToken = default)
+    public ValueTask<bool> BlobExistsAsync(object key, string partition = null,
+        CancellationToken cancellationToken = default)
     {
         return _connection
             .WithConnectionBlockAsync(
@@ -968,7 +1076,8 @@ public class Tycho : IDisposable
 
                         selectCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
 
-                        selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+                        selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
+                            partition.AsValueOrEmptyString();
 
 #pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
                         selectCommand.CommandText = commandBuilder.ToString();
@@ -993,7 +1102,8 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
-    public ValueTask<Stream> ReadBlobAsync(object key, string partition = null, CancellationToken cancellationToken = default)
+    public ValueTask<Stream> ReadBlobAsync(object key, string partition = null,
+        CancellationToken cancellationToken = default)
     {
         return _connection
             .WithConnectionBlockAsync(
@@ -1010,7 +1120,8 @@ public class Tycho : IDisposable
 
                         selectCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
 
-                        selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+                        selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
+                            partition.AsValueOrEmptyString();
 
 #pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
                         selectCommand.CommandText = commandBuilder.ToString();
@@ -1035,7 +1146,8 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
-    public ValueTask<bool> DeleteBlobAsync(object key, string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
+    public ValueTask<bool> DeleteBlobAsync(object key, string partition = null, bool withTransaction = true,
+        CancellationToken cancellationToken = default)
     {
         return _connection
             .WithConnectionBlockAsync(
@@ -1058,7 +1170,8 @@ public class Tycho : IDisposable
                         commandBuilder.Append(Queries.DeleteDataFromStreamValueWithKey);
 
                         deleteCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
-                        deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+                        deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
+                            partition.AsValueOrEmptyString();
 
 #pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
                         deleteCommand.CommandText = commandBuilder.ToString();
@@ -1084,7 +1197,8 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
-    public ValueTask<(bool Successful, int Count)> DeleteBlobsAsync(string partition, bool withTransaction = true, CancellationToken cancellationToken = default)
+    public ValueTask<(bool Successful, int Count)> DeleteBlobsAsync(string partition, bool withTransaction = true,
+        CancellationToken cancellationToken = default)
     {
         return _connection
             .WithConnectionBlockAsync(
@@ -1105,7 +1219,8 @@ public class Tycho : IDisposable
                         var commandBuilder = ReusableStringBuilder;
 
                         commandBuilder.Append(Queries.DeleteDataFromStreamValueWithPartition);
-                        deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partition.AsValueOrEmptyString();
+                        deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
+                            partition.AsValueOrEmptyString();
 
 #pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
                         deleteCommand.CommandText = commandBuilder.ToString();
@@ -1138,7 +1253,8 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<TObj>();
         }
 
-        return CreateIndex(QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath), GetSafeTypeName<TObj>(), indexName);
+        return CreateIndex(QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath),
+            GetSafeTypeName<TObj>(), indexName);
     }
 
     public Tycho CreateIndex(string propertyPathString, bool isNumeric, string objectTypeName, string indexName)
@@ -1158,13 +1274,15 @@ public class Tycho : IDisposable
                         if (isNumeric)
                         {
 #pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
-                            createIndexCommand.CommandText = Queries.CreateIndexForJsonValueAsNumeric(fullIndexName, propertyPathString);
+                            createIndexCommand.CommandText =
+                                Queries.CreateIndexForJsonValueAsNumeric(fullIndexName, propertyPathString);
 #pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
                         }
                         else
                         {
 #pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
-                            createIndexCommand.CommandText = Queries.CreateIndexForJsonValue(fullIndexName, propertyPathString);
+                            createIndexCommand.CommandText =
+                                Queries.CreateIndexForJsonValue(fullIndexName, propertyPathString);
 #pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
                         }
 
@@ -1183,17 +1301,20 @@ public class Tycho : IDisposable
         return this;
     }
 
-    public ValueTask<bool> CreateIndexAsync<TObj>(Expression<Func<TObj, object>> propertyPath, string indexName, CancellationToken cancellationToken = default)
+    public ValueTask<bool> CreateIndexAsync<TObj>(Expression<Func<TObj, object>> propertyPath, string indexName,
+        CancellationToken cancellationToken = default)
     {
         if (_requireTypeRegistration)
         {
             CheckHasRegisteredType<TObj>();
         }
 
-        return CreateIndexAsync(QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath), GetSafeTypeName<TObj>(), indexName, cancellationToken);
+        return CreateIndexAsync(QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath),
+            GetSafeTypeName<TObj>(), indexName, cancellationToken);
     }
 
-    public ValueTask<bool> CreateIndexAsync(string propertyPathString, bool isNumeric, string objectTypeName, string indexName, CancellationToken cancellationToken = default)
+    public ValueTask<bool> CreateIndexAsync(string propertyPathString, bool isNumeric, string objectTypeName,
+        string indexName, CancellationToken cancellationToken = default)
     {
         return _connection
             .WithConnectionBlockAsync(
@@ -1239,9 +1360,9 @@ public class Tycho : IDisposable
         }
 
         var processedPaths =
-                propertyPaths
-                    .Select(x => (QueryPropertyPath.BuildPath(x), QueryPropertyPath.IsNumeric(x)))
-                    .ToArray();
+            propertyPaths
+                .Select(x => (QueryPropertyPath.BuildPath(x), QueryPropertyPath.IsNumeric(x)))
+                .ToArray();
 
         _connection
             .WithConnectionBlock(
@@ -1274,7 +1395,8 @@ public class Tycho : IDisposable
         return this;
     }
 
-    public ValueTask<bool> CreateIndexAsync<TObj>(Expression<Func<TObj, object>>[] propertyPaths, string indexName, CancellationToken cancellationToken = default)
+    public ValueTask<bool> CreateIndexAsync<TObj>(Expression<Func<TObj, object>>[] propertyPaths, string indexName,
+        CancellationToken cancellationToken = default)
     {
         if (_requireTypeRegistration)
         {
@@ -1282,9 +1404,9 @@ public class Tycho : IDisposable
         }
 
         var processedPaths =
-                propertyPaths
-                    .Select(x => (QueryPropertyPath.BuildPath(x), QueryPropertyPath.IsNumeric(x)))
-                    .ToArray();
+            propertyPaths
+                .Select(x => (QueryPropertyPath.BuildPath(x), QueryPropertyPath.IsNumeric(x)))
+                .ToArray();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -1421,6 +1543,7 @@ public class Tycho : IDisposable
 
         if (disposing)
         {
+            _commandBuilder.Dispose();
             _rateLimiter?.Dispose();
             _connection?.Close();
             _connection?.Dispose();
@@ -1557,7 +1680,8 @@ public class Tycho : IDisposable
 
 internal static class SqliteExtensions
 {
-    public static T WithConnectionBlock<T>(this SqliteConnection connection, RateLimiter rateLimiter, Func<SqliteConnection, T> func, bool persistConnection)
+    public static T WithConnectionBlock<T>(this SqliteConnection connection, RateLimiter rateLimiter,
+        Func<SqliteConnection, T> func, bool persistConnection)
     {
         if (connection == null)
         {
@@ -1584,7 +1708,8 @@ internal static class SqliteExtensions
         }
     }
 
-    public static void WithConnectionBlock(this SqliteConnection connection, RateLimiter rateLimiter, Action<SqliteConnection> action, bool persistConnection)
+    public static void WithConnectionBlock(this SqliteConnection connection, RateLimiter rateLimiter,
+        Action<SqliteConnection> action, bool persistConnection)
     {
         if (connection == null)
         {
@@ -1611,7 +1736,12 @@ internal static class SqliteExtensions
         }
     }
 
-    public static async ValueTask<T> WithConnectionBlockAsync<T>(this SqliteConnection connection, RateLimiter rateLimiter, Func<SqliteConnection, T> func, bool persistConnection, CancellationToken cancellationToken = default)
+    public static async ValueTask<T> WithConnectionBlockAsync<T>(
+        this SqliteConnection connection,
+        RateLimiter rateLimiter,
+        Func<SqliteConnection, T> func,
+        bool persistConnection,
+        CancellationToken cancellationToken = default)
     {
         if (connection == null)
         {
@@ -1638,7 +1768,12 @@ internal static class SqliteExtensions
         }
     }
 
-    public static async ValueTask<T> WithConnectionBlockAsync<T>(this SqliteConnection connection, RateLimiter rateLimiter, Func<SqliteConnection, ValueTask<T>> func, bool persistConnection, CancellationToken cancellationToken = default)
+    public static async ValueTask<T> WithConnectionBlockAsync<T>(
+        this SqliteConnection connection,
+        RateLimiter rateLimiter,
+        Func<SqliteConnection, ValueTask<T>> func,
+        bool persistConnection,
+        CancellationToken cancellationToken = default)
     {
         if (connection == null)
         {

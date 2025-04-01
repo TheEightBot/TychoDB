@@ -1,4 +1,6 @@
 using System;
+using System.Buffers;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
 using System.IO;
@@ -14,6 +16,7 @@ namespace TychoDB;
 
 public class Tycho : IDisposable
 {
+    // Constants for parameter names - using static fields avoids string allocations
     private const string
         ParameterFullTypeName = "$fullTypeName",
         ParameterPartition = "$partition",
@@ -24,21 +27,29 @@ public class Tycho : IDisposable
         TableStreamValue = "StreamValue",
         TableStreamValueDataColumn = "Data";
 
+    // Parameter cache - reuse parameter objects to reduce allocations
+    private readonly ConcurrentDictionary<string, SqliteParameter> _parameterCache = new();
+
     private readonly object _connectionLock = new();
-
     private readonly string _dbConnectionString;
-
     private readonly IJsonSerializer _jsonSerializer;
-
     private readonly bool _persistConnection;
     private readonly bool _requireTypeRegistration;
-    private readonly bool _useConnectionPooling;
     private readonly int _commandTimeout;
-
     private readonly Dictionary<Type, RegisteredTypeInformation> _registeredTypeInformation = new();
 
     // Using a ThreadLocal StringBuilder for better performance with multi-threading
     private readonly ThreadLocal<StringBuilder> _commandBuilder = new(() => new StringBuilder(1024));
+
+    // Use ObjectPool for MemoryStream instances
+    private readonly ObjectPool<MemoryStream> _memoryStreamPool = new ObjectPool<MemoryStream>(
+        () => new MemoryStream(4096),
+        stream =>
+        {
+            stream.SetLength(0);
+            stream.Position = 0;
+            return stream;
+        });
 
     private readonly RateLimiter _rateLimiter =
         new ConcurrencyLimiter(
@@ -48,7 +59,6 @@ public class Tycho : IDisposable
             });
 
     private SqliteConnection _connection;
-
     private bool _isDisposed;
 
     private StringBuilder ReusableStringBuilder
@@ -87,7 +97,6 @@ public class Tycho : IDisposable
         SQLitePCL.Batteries_V2.Init();
 
         _jsonSerializer = jsonSerializer ?? throw new ArgumentNullException(nameof(jsonSerializer));
-        _useConnectionPooling = useConnectionPooling;
         _commandTimeout = commandTimeout;
 
         var databasePath = Path.Join(dbPath, dbName);
@@ -101,7 +110,7 @@ public class Tycho : IDisposable
             new SqliteConnectionStringBuilder
             {
                 ConnectionString = $"Filename={databasePath}",
-                Cache = SqliteCacheMode.Default,
+                Cache = SqliteCacheMode.Shared, // Use shared cache for better performance
                 Mode = SqliteOpenMode.ReadWriteCreate,
             };
 
@@ -111,15 +120,28 @@ public class Tycho : IDisposable
         }
 
         // Add pooling configuration
-        connectionStringBuilder.Pooling = useConnectionPooling;
+        if (useConnectionPooling)
+        {
+            connectionStringBuilder.Pooling = true;
+        }
+        else
+        {
+            connectionStringBuilder.Pooling = false;
+        }
 
         _dbConnectionString = connectionStringBuilder.ToString();
-
         _persistConnection = persistConnection;
-
         _requireTypeRegistration = requireTypeRegistration;
     }
 
+    /// <summary>
+    /// Adds type registration with a custom ID property selector.
+    /// </summary>
+    /// <typeparam name="T">The type of objects to be registered.</typeparam>
+    /// <typeparam name="TId">The type of the ID property.</typeparam>
+    /// <param name="idPropertySelector">An expression that selects the ID property from the object.</param>
+    /// <param name="idComparer">Optional custom equality comparer for the ID type.</param>
+    /// <returns>The current Tycho instance for method chaining.</returns>
     public Tycho AddTypeRegistration<T, TId>(
         Expression<Func<T, object>> idPropertySelector,
         EqualityComparer<TId> idComparer = null)
@@ -132,6 +154,12 @@ public class Tycho : IDisposable
         return this;
     }
 
+    /// <summary>
+    /// Adds type registration using convention-based ID property detection.
+    /// </summary>
+    /// <typeparam name="T">The type of objects to be registered.</typeparam>
+    /// <returns>The current Tycho instance for method chaining.</returns>
+    /// <remarks>This method attempts to find an ID property based on naming conventions.</remarks>
     public Tycho AddTypeRegistration<T>()
         where T : class
     {
@@ -142,6 +170,13 @@ public class Tycho : IDisposable
         return this;
     }
 
+    /// <summary>
+    /// Adds type registration with a custom key selector function.
+    /// </summary>
+    /// <typeparam name="T">The type of objects to be registered.</typeparam>
+    /// <param name="keySelector">A function that extracts the key from an object instance.</param>
+    /// <param name="idComparer">Optional custom equality comparer for string IDs.</param>
+    /// <returns>The current Tycho instance for method chaining.</returns>
     public Tycho AddTypeRegistrationWithCustomKeySelector<T>(
         Func<T, object> keySelector,
         EqualityComparer<string> idComparer = null)
@@ -154,6 +189,10 @@ public class Tycho : IDisposable
         return this;
     }
 
+    /// <summary>
+    /// Opens a connection to the database.
+    /// </summary>
+    /// <returns>The current Tycho instance for method chaining.</returns>
     public Tycho Connect()
     {
         if (_connection != null)
@@ -166,6 +205,10 @@ public class Tycho : IDisposable
         return this;
     }
 
+    /// <summary>
+    /// Asynchronously opens a connection to the database.
+    /// </summary>
+    /// <returns>A ValueTask containing the current Tycho instance for method chaining.</returns>
     public async ValueTask<Tycho> ConnectAsync()
     {
         if (_connection != null)
@@ -178,6 +221,9 @@ public class Tycho : IDisposable
         return this;
     }
 
+    /// <summary>
+    /// Closes the current database connection.
+    /// </summary>
     public void Disconnect()
     {
         lock (_connectionLock)
@@ -187,6 +233,10 @@ public class Tycho : IDisposable
         }
     }
 
+    /// <summary>
+    /// Asynchronously closes the current database connection.
+    /// </summary>
+    /// <returns>A ValueTask representing the asynchronous operation.</returns>
     public async ValueTask DisconnectAsync()
     {
         if (_connection == null)
@@ -199,24 +249,62 @@ public class Tycho : IDisposable
         _connection = null;
     }
 
+    /// <summary>
+    /// Writes a single object to the database using registered type information to determine the ID.
+    /// </summary>
+    /// <typeparam name="T">The type of the object to write.</typeparam>
+    /// <param name="obj">The object to write.</param>
+    /// <param name="partition">Optional partition key to organize objects.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
     public ValueTask<bool> WriteObjectAsync<T>(T obj, string partition = null, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
         return WriteObjectsAsync(new[] { obj }, GetIdSelectorFor<T>(), partition, withTransaction, cancellationToken);
     }
 
+    /// <summary>
+    /// Writes a single object to the database using a custom key selector.
+    /// </summary>
+    /// <typeparam name="T">The type of the object to write.</typeparam>
+    /// <param name="obj">The object to write.</param>
+    /// <param name="keySelector">A function that extracts the key from the object.</param>
+    /// <param name="partition">Optional partition key to organize objects.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
     public ValueTask<bool> WriteObjectAsync<T>(T obj, Func<T, object> keySelector, string partition = null,
         bool withTransaction = true, CancellationToken cancellationToken = default)
     {
         return WriteObjectsAsync(new[] { obj }, keySelector, partition, withTransaction, cancellationToken);
     }
 
+    /// <summary>
+    /// Writes multiple objects to the database using registered type information to determine the IDs.
+    /// </summary>
+    /// <typeparam name="T">The type of the objects to write.</typeparam>
+    /// <param name="objs">The collection of objects to write.</param>
+    /// <param name="partition">Optional partition key to organize objects.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
     public ValueTask<bool> WriteObjectsAsync<T>(IEnumerable<T> objs, string partition = null,
         bool withTransaction = true, CancellationToken cancellationToken = default)
     {
         return WriteObjectsAsync(objs, GetIdSelectorFor<T>(), partition, withTransaction, cancellationToken);
     }
 
+    /// <summary>
+    /// Writes multiple objects to the database using a custom key selector.
+    /// </summary>
+    /// <typeparam name="T">The type of the objects to write.</typeparam>
+    /// <param name="objs">The collection of objects to write.</param>
+    /// <param name="keySelector">A function that extracts the key from each object.</param>
+    /// <param name="partition">Optional partition key to organize objects.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
     public ValueTask<bool> WriteObjectsAsync<T>(IEnumerable<T> objs, Func<T, object> keySelector,
         string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
     {
@@ -246,10 +334,19 @@ public class Tycho : IDisposable
                         transaction = conn.BeginTransaction(IsolationLevel.Serializable);
                     }
 
+                    // GetPooledCommand(conn, Queries.InsertOrReplace);
+                    var command = conn.CreateCommand();
+#pragma warning disable CA2100
+
+                    // TODO: Review for vulnerabilities
+                    command.CommandText = Queries.InsertOrReplace;
+#pragma warning restore CA2100
+                    command.CommandTimeout = _commandTimeout;
+
                     try
                     {
                         // Convert to list to avoid multiple enumeration
-                        var objsList = objs as IList<T> ?? objs.ToList();
+                        var objsList = objs as List<T> ?? new List<T>(objs);
                         potentialTotalCount = objsList.Count;
 
                         if (potentialTotalCount == 0)
@@ -259,20 +356,14 @@ public class Tycho : IDisposable
                             return true;
                         }
 
-                        using var insertCommand = conn.CreateCommand();
-                        insertCommand.CommandTimeout = _commandTimeout;
-                        insertCommand.CommandText = Queries.InsertOrReplace;
+                        // Use cached parameters to reduce allocations
+                        command.Parameters.Add(GetCachedParameter(ParameterFullTypeName, SqliteType.Text,
+                            typeof(T).FullName));
+                        command.Parameters.Add(GetCachedParameter(ParameterPartition, SqliteType.Text,
+                            partition.AsValueOrEmptyString()));
 
-                        var keyParameter = insertCommand.Parameters.Add(ParameterKey, SqliteType.Text);
-                        var jsonParameter = insertCommand.Parameters.Add(ParameterJson, SqliteType.Blob);
-
-                        insertCommand.Parameters
-                            .Add(ParameterFullTypeName, SqliteType.Text)
-                            .Value = typeof(T).FullName;
-
-                        insertCommand.Parameters
-                            .Add(ParameterPartition, SqliteType.Text)
-                            .Value = partition.AsValueOrEmptyString();
+                        var keyParameter = command.Parameters.Add(ParameterKey, SqliteType.Text);
+                        var jsonParameter = command.Parameters.Add(ParameterJson, SqliteType.Blob);
 
                         // Batch processing for large datasets
                         const int batchSize = 100;
@@ -287,7 +378,7 @@ public class Tycho : IDisposable
                                 keyParameter.Value = keySelector(obj);
                                 jsonParameter.Value = _jsonSerializer.Serialize(obj);
 
-                                var rowId = (long)insertCommand.ExecuteScalar();
+                                var rowId = (long)command.ExecuteScalar();
                                 writeCount += rowId > 0 ? 1 : 0;
                             }
 
@@ -325,6 +416,15 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
+    /// <summary>
+    /// Counts objects matching the optional filter criteria.
+    /// </summary>
+    /// <typeparam name="T">The type of objects to count.</typeparam>
+    /// <param name="partition">Optional partition to restrict the count to.</param>
+    /// <param name="filter">Optional filter to apply to the objects.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing the count of matching objects.</returns>
     public ValueTask<int> CountObjectsAsync<T>(string partition = null, FilterBuilder<T> filter = null,
         bool withTransaction = false, CancellationToken cancellationToken = default)
     {
@@ -393,12 +493,30 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
+    /// <summary>
+    /// Checks if an object exists in the database by using the object instance to determine the ID.
+    /// </summary>
+    /// <typeparam name="T">The type of the object to check.</typeparam>
+    /// <param name="obj">The object to check for existence.</param>
+    /// <param name="partition">Optional partition to check within.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing a boolean indicating if the object exists.</returns>
     public ValueTask<bool> ObjectExistsAsync<T>(T obj, string partition = null, bool withTransaction = false,
         CancellationToken cancellationToken = default)
     {
         return ObjectExistsAsync<T>(GetIdFor(obj), partition, withTransaction, cancellationToken);
     }
 
+    /// <summary>
+    /// Checks if an object exists in the database by its key.
+    /// </summary>
+    /// <typeparam name="T">The type of the object to check.</typeparam>
+    /// <param name="key">The key of the object to check for existence.</param>
+    /// <param name="partition">Optional partition to check within.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing a boolean indicating if the object exists.</returns>
     public ValueTask<bool> ObjectExistsAsync<T>(object key, string partition = null, bool withTransaction = false,
         CancellationToken cancellationToken = default)
     {
@@ -462,12 +580,30 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
+    /// <summary>
+    /// Reads an object from the database by using the object instance to determine the ID.
+    /// </summary>
+    /// <typeparam name="T">The type of the object to read.</typeparam>
+    /// <param name="obj">An object with the same ID as the one to read.</param>
+    /// <param name="partition">Optional partition to read from.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing the retrieved object or default value if not found.</returns>
     public ValueTask<T> ReadObjectAsync<T>(T obj, string partition = null, bool withTransaction = false,
         CancellationToken cancellationToken = default)
     {
         return ReadObjectAsync<T>(GetIdFor(obj), partition, withTransaction, cancellationToken);
     }
 
+    /// <summary>
+    /// Reads an object from the database by its key.
+    /// </summary>
+    /// <typeparam name="T">The type of the object to read.</typeparam>
+    /// <param name="key">The key of the object to read.</param>
+    /// <param name="partition">Optional partition to read from.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing the retrieved object or default value if not found.</returns>
     public ValueTask<T> ReadObjectAsync<T>(object key, string partition = null, bool withTransaction = false,
         CancellationToken cancellationToken = default)
     {
@@ -533,6 +669,15 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
+    /// <summary>
+    /// Reads the first object that matches the filter criteria.
+    /// </summary>
+    /// <typeparam name="T">The type of the object to read.</typeparam>
+    /// <param name="filter">The filter to apply to the objects.</param>
+    /// <param name="partition">Optional partition to read from.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing the first matching object or default value if none found.</returns>
     public async ValueTask<T> ReadFirstObjectAsync<T>(
         FilterBuilder<T> filter,
         string partition = null,
@@ -546,6 +691,16 @@ public class Tycho : IDisposable
         return results.FirstOrDefault();
     }
 
+    /// <summary>
+    /// Reads a single object that matches the filter criteria. Throws an exception if multiple matches are found.
+    /// </summary>
+    /// <typeparam name="T">The type of the object to read.</typeparam>
+    /// <param name="filter">The filter to apply to the objects.</param>
+    /// <param name="partition">Optional partition to read from.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing the matching object or default value if none found.</returns>
+    /// <exception cref="TychoException">Thrown when multiple matching objects are found.</exception>
     public async ValueTask<T> ReadObjectAsync<T>(
         FilterBuilder<T> filter,
         string partition = null,
@@ -568,6 +723,17 @@ public class Tycho : IDisposable
         return results.FirstOrDefault();
     }
 
+    /// <summary>
+    /// Reads all objects of a specific type matching the optional filter and sort criteria.
+    /// </summary>
+    /// <typeparam name="T">The type of objects to read.</typeparam>
+    /// <param name="partition">Optional partition to read from.</param>
+    /// <param name="filter">Optional filter to apply to the objects.</param>
+    /// <param name="sort">Optional sorting to apply to the result set.</param>
+    /// <param name="top">Optional limit on the number of objects to return.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing an enumerable of the matching objects.</returns>
     public ValueTask<IEnumerable<T>> ReadObjectsAsync<T>(
         string partition = null,
         FilterBuilder<T> filter = null,
@@ -593,78 +759,98 @@ public class Tycho : IDisposable
                         transaction = conn.BeginTransaction(IsolationLevel.RepeatableRead);
                     }
 
+                    var commandBuilder = ReusableStringBuilder;
+                    commandBuilder.Append(Queries.SelectDataFromJsonValueWithFullTypeName);
+
+                    // Apply filters and sorting
+                    if (filter != null)
+                    {
+                        filter.Build(commandBuilder, _jsonSerializer);
+                    }
+
+                    if (sort != null)
+                    {
+                        sort.Build(commandBuilder);
+                    }
+
+                    if (top != null)
+                    {
+                        commandBuilder.AppendLine(Queries.Limit(top.Value));
+                    }
+
+                    // GetPooledCommand(conn, commandBuilder.ToString());
+                    var selectCommand = conn.CreateCommand();
+
+#pragma warning disable CA2100
+
+                    // TODO: Review for vulnerabilities
+                    selectCommand.CommandText = commandBuilder.ToString();
+#pragma warning restore CA2100
+                    selectCommand.CommandTimeout = _commandTimeout;
+
                     try
                     {
-                        using var selectCommand = conn.CreateCommand();
-                        selectCommand.CommandTimeout = _commandTimeout;
-
-                        var commandBuilder = ReusableStringBuilder;
-
-                        commandBuilder.Append(Queries.SelectDataFromJsonValueWithFullTypeName);
-
-                        selectCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(T).FullName;
-                        selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
-                            partition.AsValueOrEmptyString();
-
-                        if (filter != null)
-                        {
-                            filter.Build(commandBuilder, _jsonSerializer);
-                        }
-
-                        if (sort != null)
-                        {
-                            sort.Build(commandBuilder);
-                        }
-
-                        if (top != null)
-                        {
-                            commandBuilder.AppendLine(Queries.Limit(top.Value));
-                        }
-
-#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
-                        selectCommand.CommandText = commandBuilder.ToString();
-#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
+                        // Use cached parameters
+                        selectCommand.Parameters.Add(GetCachedParameter(ParameterFullTypeName, SqliteType.Text,
+                            typeof(T).FullName));
+                        selectCommand.Parameters.Add(GetCachedParameter(ParameterPartition, SqliteType.Text,
+                            partition.AsValueOrEmptyString()));
 
                         // Use CommandBehavior.SequentialAccess for better performance
                         using var reader = selectCommand.ExecuteReader(CommandBehavior.SequentialAccess);
 
-                        // Pre-allocate collection to prevent resizing
+                        // Pre-allocate collection to reduce resizing
                         List<T> objects;
 
-                        // Try to determine list size beforehand for better memory efficiency
                         if (top.HasValue)
                         {
                             objects = new List<T>(top.Value);
                         }
                         else
                         {
-                            objects = new List<T>();
+                            objects = new List<T>(128); // Default capacity to avoid too many resizes
                         }
 
-                        // Use buffered reading for optimal performance
-                        const int bufferSize = 1024 * 32; // 32 KB buffer
-                        byte[] buffer = new byte[bufferSize];
+                        // Use efficient buffered reading with pooled resources
+                        const int bufferSize = 32768; // 32 KB buffer
+                        byte[] buffer = ArrayPool<byte>.Shared.Rent(bufferSize);
 
-                        while (reader.Read())
+                        try
                         {
-                            if (cancellationToken.IsCancellationRequested)
+                            while (reader.Read())
                             {
-                                break;
+                                if (cancellationToken.IsCancellationRequested)
+                                {
+                                    break;
+                                }
+
+                                // Use a pooled memory stream to avoid allocations
+                                var memoryStream = _memoryStreamPool.Get();
+                                try
+                                {
+                                    using var stream = reader.GetStream(0);
+                                    int bytesRead;
+                                    while ((bytesRead = await stream
+                                               .ReadAsync(buffer, 0, buffer.Length, cancellationToken)
+                                               .ConfigureAwait(false)) > 0)
+                                    {
+                                        memoryStream.Write(buffer, 0, bytesRead);
+                                    }
+
+                                    memoryStream.Position = 0;
+                                    objects.Add(await _jsonSerializer
+                                        .DeserializeAsync<T>(memoryStream, cancellationToken).ConfigureAwait(false));
+                                }
+                                finally
+                                {
+                                    _memoryStreamPool.Return(memoryStream);
+                                }
                             }
-
-                            using var stream = reader.GetStream(0);
-                            using var memoryStream = new MemoryStream();
-
-                            int bytesRead;
-                            while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken)
-                                       .ConfigureAwait(false)) > 0)
-                            {
-                                memoryStream.Write(buffer, 0, bytesRead);
-                            }
-
-                            memoryStream.Position = 0;
-                            objects.Add(await _jsonSerializer.DeserializeAsync<T>(memoryStream, cancellationToken)
-                                .ConfigureAwait(false));
+                        }
+                        finally
+                        {
+                            // Return the rented buffer
+                            ArrayPool<byte>.Shared.Return(buffer);
                         }
 
                         transaction?.Commit();
@@ -685,7 +871,18 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
-    public async ValueTask<IEnumerable<TOut>> ReadObjectsAsync<TIn, TOut>(
+    /// <summary>
+    /// Reads a specific property from objects of a given type matching the optional filter criteria.
+    /// </summary>
+    /// <typeparam name="TIn">The type of the source objects.</typeparam>
+    /// <typeparam name="TOut">The type of the property to extract.</typeparam>
+    /// <param name="innerObjectSelection">An expression that selects the property to extract.</param>
+    /// <param name="partition">Optional partition to read from.</param>
+    /// <param name="filter">Optional filter to apply to the objects.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing an array of the extracted property values.</returns>
+    public async ValueTask<TOut[]> ReadObjectsAsync<TIn, TOut>(
         Expression<Func<TIn, TOut>> innerObjectSelection,
         string partition = null,
         FilterBuilder<TIn> filter = null,
@@ -696,9 +893,20 @@ public class Tycho : IDisposable
             await ReadObjectsWithKeysAsync(innerObjectSelection, partition, filter, withTransaction, cancellationToken)
                 .ConfigureAwait(false);
 
-        return results.Select(x => x.InnerObject);
+        return results.Select(x => x.InnerObject).ToArray();
     }
 
+    /// <summary>
+    /// Reads a specific property from objects of a given type along with their keys.
+    /// </summary>
+    /// <typeparam name="TIn">The type of the source objects.</typeparam>
+    /// <typeparam name="TOut">The type of the property to extract.</typeparam>
+    /// <param name="innerObjectSelection">An expression that selects the property to extract.</param>
+    /// <param name="partition">Optional partition to read from.</param>
+    /// <param name="filter">Optional filter to apply to the objects.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing an enumerable of tuples with each object's key and the extracted property.</returns>
     public ValueTask<IEnumerable<(string Key, TOut InnerObject)>> ReadObjectsWithKeysAsync<TIn, TOut>(
         Expression<Func<TIn, TOut>> innerObjectSelection,
         string partition = null,
@@ -780,12 +988,30 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
+    /// <summary>
+    /// Deletes an object from the database by using the object instance to determine the ID.
+    /// </summary>
+    /// <typeparam name="T">The type of the object to delete.</typeparam>
+    /// <param name="obj">The object to delete.</param>
+    /// <param name="partition">Optional partition containing the object.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
     public ValueTask<bool> DeleteObjectAsync<T>(T obj, string partition = null, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
         return DeleteObjectAsync(GetIdFor(obj), partition, withTransaction, cancellationToken);
     }
 
+    /// <summary>
+    /// Deletes an object from the database by its key.
+    /// </summary>
+    /// <typeparam name="T">The type of the object to delete.</typeparam>
+    /// <param name="key">The key of the object to delete.</param>
+    /// <param name="partition">Optional partition containing the object.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
     public ValueTask<bool> DeleteObjectAsync<T>(object key, string partition = null, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
@@ -843,6 +1069,15 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
+    /// <summary>
+    /// Deletes objects of a specific type matching the optional filter criteria.
+    /// </summary>
+    /// <typeparam name="T">The type of objects to delete.</typeparam>
+    /// <param name="partition">Optional partition containing the objects.</param>
+    /// <param name="filter">Optional filter to apply to the objects.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing the count of deleted objects.</returns>
     public ValueTask<int> DeleteObjectsAsync<T>(string partition = null, FilterBuilder<T> filter = null,
         bool withTransaction = true, CancellationToken cancellationToken = default)
     {
@@ -904,6 +1139,13 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
+    /// <summary>
+    /// Deletes all objects from a specific partition.
+    /// </summary>
+    /// <param name="partition">The partition to delete all objects from.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing the count of deleted objects.</returns>
     public ValueTask<int> DeleteObjectsAsync(string partition, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
@@ -954,6 +1196,12 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
+    /// <summary>
+    /// Deletes all objects from the database.
+    /// </summary>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing the count of deleted objects.</returns>
     public ValueTask<int> DeleteObjectsAsync(bool withTransaction = true, CancellationToken cancellationToken = default)
     {
         return _connection
@@ -1000,6 +1248,15 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
+    /// <summary>
+    /// Writes a binary large object (BLOB) to the database.
+    /// </summary>
+    /// <param name="stream">The stream containing the BLOB data.</param>
+    /// <param name="key">The key to identify the BLOB.</param>
+    /// <param name="partition">Optional partition to store the BLOB in.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
     public ValueTask<bool> WriteBlobAsync(Stream stream, object key, string partition = null,
         bool withTransaction = true, CancellationToken cancellationToken = default)
     {
@@ -1058,6 +1315,13 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
+    /// <summary>
+    /// Checks if a BLOB exists in the database by its key.
+    /// </summary>
+    /// <param name="key">The key of the BLOB to check for existence.</param>
+    /// <param name="partition">Optional partition to check within.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing a boolean indicating if the BLOB exists.</returns>
     public ValueTask<bool> BlobExistsAsync(object key, string partition = null,
         CancellationToken cancellationToken = default)
     {
@@ -1102,6 +1366,13 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
+    /// <summary>
+    /// Reads a BLOB from the database by its key.
+    /// </summary>
+    /// <param name="key">The key of the BLOB to read.</param>
+    /// <param name="partition">Optional partition to read from.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing a Stream with the BLOB data, or Stream.Null if not found.</returns>
     public ValueTask<Stream> ReadBlobAsync(object key, string partition = null,
         CancellationToken cancellationToken = default)
     {
@@ -1146,6 +1417,14 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
+    /// <summary>
+    /// Deletes a BLOB from the database by its key.
+    /// </summary>
+    /// <param name="key">The key of the BLOB to delete.</param>
+    /// <param name="partition">Optional partition containing the BLOB.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
     public ValueTask<bool> DeleteBlobAsync(object key, string partition = null, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
@@ -1197,6 +1476,13 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
+    /// <summary>
+    /// Deletes all BLOBs from a specific partition.
+    /// </summary>
+    /// <param name="partition">The partition to delete all BLOBs from.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing a tuple with success flag and count of deleted BLOBs.</returns>
     public ValueTask<(bool Successful, int Count)> DeleteBlobsAsync(string partition, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
@@ -1246,6 +1532,13 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
+    /// <summary>
+    /// Creates an index for a specific property of a registered type.
+    /// </summary>
+    /// <typeparam name="TObj">The type of objects to index.</typeparam>
+    /// <param name="propertyPath">An expression that defines the property path to index.</param>
+    /// <param name="indexName">The name to give to the index.</param>
+    /// <returns>The current Tycho instance for method chaining.</returns>
     public Tycho CreateIndex<TObj>(Expression<Func<TObj, object>> propertyPath, string indexName)
     {
         if (_requireTypeRegistration)
@@ -1257,6 +1550,14 @@ public class Tycho : IDisposable
             GetSafeTypeName<TObj>(), indexName);
     }
 
+    /// <summary>
+    /// Creates an index for a specific property using manual configuration.
+    /// </summary>
+    /// <param name="propertyPathString">The JSON path to the property to index.</param>
+    /// <param name="isNumeric">Whether the property is numeric (affects index performance).</param>
+    /// <param name="objectTypeName">The name of the object type.</param>
+    /// <param name="indexName">The name to give to the index.</param>
+    /// <returns>The current Tycho instance for method chaining.</returns>
     public Tycho CreateIndex(string propertyPathString, bool isNumeric, string objectTypeName, string indexName)
     {
         _connection
@@ -1301,6 +1602,14 @@ public class Tycho : IDisposable
         return this;
     }
 
+    /// <summary>
+    /// Asynchronously creates an index for a specific property of a registered type.
+    /// </summary>
+    /// <typeparam name="TObj">The type of objects to index.</typeparam>
+    /// <param name="propertyPath">An expression that defines the property path to index.</param>
+    /// <param name="indexName">The name to give to the index.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
     public ValueTask<bool> CreateIndexAsync<TObj>(Expression<Func<TObj, object>> propertyPath, string indexName,
         CancellationToken cancellationToken = default)
     {
@@ -1313,6 +1622,15 @@ public class Tycho : IDisposable
             GetSafeTypeName<TObj>(), indexName, cancellationToken);
     }
 
+    /// <summary>
+    /// Asynchronously creates an index for a specific property using manual configuration.
+    /// </summary>
+    /// <param name="propertyPathString">The JSON path to the property to index.</param>
+    /// <param name="isNumeric">Whether the property is numeric (affects index performance).</param>
+    /// <param name="objectTypeName">The name of the object type.</param>
+    /// <param name="indexName">The name to give to the index.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
     public ValueTask<bool> CreateIndexAsync(string propertyPathString, bool isNumeric, string objectTypeName,
         string indexName, CancellationToken cancellationToken = default)
     {
@@ -1323,7 +1641,7 @@ public class Tycho : IDisposable
                 {
                     using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
 
-                    var fullIndexName = $"idx_{indexName}_{objectTypeName}";
+                    var fullIndexName = $"idx_{indexName}_{GetSafeTypeName<TObj>()}";
 
                     try
                     {
@@ -1352,6 +1670,13 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
+    /// <summary>
+    /// Creates a composite index on multiple properties of a registered type.
+    /// </summary>
+    /// <typeparam name="TObj">The type of objects to index.</typeparam>
+    /// <param name="propertyPaths">An array of expressions that define the property paths to index.</param>
+    /// <param name="indexName">The name to give to the index.</param>
+    /// <returns>The current Tycho instance for method chaining.</returns>
     public Tycho CreateIndex<TObj>(Expression<Func<TObj, object>>[] propertyPaths, string indexName)
     {
         if (_requireTypeRegistration)
@@ -1395,6 +1720,14 @@ public class Tycho : IDisposable
         return this;
     }
 
+    /// <summary>
+    /// Asynchronously creates a composite index on multiple properties of a registered type.
+    /// </summary>
+    /// <typeparam name="TObj">The type of objects to index.</typeparam>
+    /// <param name="propertyPaths">An array of expressions that define the property paths to index.</param>
+    /// <param name="indexName">The name to give to the index.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
     public ValueTask<bool> CreateIndexAsync<TObj>(Expression<Func<TObj, object>>[] propertyPaths, string indexName,
         CancellationToken cancellationToken = default)
     {
@@ -1441,6 +1774,11 @@ public class Tycho : IDisposable
                 cancellationToken);
     }
 
+    /// <summary>
+    /// Performs database cleanup operations to optimize performance and reduce size.
+    /// </summary>
+    /// <param name="shrinkMemory">Whether to shrink the database's memory usage.</param>
+    /// <param name="vacuum">Whether to perform an incremental vacuum operation.</param>
     public void Cleanup(bool shrinkMemory = true, bool vacuum = false)
     {
         _connection
@@ -1478,6 +1816,12 @@ public class Tycho : IDisposable
                 _persistConnection);
     }
 
+    /// <summary>
+    /// Gets the key selector function for a registered type.
+    /// </summary>
+    /// <typeparam name="T">The registered type.</typeparam>
+    /// <returns>A function that extracts the key from objects of type T.</returns>
+    /// <exception cref="TychoException">Thrown if the type is not registered.</exception>
     public Func<T, object> GetIdSelectorFor<T>()
     {
         var type = typeof(T);
@@ -1487,6 +1831,13 @@ public class Tycho : IDisposable
         return _registeredTypeInformation[type].GetIdSelector<T>();
     }
 
+    /// <summary>
+    /// Gets the ID value for an object instance.
+    /// </summary>
+    /// <typeparam name="T">The type of the object.</typeparam>
+    /// <param name="obj">The object to get the ID for.</param>
+    /// <returns>The ID value for the object.</returns>
+    /// <exception cref="TychoException">Thrown if the type is not registered.</exception>
     public object GetIdFor<T>(T obj)
     {
         var type = typeof(T);
@@ -1496,6 +1847,14 @@ public class Tycho : IDisposable
         return _registeredTypeInformation[type].GetIdFor<T>(obj);
     }
 
+    /// <summary>
+    /// Compares two ID values for a registered type.
+    /// </summary>
+    /// <typeparam name="T">The registered type.</typeparam>
+    /// <param name="id1">The first ID to compare.</param>
+    /// <param name="id2">The second ID to compare.</param>
+    /// <returns>True if the IDs are equal according to the type's registered comparer, false otherwise.</returns>
+    /// <exception cref="TychoException">Thrown if the type is not registered.</exception>
     public bool CompareIdsFor<T>(object id1, object id2)
     {
         var type = typeof(T);
@@ -1505,6 +1864,14 @@ public class Tycho : IDisposable
         return _registeredTypeInformation[type].CompareIdsFor(id1, id2);
     }
 
+    /// <summary>
+    /// Compares two objects of the same type by their IDs.
+    /// </summary>
+    /// <typeparam name="T">The type of the objects.</typeparam>
+    /// <param name="obj1">The first object to compare.</param>
+    /// <param name="obj2">The second object to compare.</param>
+    /// <returns>True if the objects have the same ID, false otherwise.</returns>
+    /// <exception cref="TychoException">Thrown if the type is not registered.</exception>
     public bool CompareIdsFor<T>(T obj1, T obj2)
     {
         var type = typeof(T);
@@ -1516,6 +1883,12 @@ public class Tycho : IDisposable
         return rti.CompareIdsFor(obj1, obj2);
     }
 
+    /// <summary>
+    /// Gets the registered type information for a type.
+    /// </summary>
+    /// <typeparam name="T">The type to get information for.</typeparam>
+    /// <returns>The registered type information.</returns>
+    /// <exception cref="TychoException">Thrown if the type is not registered.</exception>
     public RegisteredTypeInformation GetRegisteredTypeInformationFor<T>()
     {
         var type = typeof(T);
@@ -1523,15 +1896,6 @@ public class Tycho : IDisposable
         CheckHasRegisteredType(type);
 
         return _registeredTypeInformation[type];
-    }
-
-    private string GetSafeTypeName<TObj>()
-    {
-        var type = typeof(TObj);
-
-        return _registeredTypeInformation.ContainsKey(type)
-            ? _registeredTypeInformation[type].SafeTypeName
-            : type.GetSafeTypeName();
     }
 
     protected virtual void Dispose(bool disposing)
@@ -1552,11 +1916,23 @@ public class Tycho : IDisposable
         _isDisposed = true;
     }
 
+    /// <summary>
+    /// Releases all resources used by the Tycho instance.
+    /// </summary>
     public void Dispose()
     {
         // Do not change this code. Put cleanup code in 'Dispose(bool disposing)' method
         Dispose(true);
         GC.SuppressFinalize(this);
+    }
+
+    private string GetSafeTypeName<TObj>()
+    {
+        var type = typeof(TObj);
+
+        return _registeredTypeInformation.ContainsKey(type)
+            ? _registeredTypeInformation[type].SafeTypeName
+            : type.GetSafeTypeName();
     }
 
     private SqliteConnection BuildConnection()
@@ -1625,22 +2001,38 @@ public class Tycho : IDisposable
     {
         using var rla = await _rateLimiter.AcquireAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        _connection = new SqliteConnection(_dbConnectionString);
+        var connection = new SqliteConnection(_dbConnectionString);
 
-        _connection.Open();
+        connection.Open();
 
         var supportsJson = false;
 
-        // Enable write-ahead logging
-        using var hasJsonCommand = _connection.CreateCommand();
-        hasJsonCommand.CommandText = Queries.PragmaCompileOptions;
+        // Check version
+        using var getVersionCommand = connection.CreateCommand();
+        getVersionCommand.CommandText = Queries.SqliteVersion;
+        var version = getVersionCommand.ExecuteScalar() as string;
+        var splitVersion = version.Split('.');
 
-        using var reader = hasJsonCommand.ExecuteReader();
-
-        while (reader.Read())
+        if (int.TryParse(splitVersion[0], out var major) && int.TryParse(splitVersion[1], out var minor) &&
+            (major > 3 || (major >= 3 && minor >= 38)))
         {
-            if (reader.GetString(0)?.Equals(Queries.EnableJSON1Pragma) ?? false)
+            supportsJson = true;
+        }
+        else
+        {
+            // Enable write-ahead logging
+            using var hasJsonCommand = connection.CreateCommand();
+            hasJsonCommand.CommandText = Queries.PragmaCompileOptions;
+            using var jsonReader = hasJsonCommand.ExecuteReader();
+
+            while (jsonReader.Read())
             {
+                var json1Available = jsonReader.GetString(0);
+                if (!(json1Available?.Equals(Queries.EnableJSON1Pragma) ?? false))
+                {
+                    continue;
+                }
+
                 supportsJson = true;
                 break;
             }
@@ -1648,18 +2040,18 @@ public class Tycho : IDisposable
 
         if (!supportsJson)
         {
-            _connection.Close();
+            connection.Close();
             throw new TychoException("JSON support is not available for this platform");
         }
 
-        using var command = _connection.CreateCommand();
+        using var command = connection.CreateCommand();
 
         // Enable write-ahead logging and normal synchronous mode
         command.CommandText = Queries.CreateDatabaseSchema;
 
         command.ExecuteNonQuery();
 
-        return _connection;
+        return connection;
     }
 
     private void CheckHasRegisteredType<T>()
@@ -1675,6 +2067,22 @@ public class Tycho : IDisposable
         {
             throw new TychoException($"Registration missing for type: {type}");
         }
+    }
+
+    /// <summary>
+    /// Gets or creates a SqliteParameter from the parameter cache to reduce allocations.
+    /// </summary>
+    private SqliteParameter GetCachedParameter(string name, SqliteType type, object value)
+    {
+        var key = $"{name}_{type}";
+        if (!_parameterCache.TryGetValue(key, out var parameter))
+        {
+            parameter = new SqliteParameter(name, type);
+            _parameterCache[key] = parameter;
+        }
+
+        parameter.Value = value;
+        return parameter;
     }
 }
 

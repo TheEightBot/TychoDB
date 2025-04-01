@@ -1,4 +1,5 @@
-﻿using System;
+using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
@@ -12,7 +13,6 @@ namespace TychoDB;
 public class SystemTextJsonSerializer : IJsonSerializer
 {
     private readonly JsonSerializerOptions _jsonSerializerOptions;
-
     private readonly Dictionary<Type, JsonTypeInfo> _jsonTypeSerializers;
 
     public string DateTimeSerializationFormat { get; }
@@ -31,6 +31,8 @@ public class SystemTextJsonSerializer : IJsonSerializer
                 IgnoreReadOnlyProperties = true,
                 NumberHandling = JsonNumberHandling.AllowReadingFromString | JsonNumberHandling.AllowNamedFloatingPointLiterals,
                 DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+                WriteIndented = false, // Use WriteIndented = false for better performance
+                DefaultBufferSize = 16384, // 16KB buffer for better performance with medium-sized objects// Enable the fastest possible serialization
             };
 
         _jsonTypeSerializers =
@@ -38,14 +40,14 @@ public class SystemTextJsonSerializer : IJsonSerializer
             ?? new Dictionary<Type, JsonTypeInfo>();
     }
 
-    public ValueTask<T> DeserializeAsync<T>(Stream stream, CancellationToken cancellationToken)
+    public async ValueTask<T> DeserializeAsync<T>(Stream stream, CancellationToken cancellationToken)
     {
         if (_jsonTypeSerializers.TryGetValue(typeof(T), out var jsonTypeSerializer) && jsonTypeSerializer is JsonTypeInfo<T> jtst)
         {
-            return JsonSerializer.DeserializeAsync<T>(stream, jtst, cancellationToken);
+            return await JsonSerializer.DeserializeAsync<T>(stream, jtst, cancellationToken).ConfigureAwait(false);
         }
 
-        return JsonSerializer.DeserializeAsync<T>(stream, _jsonSerializerOptions, cancellationToken);
+        return await JsonSerializer.DeserializeAsync<T>(stream, _jsonSerializerOptions, cancellationToken).ConfigureAwait(false);
     }
 
     public object Serialize<T>(T obj)

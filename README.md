@@ -480,16 +480,3 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 - SQLite for providing the underlying database engine
 - The .NET community for support and inspiration
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Acknowledgments
-
-- SQLite for providing the underlying database engine
-- The .NET community for support and inspiration

@@ -36,7 +36,6 @@ Depending on your preferred JSON serializer, you can also install one of the fol
 ```bash
 dotnet add package TychoDB.JsonSerializer.SystemTextJson
 dotnet add package TychoDB.JsonSerializer.NewtonsoftJson
-dotnet add package TychoDB.JsonSerializer.MessagePack
 ```
 
 ## Quick Start

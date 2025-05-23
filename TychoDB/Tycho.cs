@@ -249,6 +249,11 @@ public class Tycho : IDisposable
         _connection = null;
     }
 
+    public void Backup(SqliteConnection backupDatabaseConnection)
+    {
+        _connection?.BackupDatabase(backupDatabaseConnection);
+    }
+
     /// <summary>
     /// Writes a single object to the database using registered type information to determine the ID.
     /// </summary>

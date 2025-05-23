@@ -1641,7 +1641,7 @@ public class Tycho : IDisposable
                 {
                     using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
 
-                    var fullIndexName = $"idx_{indexName}_{objectTypeName}";
+                    var fullIndexName = $"idx_{indexName}_{GetSafeTypeName<TObj>()}";
 
                     try
                     {

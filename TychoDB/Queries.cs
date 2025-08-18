@@ -11,6 +11,7 @@ internal static class Queries
         PRAGMA synchronous = NORMAL;
         PRAGMA locking_mode = EXCLUSIVE;
         PRAGMA auto_vacuum = INCREMENTAL;
+        PRAGMA optimize;
 
         CREATE TABLE IF NOT EXISTS JsonValue
         (

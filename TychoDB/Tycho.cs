@@ -228,6 +228,7 @@ public class Tycho : IDisposable
     {
         lock (_connectionLock)
         {
+            _connection.Close();
             _connection?.Dispose();
             _connection = null;
         }
@@ -244,6 +245,7 @@ public class Tycho : IDisposable
             return;
         }
 
+        await _connection.CloseAsync().ConfigureAwait(false);
         await _connection.DisposeAsync().ConfigureAwait(false);
 
         _connection = null;

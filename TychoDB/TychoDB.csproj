@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="MSBuild.Sdk.Extras/3.0.22">
     <PropertyGroup>
-        <TargetFrameworks>netstandard2.1;NET8.0</TargetFrameworks>
+        <TargetFrameworks>netstandard2.1;NET9.0</TargetFrameworks>
         <LangVersion>Latest</LangVersion>
         <PackageId>TychoDB</PackageId>
         <Configurations>Encrypted;Debug;Release</Configurations>
+        <Nullable>enable</Nullable>
     </PropertyGroup>
     <PropertyGroup Condition=" '$(Configuration)' == 'Encrypted' ">
         <IntermediateOutputPath>obj\Encrypted</IntermediateOutputPath>
@@ -22,15 +23,15 @@
         <CollectSQLiteInteropFiles>false</CollectSQLiteInteropFiles>
     </PropertyGroup>
     <ItemGroup>
-        <PackageReference Include="System.Threading.RateLimiting" Version="8.0.0" />
+        <PackageReference Include="System.Threading.RateLimiting" Version="9.0.8" />
     </ItemGroup>
     <ItemGroup Condition=" '$(Configuration)' == 'Encrypted' ">
         <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="8.0.0" />
         <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.4" />
     </ItemGroup>
     <ItemGroup Condition=" '$(Configuration)' != 'Encrypted' ">
-        <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
-        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.10" />
+        <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.8" />
+        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.1" />
     </ItemGroup>
     <ItemGroup>
         <ProjectReference Include="../TychoDB.JsonSerializer/TychoDB.JsonSerializer.csproj" />

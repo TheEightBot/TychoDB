@@ -8,8 +8,8 @@ using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading;
 using System.Threading.Tasks;
-using FluentAssertions;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using Shouldly;
 using TychoDB;
 
 [assembly: Parallelize(Scope = ExecutionScope.ClassLevel)]
@@ -62,7 +62,7 @@ public class TychoDbTests
 
         var result = await db.WriteObjectAsync(testObj, x => x.StringProperty);
 
-        result.Should().BeTrue();
+        result.ShouldBeTrue();
     }
 
     [DataTestMethod]
@@ -84,7 +84,7 @@ public class TychoDbTests
 
         var result = await db.WriteObjectAsync(testObj);
 
-        result.Should().BeTrue();
+        result.ShouldBeTrue();
     }
 
     [DataTestMethod]
@@ -126,7 +126,7 @@ public class TychoDbTests
 
         var result = await db.WriteObjectAsync(testObj);
 
-        result.Should().BeTrue();
+        result.ShouldBeTrue();
     }
 
     [DataTestMethod]
@@ -247,7 +247,7 @@ public class TychoDbTests
 
         var result = await db.WriteObjectAsync(testObj, x => x.StringProperty);
 
-        result.Should().BeTrue();
+        result.ShouldBeTrue();
     }
 
     [DataTestMethod]
@@ -269,7 +269,7 @@ public class TychoDbTests
 
         var result = await db.WriteObjectAsync(testObj);
 
-        result.Should().BeTrue();
+        result.ShouldBeTrue();
     }
 
     [DataTestMethod]
@@ -298,8 +298,8 @@ public class TychoDbTests
                         .Create()
                         .Filter(FilterType.Equals, x => x.IsDirty, true));
 
-        result.Should().NotBeNullOrEmpty();
-        result.Should().HaveCount(1);
+        result.ShouldNotBeEmpty();
+        result.Count().ShouldBe(1);
     }
 
     [DataTestMethod]
@@ -353,8 +353,8 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        successWrites.Should().Be(expected);
-        successReads.Should().Be(expected);
+        successWrites.ShouldBe(expected);
+        successReads.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -393,7 +393,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        resultWrite.Should().Be(expected);
+        resultWrite.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -434,7 +434,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        resultWrite.Should().Be(expected);
+        resultWrite.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -491,7 +491,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        resultWrite.Should().Be(expected);
+        resultWrite.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -557,7 +557,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        resultReadCount.Should().Be(expected);
+        resultReadCount.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -596,7 +596,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objs.Count().Should().Be(testObjs.Count);
+        objs.Count().ShouldBe(testObjs.Count);
     }
 
     [DataTestMethod]
@@ -641,7 +641,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objs.Count().Should().Be(expected);
+        objs.Count().ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -686,7 +686,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objsCount.Should().Be(expected);
+        objsCount.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -727,7 +727,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        obj.Count().Should().Be(expected);
+        obj.Count().ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -768,7 +768,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        exists.Should().Be(expected);
+        exists.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -813,7 +813,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objs.Count().Should().Be(expected);
+        objs.Count().ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -860,8 +860,8 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objs.Count().Should().Be(expected);
-        objs.All(x => Guid.Parse(x.Key) == Guid.Parse(x.InnerObject.StringProperty)).Should().BeTrue();
+        objs.Count().ShouldBe(expected);
+        objs.All(x => Guid.Parse(x.Key) == Guid.Parse(x.InnerObject.StringProperty)).ShouldBeTrue();
     }
 
     [DataTestMethod]
@@ -906,7 +906,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objs.Count().Should().Be(expected);
+        objs.Count().ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -966,7 +966,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        count.Should().Be(expected);
+        count.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1025,7 +1025,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        count.Should().Be(expected);
+        count.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1047,11 +1047,11 @@ public class TychoDbTests
         var writeResult = await db.WriteObjectAsync(testObj, x => x.StringProperty);
         var readResult = await db.ReadObjectAsync<TestClassA>(testObj.StringProperty);
 
-        writeResult.Should().BeTrue();
-        readResult.Should().NotBeNull();
-        readResult.StringProperty.Should().Be(testObj.StringProperty);
-        readResult.IntProperty.Should().Be(testObj.IntProperty);
-        readResult.TimestampMillis.Should().Be(testObj.TimestampMillis);
+        writeResult.ShouldBeTrue();
+        readResult.ShouldNotBeNull();
+        readResult.StringProperty.ShouldBe(testObj.StringProperty);
+        readResult.IntProperty.ShouldBe(testObj.IntProperty);
+        readResult.TimestampMillis.ShouldBe(testObj.TimestampMillis);
     }
 
     [DataTestMethod]
@@ -1098,7 +1098,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objs.Count().Should().Be(expected);
+        objs.Count().ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1127,8 +1127,8 @@ public class TychoDbTests
                         .Filter(FilterType.Equals, x => x.TestClassId, expected))
                 .ConfigureAwait(false);
 
-        obj.Should().NotBeNull();
-        obj.TestClassId.Should().Be(expected);
+        obj.ShouldNotBeNull();
+        obj.TestClassId.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1157,8 +1157,8 @@ public class TychoDbTests
                         .Filter(FilterType.Equals, x => x.TestClassId, expected))
                 .ConfigureAwait(false);
 
-        obj.Should().NotBeNull();
-        obj.TestClassId.Should().Be(expected);
+        obj.ShouldNotBeNull();
+        obj.TestClassId.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1201,7 +1201,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objs.Count().Should().Be(expected);
+        objs.Count().ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1237,7 +1237,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objs.Count().Should().Be(expected);
+        objs.Count().ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1261,7 +1261,7 @@ public class TychoDbTests
 
         writeSuccessful = await db.WriteObjectAsync(testObj, x => x.PatientId).ConfigureAwait(false);
 
-        writeSuccessful.Should().BeTrue();
+        writeSuccessful.ShouldBeTrue();
 
         var objs =
             await db
@@ -1271,7 +1271,7 @@ public class TychoDbTests
                         .Filter(FilterType.Equals, x => x.DOB, testObj.DOB))
                 .ConfigureAwait(false);
 
-        objs.Count().Should().Be(expected);
+        objs.Count().ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1322,8 +1322,8 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objs.First().PatientId.Should().Be(expectedFirstId);
-        objs.Last().PatientId.Should().Be(expectedLastId);
+        objs.First().PatientId.ShouldBe(expectedFirstId);
+        objs.Last().PatientId.ShouldBe(expectedLastId);
     }
 
     [DataTestMethod]
@@ -1339,7 +1339,7 @@ public class TychoDbTests
 
         var successful = await db.CreateIndexAsync<TestClassD>(x => x.DoubleProperty, "double_index");
 
-        successful.Should().Be(expected);
+        successful.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1355,7 +1355,7 @@ public class TychoDbTests
 
         var successful = await db.CreateIndexAsync<TestClassG<object>>(x => x.Id, "id_index");
 
-        successful.Should().Be(expected);
+        successful.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1391,7 +1391,7 @@ public class TychoDbTests
                 },
                 "string_double_index");
 
-        successful.Should().Be(expected);
+        successful.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1413,8 +1413,8 @@ public class TychoDbTests
         var writeResult = await db.WriteObjectAsync(testObj, x => x.StringProperty);
         var deleteResult = await db.DeleteObjectAsync<TestClassA>(testObj.StringProperty);
 
-        writeResult.Should().BeTrue();
-        deleteResult.Should().BeTrue();
+        writeResult.ShouldBeTrue();
+        deleteResult.ShouldBeTrue();
     }
 
     [DataTestMethod]
@@ -1455,7 +1455,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objsDeleted.Should().Be(expectedCount);
+        objsDeleted.ShouldBe(expectedCount);
     }
 
     [DataTestMethod]
@@ -1475,7 +1475,7 @@ public class TychoDbTests
 
         var result = await db.WriteBlobAsync(stream, "Test");
 
-        result.Should().BeTrue();
+        result.ShouldBeTrue();
     }
 
     [DataTestMethod]
@@ -1500,8 +1500,8 @@ public class TychoDbTests
         using var resultReader = new StreamReader(queryResult);
         var streamContents = await resultReader.ReadToEndAsync();
 
-        insertResult.Should().BeTrue();
-        streamContents.Should().BeEquivalentTo(textExample);
+        insertResult.ShouldBeTrue();
+        streamContents.ShouldBeEquivalentTo(textExample);
     }
 
     [DataTestMethod]
@@ -1524,8 +1524,8 @@ public class TychoDbTests
         var insertResult = await db.WriteBlobAsync(stream, key);
         var deleteResult = await db.DeleteBlobAsync(key);
 
-        insertResult.Should().BeTrue();
-        deleteResult.Should().BeTrue();
+        insertResult.ShouldBeTrue();
+        deleteResult.ShouldBeTrue();
     }
 
     [DataTestMethod]
@@ -1548,8 +1548,8 @@ public class TychoDbTests
         var insertResult = await db.WriteBlobAsync(stream, key);
         var existsResult = await db.BlobExistsAsync(key);
 
-        insertResult.Should().BeTrue();
-        existsResult.Should().BeTrue();
+        insertResult.ShouldBeTrue();
+        existsResult.ShouldBeTrue();
     }
 
     [DataTestMethod]
@@ -1578,8 +1578,8 @@ public class TychoDbTests
 
         var deleteResult = await db.DeleteBlobsAsync(partition);
 
-        deleteResult.Successful.Should().BeTrue();
-        deleteResult.Count.Should().Be(expected);
+        deleteResult.Successful.ShouldBeTrue();
+        deleteResult.Count.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1614,8 +1614,8 @@ public class TychoDbTests
         var readA = await db.ReadObjectAsync<TestClassA>(key);
         var readB = await db.ReadObjectAsync<TestClassB>(key);
 
-        readA.IntProperty.Should().Be(classAIntProperty);
-        readB.DoubleProperty.Should().Be(classBDoubleProperty);
+        readA.IntProperty.ShouldBe(classAIntProperty);
+        readB.DoubleProperty.ShouldBe(classBDoubleProperty);
     }
 
     [DataTestMethod]
@@ -1655,8 +1655,8 @@ public class TychoDbTests
         var readA = await db.ReadObjectAsync<TestClassA>(key, partition1);
         var readB = await db.ReadObjectAsync<TestClassA>(key, partition2);
 
-        readA.IntProperty.Should().Be(obj1IntProperty);
-        readB.IntProperty.Should().Be(obj2IntProperty);
+        readA.IntProperty.ShouldBe(obj1IntProperty);
+        readB.IntProperty.ShouldBe(obj2IntProperty);
     }
 
     [DataTestMethod]

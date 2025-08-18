@@ -2,8 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using FluentAssertions;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using Shouldly;
 
 namespace TychoDB.UnitTests;
 
@@ -107,32 +107,32 @@ public class TychoLinqTests
             .Where(u => u.IsActive)
             .ToListAsync();
 
-        activeUsers.Should().HaveCount(4);
-        activeUsers.All(u => u.IsActive).Should().BeTrue();
+        activeUsers.Count.ShouldBe(4);
+        activeUsers.All(u => u.IsActive).ShouldBeTrue();
 
         // Numeric comparison
         var adultUsers = await db.Query<User>()
             .Where(u => u.Age >= 30)
             .ToListAsync();
 
-        adultUsers.Should().HaveCount(3);
-        adultUsers.All(u => u.Age >= 30).Should().BeTrue();
+        adultUsers.Count.ShouldBe(3);
+        adultUsers.All(u => u.Age >= 30).ShouldBeTrue();
 
         // Multiple filters using string operations
         var gmailUsers = await db.Query<User>()
             .Where(u => u.Email.EndsWith("@gmail.com"))
             .ToListAsync();
 
-        gmailUsers.Should().HaveCount(2);
-        gmailUsers.All(u => u.Email.EndsWith("@gmail.com")).Should().BeTrue();
+        gmailUsers.Count.ShouldBe(2);
+        gmailUsers.All(u => u.Email.EndsWith("@gmail.com")).ShouldBeTrue();
 
         // Boolean conditions
         var activeNonAdminUsers = await db.Query<User>()
             .Where(u => u.IsActive && !u.IsAdmin)
             .ToListAsync();
 
-        activeNonAdminUsers.Should().HaveCount(3);
-        activeNonAdminUsers.All(u => u.IsActive && !u.IsAdmin).Should().BeTrue();
+        activeNonAdminUsers.Count.ShouldBe(3);
+        activeNonAdminUsers.All(u => u.IsActive && !u.IsAdmin).ShouldBeTrue();
     }
 
     [TestMethod]
@@ -194,18 +194,18 @@ public class TychoLinqTests
             .OrderBy(u => u.Age)
             .ToListAsync();
 
-        orderedByAge.Should().HaveCount(4);
-        orderedByAge[0].Age.Should().Be(22);
-        orderedByAge[3].Age.Should().Be(45);
+        orderedByAge.Count.ShouldBe(4);
+        orderedByAge[0].Age.ShouldBe(22);
+        orderedByAge[3].Age.ShouldBe(45);
 
         // Descending order
         var orderedByPointsDesc = await db.Query<User>()
             .OrderByDescending(u => u.Points)
             .ToListAsync();
 
-        orderedByPointsDesc.Should().HaveCount(4);
-        orderedByPointsDesc[0].Points.Should().Be(300);
-        orderedByPointsDesc[3].Points.Should().Be(50);
+        orderedByPointsDesc.Count.ShouldBe(4);
+        orderedByPointsDesc[0].Points.ShouldBe(300);
+        orderedByPointsDesc[3].Points.ShouldBe(50);
 
         // Multiple ordering criteria
         var orderedByLastNameThenFirstName = await db.Query<User>()
@@ -213,12 +213,12 @@ public class TychoLinqTests
             .ThenBy(u => u.FirstName)
             .ToListAsync();
 
-        orderedByLastNameThenFirstName.Should().HaveCount(4);
-        orderedByLastNameThenFirstName[0].LastName.Should().Be("Brown");
-        orderedByLastNameThenFirstName[1].LastName.Should().Be("Doe");
-        orderedByLastNameThenFirstName[1].FirstName.Should().Be("Jane");
-        orderedByLastNameThenFirstName[2].LastName.Should().Be("Doe");
-        orderedByLastNameThenFirstName[2].FirstName.Should().Be("John");
+        orderedByLastNameThenFirstName.Count.ShouldBe(4);
+        orderedByLastNameThenFirstName[0].LastName.ShouldBe("Brown");
+        orderedByLastNameThenFirstName[1].LastName.ShouldBe("Doe");
+        orderedByLastNameThenFirstName[1].FirstName.ShouldBe("Jane");
+        orderedByLastNameThenFirstName[2].LastName.ShouldBe("Doe");
+        orderedByLastNameThenFirstName[2].FirstName.ShouldBe("John");
     }
 
     [TestMethod]
@@ -295,11 +295,11 @@ public class TychoLinqTests
             .ToListAsync();
 
         // Assert
-        result.Should().HaveCount(3);
-        result.All(u => u.IsActive && u.Age > 25).Should().BeTrue();
-        result[0].LastName.Should().Be("Brown");
-        result[1].LastName.Should().Be("Smith");
-        result[2].LastName.Should().Be("Wilson");
+        result.Count.ShouldBe(3);
+        result.All(u => u.IsActive && u.Age > 25).ShouldBeTrue();
+        result[0].LastName.ShouldBe("Brown");
+        result[1].LastName.ShouldBe("Smith");
+        result[2].LastName.ShouldBe("Wilson");
     }
 
     [TestMethod]
@@ -327,9 +327,9 @@ public class TychoLinqTests
             .ToListAsync();
 
         // Assert
-        topUsers.Should().HaveCount(5);
-        topUsers[0].Points.Should().Be(200);
-        topUsers[4].Points.Should().Be(160);
+        topUsers.Count.ShouldBe(5);
+        topUsers[0].Points.ShouldBe(200);
+        topUsers[4].Points.ShouldBe(160);
     }
 
     [TestMethod]
@@ -356,23 +356,23 @@ public class TychoLinqTests
             .Where(u => u.UserId == 2)
             .FirstOrDefaultAsync();
 
-        user.Should().NotBeNull();
-        user.FirstName.Should().Be("Jane");
+        user.ShouldNotBeNull();
+        user.FirstName.ShouldBe("Jane");
 
         // Test SingleOrDefault
         user = await db.Query<User>()
             .Where(u => u.UserId == 3)
             .SingleOrDefaultAsync();
 
-        user.Should().NotBeNull();
-        user.FirstName.Should().Be("Alice");
+        user.ShouldNotBeNull();
+        user.FirstName.ShouldBe("Alice");
 
         // Test non-existent user
         user = await db.Query<User>()
             .Where(u => u.UserId == 99)
             .FirstOrDefaultAsync();
 
-        user.Should().BeNull();
+        user.ShouldBeNull();
     }
 
     [TestMethod]
@@ -401,20 +401,20 @@ public class TychoLinqTests
             .Where(u => u.IsActive)
             .CountAsync();
 
-        activeCount.Should().Be(3);
+        activeCount.ShouldBe(3);
 
         // Test Any
         bool hasInactiveUsers = await db.Query<User>()
             .Where(u => !u.IsActive)
             .AnyAsync();
 
-        hasInactiveUsers.Should().BeTrue();
+        hasInactiveUsers.ShouldBeTrue();
 
         bool hasOldUsers = await db.Query<User>()
             .Where(u => u.Age > 50)
             .AnyAsync();
 
-        hasOldUsers.Should().BeFalse();
+        hasOldUsers.ShouldBeFalse();
     }
 
     [TestMethod]
@@ -447,14 +447,14 @@ public class TychoLinqTests
         var europeUsers = await db.Query<User>("europe")
             .ToListAsync();
 
-        europeUsers.Should().HaveCount(2);
-        europeUsers.All(u => u.Region == "Europe").Should().BeTrue();
+        europeUsers.Count.ShouldBe(2);
+        europeUsers.All(u => u.Region == "Europe").ShouldBeTrue();
 
         var americaUsers = await db.Query<User>("america")
             .ToListAsync();
 
-        americaUsers.Should().HaveCount(3);
-        americaUsers.All(u => u.Region == "America").Should().BeTrue();
+        americaUsers.Count.ShouldBe(3);
+        americaUsers.All(u => u.Region == "America").ShouldBeTrue();
     }
 
     [TestMethod]
@@ -536,10 +536,10 @@ public class TychoLinqTests
             .ToListAsync();
 
         // Assert
-        result.Should().HaveCount(3);
-        result[0].UserId.Should().Be(4); // Bob: highest points
-        result[1].UserId.Should().Be(2); // Jane: gmail & high points
-        result[2].UserId.Should().Be(5); // Charlie: high points
+        result.Count.ShouldBe(3);
+        result[0].UserId.ShouldBe(4); // Bob: highest points
+        result[1].UserId.ShouldBe(2); // Jane: gmail & high points
+        result[2].UserId.ShouldBe(5); // Charlie: high points
     }
 }
 

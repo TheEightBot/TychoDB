@@ -60,8 +60,8 @@ public class NewtonsoftJsonSerializer : IJsonSerializer
 
     public ValueTask<T> DeserializeAsync<T>(Stream stream, CancellationToken cancellationToken)
     {
-        // Try to get a reader from the pool
-        var jsonTextReader = new JsonTextReader(new StreamReader(stream))
+        using var streamReader = new StreamReader(stream, Encoding.UTF8, true, 1024, true);
+        using var jsonTextReader = new JsonTextReader(streamReader)
         {
             DateFormatString = DateTimeSerializationFormat,
             CloseInput = false,
@@ -69,13 +69,11 @@ public class NewtonsoftJsonSerializer : IJsonSerializer
 
         try
         {
-            // Deserialize using pooled reader
             var result = _jsonSerializer.Deserialize<T>(jsonTextReader);
             return new ValueTask<T>(result);
         }
         finally
         {
-            // Reset and return the reader to the pool
             jsonTextReader.Close();
         }
     }

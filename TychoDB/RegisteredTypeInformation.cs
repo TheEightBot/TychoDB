@@ -60,58 +60,52 @@ public class RegisteredTypeInformation
 
     public static RegisteredTypeInformation Create<T, TId>(
         Expression<Func<T, object>> idProperty,
-        EqualityComparer<TId> idComparer = null)
+        EqualityComparer<TId>? idComparer = null)
     {
-        if (idProperty is LambdaExpression lex)
+        if (idProperty is not LambdaExpression lex)
         {
-            var type = typeof(T);
-
-            var compiledExpression = lex.Compile();
-
-            if (idComparer == null)
-            {
-                idComparer = EqualityComparer<TId>.Default;
-            }
-
-            var idComparerFunc =
-                new Func<object, object, bool>(
-                    (x1, x2) =>
-                        x1 is TId id1 && x2 is TId id2 &&
-                        idComparer.Equals(id1, id2));
-
-            var rti =
-                new RegisteredTypeInformation
-                {
-                    RequiresIdMapping = false,
-                    IdSelector = compiledExpression,
-                    IdComparer = idComparerFunc,
-                    IdProperty = idProperty.GetExpressionMemberName(),
-                    IdPropertyPath = QueryPropertyPath.BuildPath(idProperty),
-                    IsNumeric = QueryPropertyPath.IsNumeric(idProperty),
-                    IsBool = QueryPropertyPath.IsBool(idProperty),
-                    TypeFullName = type.FullName,
-                    TypeName = type.Name,
-                    SafeTypeName = type.GetSafeTypeName(),
-                    TypeNamespace = type.Namespace,
-                    ObjectType = type,
-                };
-
-            return rti;
+            throw new ArgumentException($"The expression provided is not a lambda expression for {typeof(T).Name}", nameof(idProperty));
         }
 
-        throw new ArgumentException($"The expression provided is not a lambda expression for {typeof(T).Name}", nameof(idProperty));
+        var type = typeof(T);
+
+        var compiledExpression = lex.Compile();
+
+        idComparer ??= EqualityComparer<TId>.Default;
+
+        var idComparerFunc =
+            new Func<object, object, bool>(
+                (x1, x2) =>
+                    x1 is TId id1 && x2 is TId id2 &&
+                    idComparer.Equals(id1, id2));
+
+        var rti =
+            new RegisteredTypeInformation
+            {
+                RequiresIdMapping = false,
+                IdSelector = compiledExpression,
+                IdComparer = idComparerFunc,
+                IdProperty = idProperty.GetExpressionMemberName(),
+                IdPropertyPath = QueryPropertyPath.BuildPath(idProperty),
+                IsNumeric = QueryPropertyPath.IsNumeric(idProperty),
+                IsBool = QueryPropertyPath.IsBool(idProperty),
+                TypeFullName = type.FullName,
+                TypeName = type.Name,
+                SafeTypeName = type.GetSafeTypeName(),
+                TypeNamespace = type.Namespace,
+                ObjectType = type,
+            };
+
+        return rti;
     }
 
     public static RegisteredTypeInformation CreateFromFunc<T>(
         Func<T, object> keySelector,
-        EqualityComparer<string> idComparer = null)
+        EqualityComparer<string>? idComparer = null)
     {
         var type = typeof(T);
 
-        if (idComparer == null)
-        {
-            idComparer = EqualityComparer<string>.Default;
-        }
+        idComparer ??= EqualityComparer<string>.Default;
 
         var idComparerFunc =
             new Func<object, object, bool>(

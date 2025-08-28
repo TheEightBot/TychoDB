@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFrameworks>netstandard2.1;NET9.0</TargetFrameworks>
+        <TargetFramework>NET9.0</TargetFramework>
         <LangVersion>Latest</LangVersion>
         <PackageId>TychoDB.JsonSerializer</PackageId>
     </PropertyGroup>

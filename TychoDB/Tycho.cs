@@ -318,7 +318,6 @@ public class Tycho : IDisposable
                 _rateLimiter,
                 conn =>
                 {
-                    bool successful = false;
                     int writeCount = 0;
 
                     SqliteTransaction? transaction = null;
@@ -352,7 +351,7 @@ public class Tycho : IDisposable
 
                         // Use cached parameters to reduce allocations
                         command.Parameters.Add(GetCachedParameter(ParameterFullTypeName, SqliteType.Text,
-                            typeof(T).FullName));
+                            typeof(T).FullName ?? string.Empty));
                         command.Parameters.Add(GetCachedParameter(ParameterPartition, SqliteType.Text,
                             partition.AsValueOrEmptyString()));
 
@@ -372,7 +371,8 @@ public class Tycho : IDisposable
                                 keyParameter.Value = keySelector(obj);
                                 jsonParameter.Value = _jsonSerializer.Serialize(obj);
 
-                                long rowId = (long)command.ExecuteScalar();
+                                var result = command.ExecuteScalar();
+                                long rowId = result != null ? (long)result : 0;
                                 writeCount += rowId > 0 ? 1 : 0;
                             }
 
@@ -383,7 +383,7 @@ public class Tycho : IDisposable
                             }
                         }
 
-                        successful = writeCount == potentialTotalCount;
+                        bool successful = writeCount == potentialTotalCount;
 
                         if (successful && !cancellationToken.IsCancellationRequested)
                         {
@@ -393,6 +393,8 @@ public class Tycho : IDisposable
                         {
                             transaction?.Rollback();
                         }
+
+                        return successful;
                     }
                     catch (Exception ex)
                     {
@@ -403,8 +405,6 @@ public class Tycho : IDisposable
                     {
                         transaction?.Dispose();
                     }
-
-                    return successful;
                 },
                 _persistConnection,
                 cancellationToken);

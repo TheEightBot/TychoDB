@@ -16,14 +16,14 @@ public class TychoQueryable<T>
 {
     private readonly Tycho _db;
     private readonly string _partition;
-    private FilterBuilder<T> _filter;
-    private SortBuilder<T> _sortBuilder;
+    private FilterBuilder<T>? _filter;
+    private SortBuilder<T>? _sortBuilder;
     private int? _limit;
 
-    internal TychoQueryable(Tycho db, string partition = null)
+    internal TychoQueryable(Tycho db, string? partition = null)
     {
         _db = db ?? throw new ArgumentNullException(nameof(db));
-        _partition = partition;
+        _partition = partition!;
         _filter = null;
         _sortBuilder = null;
     }
@@ -35,13 +35,10 @@ public class TychoQueryable<T>
     /// <returns>A new TychoQueryable with the filter applied.</returns>
     public TychoQueryable<T> Where(Expression<Func<T, bool>> predicate)
     {
-        if (predicate == null)
-        {
-            throw new ArgumentNullException(nameof(predicate));
-        }
+        ArgumentNullException.ThrowIfNull(predicate);
 
         var result = Clone();
-        result._filter = BuildFilterFromPredicate(predicate, result._filter);
+        result._filter = BuildFilterFromPredicate(predicate, result._filter ?? FilterBuilder<T>.Create());
         return result;
     }
 
@@ -53,10 +50,7 @@ public class TychoQueryable<T>
     /// <returns>A new TychoQueryable with the ordering applied.</returns>
     public TychoQueryable<T> OrderBy<TKey>(Expression<Func<T, TKey>> keySelector)
     {
-        if (keySelector == null)
-        {
-            throw new ArgumentNullException(nameof(keySelector));
-        }
+        ArgumentNullException.ThrowIfNull(keySelector);
 
         var result = Clone();
         result._sortBuilder = SortBuilder<T>.Create().OrderBy(SortDirection.Ascending, keySelector);
@@ -71,10 +65,7 @@ public class TychoQueryable<T>
     /// <returns>A new TychoQueryable with the ordering applied.</returns>
     public TychoQueryable<T> OrderByDescending<TKey>(Expression<Func<T, TKey>> keySelector)
     {
-        if (keySelector == null)
-        {
-            throw new ArgumentNullException(nameof(keySelector));
-        }
+        ArgumentNullException.ThrowIfNull(keySelector);
 
         var result = Clone();
         result._sortBuilder = SortBuilder<T>.Create().OrderBy(SortDirection.Descending, keySelector);
@@ -89,18 +80,20 @@ public class TychoQueryable<T>
     /// <returns>A new TychoQueryable with the ordering applied.</returns>
     public TychoQueryable<T> ThenBy<TKey>(Expression<Func<T, TKey>> keySelector)
     {
-        if (keySelector == null)
-        {
-            throw new ArgumentNullException(nameof(keySelector));
-        }
+        ArgumentNullException.ThrowIfNull(keySelector);
 
-        if (_sortBuilder == null)
+        if (_sortBuilder is null)
         {
             throw new InvalidOperationException("OrderBy must be called before ThenBy");
         }
 
         var result = Clone();
-        result._sortBuilder = result._sortBuilder.OrderBy(SortDirection.Ascending, keySelector);
+
+        if (result._sortBuilder is not null)
+        {
+            result._sortBuilder = result._sortBuilder.OrderBy(SortDirection.Ascending, keySelector);
+        }
+
         return result;
     }
 
@@ -112,18 +105,20 @@ public class TychoQueryable<T>
     /// <returns>A new TychoQueryable with the ordering applied.</returns>
     public TychoQueryable<T> ThenByDescending<TKey>(Expression<Func<T, TKey>> keySelector)
     {
-        if (keySelector == null)
-        {
-            throw new ArgumentNullException(nameof(keySelector));
-        }
+        ArgumentNullException.ThrowIfNull(keySelector);
 
-        if (_sortBuilder == null)
+        if (_sortBuilder is null)
         {
             throw new InvalidOperationException("OrderBy must be called before ThenByDescending");
         }
 
         var result = Clone();
-        result._sortBuilder = result._sortBuilder.OrderBy(SortDirection.Descending, keySelector);
+
+        if (result._sortBuilder is not null)
+        {
+            result._sortBuilder = result._sortBuilder.OrderBy(SortDirection.Descending, keySelector);
+        }
+
         return result;
     }
 
@@ -153,7 +148,9 @@ public class TychoQueryable<T>
     {
         var result = Clone();
         result._limit = 1;
-        return await _db.ReadFirstObjectAsync(result._filter, _partition, cancellationToken: cancellationToken);
+        var filter = result._filter ?? FilterBuilder<T>.Create();
+        var obj = await _db.ReadFirstObjectAsync(filter, _partition, cancellationToken: cancellationToken);
+        return obj ?? default!;
     }
 
     /// <summary>
@@ -185,7 +182,8 @@ public class TychoQueryable<T>
     /// <returns>A task that represents the asynchronous operation. The task result contains the single matching entity.</returns>
     public ValueTask<T> SingleAsync(CancellationToken cancellationToken = default)
     {
-        return _db.ReadObjectAsync(_filter, _partition, cancellationToken: cancellationToken);
+        var filter = _filter ?? FilterBuilder<T>.Create();
+        return _db.ReadObjectAsync(filter, _partition, cancellationToken: cancellationToken);
     }
 
     /// <summary>
@@ -198,7 +196,9 @@ public class TychoQueryable<T>
     {
         try
         {
-            return await _db.ReadObjectAsync(_filter, _partition, cancellationToken: cancellationToken);
+            var filter = _filter ?? FilterBuilder<T>.Create();
+            var obj = await _db.ReadObjectAsync(filter, _partition, cancellationToken: cancellationToken);
+            return obj ?? default!;
         }
         catch (TychoException ex) when (ex.Message.Contains("Too many matching values"))
         {
@@ -206,7 +206,7 @@ public class TychoQueryable<T>
         }
         catch
         {
-            return default;
+            return default!;
         }
     }
 
@@ -227,9 +227,10 @@ public class TychoQueryable<T>
     /// <returns>A task that represents the asynchronous operation. The task result contains the query results as a list.</returns>
     public async ValueTask<List<T>> ToListAsync(CancellationToken cancellationToken = default)
     {
-        var results = await _db.ReadObjectsAsync<T>(_partition, _filter, _sortBuilder, _limit,
+        var filter = _filter ?? FilterBuilder<T>.Create();
+        var results = await _db.ReadObjectsAsync<T>(_partition, filter, _sortBuilder, _limit,
             cancellationToken: cancellationToken);
-        return results.ToList();
+        return results?.ToList() ?? new List<T>();
     }
 
     /// <summary>
@@ -240,7 +241,9 @@ public class TychoQueryable<T>
     {
         return new TychoQueryable<T>(_db, _partition)
         {
-            _filter = _filter, _sortBuilder = _sortBuilder, _limit = _limit,
+            _filter = _filter,
+            _sortBuilder = _sortBuilder,
+            _limit = _limit,
         };
     }
 
@@ -254,7 +257,7 @@ public class TychoQueryable<T>
         Expression<Func<T, bool>> predicate,
         FilterBuilder<T> existingFilter)
     {
-        if (existingFilter == null)
+        if (existingFilter is null)
         {
             existingFilter = FilterBuilder<T>.Create();
         }
@@ -263,7 +266,7 @@ public class TychoQueryable<T>
             existingFilter = existingFilter.And();
         }
 
-        return BuildFilterFromExpressionInternal(predicate.Body, existingFilter);
+        return BuildFilterFromExpressionInternal(predicate.Body, existingFilter!);
     }
 
     private FilterBuilder<T> BuildFilterFromExpressionInternal(Expression expression, FilterBuilder<T> filterBuilder)
@@ -317,7 +320,7 @@ public class TychoQueryable<T>
             var methodName = methodCallExpression.Method.Name;
             switch (methodName)
             {
-                case "Contains" when methodCallExpression.Object != null && methodCallExpression.Arguments.Count == 1:
+                case "Contains" when methodCallExpression.Object is not null && methodCallExpression.Arguments.Count == 1:
                     // x => x.Property.Contains(value)
                     if (methodCallExpression.Object is MemberExpression memberExpressionContains)
                     {
@@ -329,7 +332,7 @@ public class TychoQueryable<T>
 
                     break;
 
-                case "StartsWith" when methodCallExpression.Object != null && methodCallExpression.Arguments.Count == 1:
+                case "StartsWith" when methodCallExpression.Object is not null && methodCallExpression.Arguments.Count == 1:
                     // x => x.Property.StartsWith(value)
                     if (methodCallExpression.Object is MemberExpression memberExpressionStartsWith)
                     {
@@ -341,7 +344,7 @@ public class TychoQueryable<T>
 
                     break;
 
-                case "EndsWith" when methodCallExpression.Object != null && methodCallExpression.Arguments.Count == 1:
+                case "EndsWith" when methodCallExpression.Object is not null && methodCallExpression.Arguments.Count == 1:
                     // x => x.Property.EndsWith(value)
                     if (methodCallExpression.Object is MemberExpression memberExpression)
                     {
@@ -427,7 +430,7 @@ public class TychoQueryable<T>
         // Invoke method
         return (FilterBuilder<T>)genericMethod.Invoke(
             this,
-            new object[] { filterBuilder, filterType, propertyLambda, value });
+            new object[] { filterBuilder, filterType, propertyLambda, value })!;
     }
 
     private FilterBuilder<T> CreateFilterWithType<TProp>(
@@ -452,7 +455,7 @@ public class TychoQueryable<T>
                expression is MethodCallExpression;
     }
 
-    private MemberExpression GetMemberExpression(Expression expression)
+    private MemberExpression? GetMemberExpression(Expression expression)
     {
         if (expression is MemberExpression memberExpression)
         {
@@ -467,7 +470,7 @@ public class TychoQueryable<T>
         throw new ArgumentException("Expression is not a member expression");
     }
 
-    private object GetConstantValue(Expression expression)
+    private object? GetConstantValue(Expression expression)
     {
         if (expression is ConstantExpression constantExpression)
         {

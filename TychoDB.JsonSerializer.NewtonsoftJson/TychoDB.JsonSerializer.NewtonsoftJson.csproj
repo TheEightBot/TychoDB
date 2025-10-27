@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="MSBuild.Sdk.Extras/3.0.22">
     <PropertyGroup>
-        <TargetFrameworks>netstandard2.1;NET9.0</TargetFrameworks>
+        <TargetFramework>NET9.0</TargetFramework>
         <LangVersion>Latest</LangVersion>
         <PackageId>TychoDB.JsonSerializer.NewtonsoftJson</PackageId>
     </PropertyGroup>

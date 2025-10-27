@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="MSBuild.Sdk.Extras/3.0.22">
     <PropertyGroup>
-        <TargetFrameworks>netstandard2.1;NET9.0</TargetFrameworks>
+        <TargetFramework>NET9.0</TargetFramework>
         <LangVersion>Latest</LangVersion>
         <PackageId>TychoDB</PackageId>
         <Configurations>Encrypted;Debug;Release</Configurations>
@@ -11,7 +11,7 @@
         <IntermediateOutputPath>obj\Encrypted</IntermediateOutputPath>
         <Optimize>true</Optimize>
         <OutputPath>bin\Encrypted</OutputPath>
-        <DefineConstants>TRACE;RELEASE;ENCRYPTED;NETSTANDARD;NETSTANDARD2_1;</DefineConstants>
+        <DefineConstants>TRACE;RELEASE;ENCRYPTED;</DefineConstants>
         <LangVersion>Latest</LangVersion>
         <NoStdLib>true</NoStdLib>
         <PackageId>TychoDB.Encrypted</PackageId>

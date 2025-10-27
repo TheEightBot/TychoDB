@@ -30,7 +30,7 @@ public class Tycho : IDisposable
     // Parameter cache - reuse parameter objects to reduce allocations
     private readonly ConcurrentDictionary<string, SqliteParameter> _parameterCache = new();
 
-    private readonly object _connectionLock = new();
+    private readonly Lock _connectionLock = new();
     private readonly string _dbConnectionString;
     private readonly IJsonSerializer _jsonSerializer;
     private readonly bool _persistConnection;
@@ -42,7 +42,7 @@ public class Tycho : IDisposable
     private readonly ThreadLocal<StringBuilder> _commandBuilder = new(() => new StringBuilder(1024));
 
     // Use ObjectPool for MemoryStream instances
-    private readonly ObjectPool<MemoryStream> _memoryStreamPool = new ObjectPool<MemoryStream>(
+    private readonly ObjectPool<MemoryStream> _memoryStreamPool = new(
         () => new MemoryStream(4096),
         stream =>
         {
@@ -55,17 +55,19 @@ public class Tycho : IDisposable
         new ConcurrencyLimiter(
             new ConcurrencyLimiterOptions
             {
-                PermitLimit = 1, QueueLimit = int.MaxValue, QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                PermitLimit = 1,
+                QueueLimit = int.MaxValue,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
             });
 
-    private SqliteConnection _connection;
+    private SqliteConnection? _connection;
     private bool _isDisposed;
 
     private StringBuilder ReusableStringBuilder
     {
         get
         {
-            var builder = _commandBuilder.Value;
+            StringBuilder builder = _commandBuilder.Value;
             builder.Clear();
             return builder;
         }
@@ -87,7 +89,7 @@ public class Tycho : IDisposable
         string dbPath,
         IJsonSerializer jsonSerializer,
         string dbName = "tycho_cache.db",
-        string password = null,
+        string? password = null,
         bool persistConnection = true,
         bool rebuildCache = false,
         bool requireTypeRegistration = true,
@@ -99,7 +101,7 @@ public class Tycho : IDisposable
         _jsonSerializer = jsonSerializer ?? throw new ArgumentNullException(nameof(jsonSerializer));
         _commandTimeout = commandTimeout;
 
-        var databasePath = Path.Join(dbPath, dbName);
+        string databasePath = Path.Join(dbPath, dbName);
 
         if (rebuildCache && File.Exists(databasePath))
         {
@@ -114,20 +116,13 @@ public class Tycho : IDisposable
                 Mode = SqliteOpenMode.ReadWriteCreate,
             };
 
-        if (password != null)
+        if (password is not null)
         {
             connectionStringBuilder.Password = password;
         }
 
         // Add pooling configuration
-        if (useConnectionPooling)
-        {
-            connectionStringBuilder.Pooling = true;
-        }
-        else
-        {
-            connectionStringBuilder.Pooling = false;
-        }
+        connectionStringBuilder.Pooling = useConnectionPooling;
 
         _dbConnectionString = connectionStringBuilder.ToString();
         _persistConnection = persistConnection;
@@ -144,7 +139,7 @@ public class Tycho : IDisposable
     /// <returns>The current Tycho instance for method chaining.</returns>
     public Tycho AddTypeRegistration<T, TId>(
         Expression<Func<T, object>> idPropertySelector,
-        EqualityComparer<TId> idComparer = null)
+        EqualityComparer<TId>? idComparer = null)
         where T : class
     {
         var rti = RegisteredTypeInformation.Create(idPropertySelector, idComparer);
@@ -179,7 +174,7 @@ public class Tycho : IDisposable
     /// <returns>The current Tycho instance for method chaining.</returns>
     public Tycho AddTypeRegistrationWithCustomKeySelector<T>(
         Func<T, object> keySelector,
-        EqualityComparer<string> idComparer = null)
+        EqualityComparer<string>? idComparer = null)
         where T : class
     {
         var rti = RegisteredTypeInformation.CreateFromFunc(keySelector, idComparer);
@@ -195,7 +190,7 @@ public class Tycho : IDisposable
     /// <returns>The current Tycho instance for method chaining.</returns>
     public Tycho Connect()
     {
-        if (_connection != null)
+        if (_connection is not null)
         {
             return this;
         }
@@ -211,7 +206,7 @@ public class Tycho : IDisposable
     /// <returns>A ValueTask containing the current Tycho instance for method chaining.</returns>
     public async ValueTask<Tycho> ConnectAsync()
     {
-        if (_connection != null)
+        if (_connection is not null)
         {
             return this;
         }
@@ -228,7 +223,7 @@ public class Tycho : IDisposable
     {
         lock (_connectionLock)
         {
-            _connection.Close();
+            _connection?.Close();
             _connection?.Dispose();
             _connection = null;
         }
@@ -240,7 +235,7 @@ public class Tycho : IDisposable
     /// <returns>A ValueTask representing the asynchronous operation.</returns>
     public async ValueTask DisconnectAsync()
     {
-        if (_connection == null)
+        if (_connection is null)
         {
             return;
         }
@@ -265,10 +260,10 @@ public class Tycho : IDisposable
     /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
-    public ValueTask<bool> WriteObjectAsync<T>(T obj, string partition = null, bool withTransaction = true,
+    public ValueTask<bool> WriteObjectAsync<T>(T obj, string? partition = null, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
-        return WriteObjectsAsync(new[] { obj }, GetIdSelectorFor<T>(), partition, withTransaction, cancellationToken);
+        return WriteObjectsAsync([obj,], GetIdSelectorFor<T>(), partition, withTransaction, cancellationToken);
     }
 
     /// <summary>
@@ -281,10 +276,10 @@ public class Tycho : IDisposable
     /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
-    public ValueTask<bool> WriteObjectAsync<T>(T obj, Func<T, object> keySelector, string partition = null,
+    public ValueTask<bool> WriteObjectAsync<T>(T obj, Func<T, object> keySelector, string? partition = null,
         bool withTransaction = true, CancellationToken cancellationToken = default)
     {
-        return WriteObjectsAsync(new[] { obj }, keySelector, partition, withTransaction, cancellationToken);
+        return WriteObjectsAsync([obj,], keySelector, partition, withTransaction, cancellationToken);
     }
 
     /// <summary>
@@ -296,7 +291,7 @@ public class Tycho : IDisposable
     /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
-    public ValueTask<bool> WriteObjectsAsync<T>(IEnumerable<T> objs, string partition = null,
+    public ValueTask<bool> WriteObjectsAsync<T>(IEnumerable<T> objs, string? partition = null,
         bool withTransaction = true, CancellationToken cancellationToken = default)
     {
         return WriteObjectsAsync(objs, GetIdSelectorFor<T>(), partition, withTransaction, cancellationToken);
@@ -313,28 +308,20 @@ public class Tycho : IDisposable
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
     public ValueTask<bool> WriteObjectsAsync<T>(IEnumerable<T> objs, Func<T, object> keySelector,
-        string partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
+        string? partition = null, bool withTransaction = true, CancellationToken cancellationToken = default)
     {
-        if (objs == null)
-        {
-            throw new ArgumentNullException(nameof(objs));
-        }
-
-        if (keySelector == null)
-        {
-            throw new ArgumentNullException(nameof(keySelector));
-        }
+        ArgumentNullException.ThrowIfNull(objs);
+        ArgumentNullException.ThrowIfNull(keySelector);
+        ArgumentNullException.ThrowIfNull(_connection);
 
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
                 conn =>
                 {
-                    var successful = false;
-                    var writeCount = 0;
-                    var potentialTotalCount = 0;
+                    int writeCount = 0;
 
-                    SqliteTransaction transaction = null;
+                    SqliteTransaction? transaction = null;
 
                     if (withTransaction)
                     {
@@ -353,8 +340,8 @@ public class Tycho : IDisposable
                     try
                     {
                         // Convert to list to avoid multiple enumeration
-                        var objsList = objs as List<T> ?? new List<T>(objs);
-                        potentialTotalCount = objsList.Count;
+                        var objsList = objs as List<T> ?? [..objs,];
+                        int potentialTotalCount = objsList.Count;
 
                         if (potentialTotalCount == 0)
                         {
@@ -365,7 +352,7 @@ public class Tycho : IDisposable
 
                         // Use cached parameters to reduce allocations
                         command.Parameters.Add(GetCachedParameter(ParameterFullTypeName, SqliteType.Text,
-                            typeof(T).FullName));
+                            typeof(T).FullName ?? string.Empty));
                         command.Parameters.Add(GetCachedParameter(ParameterPartition, SqliteType.Text,
                             partition.AsValueOrEmptyString()));
 
@@ -385,7 +372,8 @@ public class Tycho : IDisposable
                                 keyParameter.Value = keySelector(obj);
                                 jsonParameter.Value = _jsonSerializer.Serialize(obj);
 
-                                var rowId = (long)command.ExecuteScalar();
+                                var result = command.ExecuteScalar();
+                                long rowId = result is not null ? (long)result : 0;
                                 writeCount += rowId > 0 ? 1 : 0;
                             }
 
@@ -396,7 +384,7 @@ public class Tycho : IDisposable
                             }
                         }
 
-                        successful = writeCount == potentialTotalCount;
+                        bool successful = writeCount == potentialTotalCount;
 
                         if (successful && !cancellationToken.IsCancellationRequested)
                         {
@@ -406,6 +394,8 @@ public class Tycho : IDisposable
                         {
                             transaction?.Rollback();
                         }
+
+                        return successful;
                     }
                     catch (Exception ex)
                     {
@@ -416,8 +406,6 @@ public class Tycho : IDisposable
                     {
                         transaction?.Dispose();
                     }
-
-                    return successful;
                 },
                 _persistConnection,
                 cancellationToken);
@@ -432,7 +420,7 @@ public class Tycho : IDisposable
     /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing the count of matching objects.</returns>
-    public ValueTask<int> CountObjectsAsync<T>(string partition = null, FilterBuilder<T> filter = null,
+    public ValueTask<int> CountObjectsAsync<T>(string? partition = null, FilterBuilder<T>? filter = null,
         bool withTransaction = false, CancellationToken cancellationToken = default)
     {
         if (_requireTypeRegistration)
@@ -440,12 +428,14 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<T>();
         }
 
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
-            .WithConnectionBlockAsync<int>(
+            .WithConnectionBlockAsync(
                 _rateLimiter,
                 conn =>
                 {
-                    SqliteTransaction transaction = null;
+                    SqliteTransaction? transaction = null;
 
                     if (withTransaction)
                     {
@@ -464,7 +454,7 @@ public class Tycho : IDisposable
                         selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
                             partition.AsValueOrEmptyString();
 
-                        if (filter != null)
+                        if (filter is not null)
                         {
                             filter.Build(commandBuilder, _jsonSerializer);
                         }
@@ -475,7 +465,7 @@ public class Tycho : IDisposable
 
                         using var reader = selectCommand.ExecuteReader();
 
-                        var count = 0;
+                        int count = 0;
 
                         while (reader.Read())
                         {
@@ -509,7 +499,7 @@ public class Tycho : IDisposable
     /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing a boolean indicating if the object exists.</returns>
-    public ValueTask<bool> ObjectExistsAsync<T>(T obj, string partition = null, bool withTransaction = false,
+    public ValueTask<bool> ObjectExistsAsync<T>(T obj, string? partition = null, bool withTransaction = false,
         CancellationToken cancellationToken = default)
     {
         return ObjectExistsAsync<T>(GetIdFor(obj), partition, withTransaction, cancellationToken);
@@ -524,20 +514,18 @@ public class Tycho : IDisposable
     /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing a boolean indicating if the object exists.</returns>
-    public ValueTask<bool> ObjectExistsAsync<T>(object key, string partition = null, bool withTransaction = false,
+    public ValueTask<bool> ObjectExistsAsync<T>(object key, string? partition = null, bool withTransaction = false,
         CancellationToken cancellationToken = default)
     {
-        if (key == null)
-        {
-            throw new ArgumentNullException(nameof(key));
-        }
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(_connection);
 
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
                 conn =>
                 {
-                    SqliteTransaction transaction = null;
+                    SqliteTransaction? transaction = null;
 
                     if (withTransaction)
                     {
@@ -563,7 +551,7 @@ public class Tycho : IDisposable
 
                         using var reader = selectCommand.ExecuteReader();
 
-                        var returnValue = false;
+                        bool returnValue = false;
                         while (reader.Read())
                         {
                             returnValue = true;
@@ -594,12 +582,13 @@ public class Tycho : IDisposable
     /// <param name="obj">An object with the same ID as the one to read.</param>
     /// <param name="partition">Optional partition to read from.</param>
     /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// /// <param name="progress">Optional progress reporter for deserialization. Reports a value between 0.0 and 1.0 as the object is read.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing the retrieved object or default value if not found.</returns>
-    public ValueTask<T> ReadObjectAsync<T>(T obj, string partition = null, bool withTransaction = false,
-        CancellationToken cancellationToken = default)
+    public ValueTask<T> ReadObjectAsync<T>(T obj, string? partition = null, bool withTransaction = false,
+        IProgress<double>? progress = null, CancellationToken cancellationToken = default)
     {
-        return ReadObjectAsync<T>(GetIdFor(obj), partition, withTransaction, cancellationToken);
+        return ReadObjectAsync<T>(GetIdFor(obj), partition, withTransaction, progress, cancellationToken);
     }
 
     /// <summary>
@@ -609,22 +598,21 @@ public class Tycho : IDisposable
     /// <param name="key">The key of the object to read.</param>
     /// <param name="partition">Optional partition to read from.</param>
     /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// /// <param name="progress">Optional progress reporter for deserialization. Reports a value between 0.0 and 1.0 as the object is read.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing the retrieved object or default value if not found.</returns>
-    public ValueTask<T> ReadObjectAsync<T>(object key, string partition = null, bool withTransaction = false,
-        CancellationToken cancellationToken = default)
+    public ValueTask<T> ReadObjectAsync<T>(object key, string? partition = null, bool withTransaction = false,
+        IProgress<double>? progress = null, CancellationToken cancellationToken = default)
     {
-        if (key == null)
-        {
-            throw new ArgumentNullException(nameof(key));
-        }
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(_connection);
 
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
                 async conn =>
                 {
-                    SqliteTransaction transaction = null;
+                    SqliteTransaction? transaction = null;
 
                     if (withTransaction)
                     {
@@ -633,7 +621,7 @@ public class Tycho : IDisposable
 
                     try
                     {
-                        using var selectCommand = conn.CreateCommand();
+                        await using var selectCommand = conn.CreateCommand();
 
                         var commandBuilder = ReusableStringBuilder;
 
@@ -648,14 +636,24 @@ public class Tycho : IDisposable
                         selectCommand.CommandText = commandBuilder.ToString();
 #pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
-                        using var reader = selectCommand.ExecuteReader();
+                        await using var reader = await selectCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
                         T returnValue = default(T);
                         while (reader.Read())
                         {
-                            using var stream = reader.GetStream(0);
-                            returnValue = await _jsonSerializer.DeserializeAsync<T>(stream, cancellationToken)
-                                .ConfigureAwait(false);
+                            await using var stream = reader.GetStream(reader.GetOrdinal(Queries.DataColumn));
+
+                            if (progress is not null)
+                            {
+                                await using var progressStream = new ProgressStream(stream, progress);
+                                returnValue = await _jsonSerializer.DeserializeAsync<T>(progressStream, cancellationToken)
+                                    .ConfigureAwait(false);
+                            }
+                            else
+                            {
+                                returnValue = await _jsonSerializer.DeserializeAsync<T>(stream, cancellationToken)
+                                    .ConfigureAwait(false);
+                            }
                         }
 
                         transaction?.Commit();
@@ -683,16 +681,18 @@ public class Tycho : IDisposable
     /// <param name="filter">The filter to apply to the objects.</param>
     /// <param name="partition">Optional partition to read from.</param>
     /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="progress">Optional progress reporter for deserialization. Reports a value between 0.0 and 1.0 as the object is read.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing the first matching object or default value if none found.</returns>
     public async ValueTask<T> ReadFirstObjectAsync<T>(
         FilterBuilder<T> filter,
-        string partition = null,
+        string? partition = null,
         bool withTransaction = false,
+        IProgress<double>? progress = null,
         CancellationToken cancellationToken = default)
     {
         var results =
-            await ReadObjectsAsync(partition, filter, null, 1, withTransaction, cancellationToken)
+            await ReadObjectsAsync(partition, filter, null, 1, withTransaction, progress, cancellationToken)
                 .ConfigureAwait(false);
 
         return results.FirstOrDefault();
@@ -705,16 +705,18 @@ public class Tycho : IDisposable
     /// <param name="filter">The filter to apply to the objects.</param>
     /// <param name="partition">Optional partition to read from.</param>
     /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// /// <param name="progress">Optional progress reporter for deserialization. Reports a value between 0.0 and 1.0 as the object is read.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing the matching object or default value if none found.</returns>
     /// <exception cref="TychoException">Thrown when multiple matching objects are found.</exception>
     public async ValueTask<T> ReadObjectAsync<T>(
         FilterBuilder<T> filter,
-        string partition = null,
+        string? partition = null,
         bool withTransaction = false,
+        IProgress<double>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        var matches = await CountObjectsAsync(partition, filter, withTransaction, cancellationToken)
+        int matches = await CountObjectsAsync(partition, filter, withTransaction, cancellationToken)
             .ConfigureAwait(false);
 
         if (matches > 1)
@@ -724,7 +726,7 @@ public class Tycho : IDisposable
         }
 
         var results =
-            await ReadObjectsAsync(partition, filter, null, 1, withTransaction, cancellationToken)
+            await ReadObjectsAsync(partition, filter, null, 1, withTransaction, progress, cancellationToken)
                 .ConfigureAwait(false);
 
         return results.FirstOrDefault();
@@ -739,14 +741,16 @@ public class Tycho : IDisposable
     /// <param name="sort">Optional sorting to apply to the result set.</param>
     /// <param name="top">Optional limit on the number of objects to return.</param>
     /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// /// <param name="progress">Optional progress reporter for deserialization. Reports a value between 0.0 and 1.0 as the object is read.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing an enumerable of the matching objects.</returns>
     public ValueTask<IEnumerable<T>> ReadObjectsAsync<T>(
-        string partition = null,
-        FilterBuilder<T> filter = null,
-        SortBuilder<T> sort = null,
+        string? partition = null,
+        FilterBuilder<T>? filter = null,
+        SortBuilder<T>? sort = null,
         int? top = null,
         bool withTransaction = false,
+        IProgress<double>? progress = null,
         CancellationToken cancellationToken = default)
     {
         if (_requireTypeRegistration)
@@ -754,12 +758,14 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<T>();
         }
 
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync<IEnumerable<T>>(
                 _rateLimiter,
                 async conn =>
                 {
-                    SqliteTransaction transaction = null;
+                    SqliteTransaction? transaction = null;
 
                     if (withTransaction)
                     {
@@ -770,17 +776,17 @@ public class Tycho : IDisposable
                     commandBuilder.Append(Queries.SelectDataFromJsonValueWithFullTypeName);
 
                     // Apply filters and sorting
-                    if (filter != null)
+                    if (filter is not null)
                     {
                         filter.Build(commandBuilder, _jsonSerializer);
                     }
 
-                    if (sort != null)
+                    if (sort is not null)
                     {
                         sort.Build(commandBuilder);
                     }
 
-                    if (top != null)
+                    if (top is not null)
                     {
                         commandBuilder.AppendLine(Queries.Limit(top.Value));
                     }
@@ -804,7 +810,7 @@ public class Tycho : IDisposable
                             partition.AsValueOrEmptyString()));
 
                         // Use CommandBehavior.SequentialAccess for better performance
-                        using var reader = selectCommand.ExecuteReader(CommandBehavior.SequentialAccess);
+                        await using var reader = await selectCommand.ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken).ConfigureAwait(false);
 
                         // Pre-allocate collection to reduce resizing
                         List<T> objects;
@@ -835,13 +841,28 @@ public class Tycho : IDisposable
                                 var memoryStream = _memoryStreamPool.Get();
                                 try
                                 {
-                                    using var stream = reader.GetStream(0);
                                     int bytesRead;
-                                    while ((bytesRead = await stream
-                                               .ReadAsync(buffer, 0, buffer.Length, cancellationToken)
-                                               .ConfigureAwait(false)) > 0)
+
+                                    await using var stream = reader.GetStream(reader.GetOrdinal(Queries.DataColumn));
+
+                                    if (progress is not null)
                                     {
-                                        memoryStream.Write(buffer, 0, bytesRead);
+                                        await using Stream progressStream = new ProgressStream(stream, progress);
+                                        while ((bytesRead = await progressStream
+                                                   .ReadAsync(buffer, 0, buffer.Length, cancellationToken)
+                                                   .ConfigureAwait(false)) > 0)
+                                        {
+                                            memoryStream.Write(buffer, 0, bytesRead);
+                                        }
+                                    }
+                                    else
+                                    {
+                                        while ((bytesRead = await stream
+                                                   .ReadAsync(buffer, 0, buffer.Length, cancellationToken)
+                                                   .ConfigureAwait(false)) > 0)
+                                        {
+                                            memoryStream.Write(buffer, 0, bytesRead);
+                                        }
                                     }
 
                                     memoryStream.Position = 0;
@@ -891,8 +912,8 @@ public class Tycho : IDisposable
     /// <returns>A ValueTask containing an array of the extracted property values.</returns>
     public async ValueTask<TOut[]> ReadObjectsAsync<TIn, TOut>(
         Expression<Func<TIn, TOut>> innerObjectSelection,
-        string partition = null,
-        FilterBuilder<TIn> filter = null,
+        string? partition = null,
+        FilterBuilder<TIn>? filter = null,
         bool withTransaction = false,
         CancellationToken cancellationToken = default)
     {
@@ -916,8 +937,8 @@ public class Tycho : IDisposable
     /// <returns>A ValueTask containing an enumerable of tuples with each object's key and the extracted property.</returns>
     public ValueTask<IEnumerable<(string Key, TOut InnerObject)>> ReadObjectsWithKeysAsync<TIn, TOut>(
         Expression<Func<TIn, TOut>> innerObjectSelection,
-        string partition = null,
-        FilterBuilder<TIn> filter = null,
+        string? partition = null,
+        FilterBuilder<TIn>? filter = null,
         bool withTransaction = false,
         CancellationToken cancellationToken = default)
     {
@@ -926,12 +947,14 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<TIn>();
         }
 
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync<IEnumerable<(string Key, TOut InnerObject)>>(
                 _rateLimiter,
                 async conn =>
                 {
-                    SqliteTransaction transaction = null;
+                    SqliteTransaction? transaction = null;
 
                     if (withTransaction)
                     {
@@ -942,11 +965,11 @@ public class Tycho : IDisposable
 
                     try
                     {
-                        using var selectCommand = conn.CreateCommand();
+                        await using var selectCommand = conn.CreateCommand();
 
                         var commandBuilder = ReusableStringBuilder;
 
-                        var selectionPath = QueryPropertyPath.BuildPath(innerObjectSelection);
+                        string selectionPath = QueryPropertyPath.BuildPath(innerObjectSelection);
 
                         commandBuilder.Append(Queries.ExtractDataAndKeyFromJsonValueWithFullTypeName(selectionPath));
 
@@ -955,7 +978,7 @@ public class Tycho : IDisposable
                         selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
                             partition.AsValueOrEmptyString();
 
-                        if (filter != null)
+                        if (filter is not null)
                         {
                             filter.Build(commandBuilder, _jsonSerializer);
                         }
@@ -964,13 +987,13 @@ public class Tycho : IDisposable
                         selectCommand.CommandText = commandBuilder.ToString();
 #pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
-                        using var reader = selectCommand.ExecuteReader();
+                        await using var reader = await selectCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
                         while (reader.Read())
                         {
-                            var key = reader.GetString(0);
+                            string key = reader.GetString(reader.GetOrdinal(Queries.KeyColumn));
 
-                            using var innerObjectStream = reader.GetStream(1);
+                            await using var innerObjectStream = reader.GetStream(reader.GetOrdinal(Queries.DataColumn));
                             var innerObject = await _jsonSerializer
                                 .DeserializeAsync<TOut>(innerObjectStream, cancellationToken).ConfigureAwait(false);
 
@@ -1004,7 +1027,7 @@ public class Tycho : IDisposable
     /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
-    public ValueTask<bool> DeleteObjectAsync<T>(T obj, string partition = null, bool withTransaction = true,
+    public ValueTask<bool> DeleteObjectAsync<T>(T obj, string? partition = null, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
         return DeleteObjectAsync(GetIdFor(obj), partition, withTransaction, cancellationToken);
@@ -1019,7 +1042,7 @@ public class Tycho : IDisposable
     /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
-    public ValueTask<bool> DeleteObjectAsync<T>(object key, string partition = null, bool withTransaction = true,
+    public ValueTask<bool> DeleteObjectAsync<T>(object key, string? partition = null, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
         if (_requireTypeRegistration)
@@ -1027,12 +1050,14 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<T>();
         }
 
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
                 conn =>
                 {
-                    SqliteTransaction transaction = null;
+                    SqliteTransaction? transaction = null;
 
                     if (withTransaction)
                     {
@@ -1056,7 +1081,7 @@ public class Tycho : IDisposable
                         deleteCommand.CommandText = commandBuilder.ToString();
 #pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
-                        var deletionCount = deleteCommand.ExecuteNonQuery();
+                        int deletionCount = deleteCommand.ExecuteNonQuery();
 
                         transaction?.Commit();
 
@@ -1085,7 +1110,7 @@ public class Tycho : IDisposable
     /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing the count of deleted objects.</returns>
-    public ValueTask<int> DeleteObjectsAsync<T>(string partition = null, FilterBuilder<T> filter = null,
+    public ValueTask<int> DeleteObjectsAsync<T>(string? partition = null, FilterBuilder<T>? filter = null,
         bool withTransaction = true, CancellationToken cancellationToken = default)
     {
         if (_requireTypeRegistration)
@@ -1093,12 +1118,14 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<T>();
         }
 
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
                 conn =>
                 {
-                    SqliteTransaction transaction = null;
+                    SqliteTransaction? transaction = null;
 
                     if (withTransaction)
                     {
@@ -1117,7 +1144,7 @@ public class Tycho : IDisposable
                         deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
                             partition.AsValueOrEmptyString();
 
-                        if (filter != null)
+                        if (filter is not null)
                         {
                             filter.Build(commandBuilder, _jsonSerializer);
                         }
@@ -1126,7 +1153,7 @@ public class Tycho : IDisposable
                         deleteCommand.CommandText = commandBuilder.ToString();
 #pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
-                        var deletionCount = deleteCommand.ExecuteNonQuery();
+                        int deletionCount = deleteCommand.ExecuteNonQuery();
 
                         transaction?.Commit();
 
@@ -1156,12 +1183,14 @@ public class Tycho : IDisposable
     public ValueTask<int> DeleteObjectsAsync(string partition, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
                 conn =>
                 {
-                    SqliteTransaction transaction = null;
+                    SqliteTransaction? transaction = null;
 
                     if (withTransaction)
                     {
@@ -1183,7 +1212,7 @@ public class Tycho : IDisposable
                         deleteCommand.CommandText = commandBuilder.ToString();
 #pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
-                        var deletionCount = deleteCommand.ExecuteNonQuery();
+                        int deletionCount = deleteCommand.ExecuteNonQuery();
 
                         transaction?.Commit();
 
@@ -1211,12 +1240,14 @@ public class Tycho : IDisposable
     /// <returns>A ValueTask containing the count of deleted objects.</returns>
     public ValueTask<int> DeleteObjectsAsync(bool withTransaction = true, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
                 conn =>
                 {
-                    SqliteTransaction transaction = null;
+                    SqliteTransaction? transaction = null;
 
                     if (withTransaction)
                     {
@@ -1235,7 +1266,7 @@ public class Tycho : IDisposable
                         deleteCommand.CommandText = commandBuilder.ToString();
 #pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
-                        var deletionCount = deleteCommand.ExecuteNonQuery();
+                        int deletionCount = deleteCommand.ExecuteNonQuery();
 
                         transaction?.Commit();
 
@@ -1264,17 +1295,19 @@ public class Tycho : IDisposable
     /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
-    public ValueTask<bool> WriteBlobAsync(Stream stream, object key, string partition = null,
+    public ValueTask<bool> WriteBlobAsync(Stream stream, object key, string? partition = null,
         bool withTransaction = true, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
                 async conn =>
                 {
-                    var writeCount = 0;
+                    int writeCount = 0;
 
-                    SqliteTransaction transaction = null;
+                    SqliteTransaction? transaction = null;
 
                     if (withTransaction)
                     {
@@ -1283,7 +1316,7 @@ public class Tycho : IDisposable
 
                     try
                     {
-                        using var insertCommand = conn.CreateCommand();
+                        await using var insertCommand = conn.CreateCommand();
                         insertCommand.CommandText = Queries.InsertOrReplaceBlob;
 
                         insertCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
@@ -1291,14 +1324,14 @@ public class Tycho : IDisposable
                             partition.AsValueOrEmptyString();
                         insertCommand.Parameters.AddWithValue(ParameterBlobLength, stream.Length);
 
-                        var rowId = (long)insertCommand.ExecuteScalar();
+                        long rowId = (long)insertCommand.ExecuteScalar();
 
                         writeCount += rowId > 0 ? 1 : 0;
 
                         if (writeCount > 0)
                         {
-                            using (var writeStream = new SqliteBlob(conn, TableStreamValue, TableStreamValueDataColumn,
-                                       rowId))
+                            await using (var writeStream = new SqliteBlob(conn, TableStreamValue, TableStreamValueDataColumn,
+                                             rowId))
                             {
                                 await stream.CopyToAsync(writeStream, cancellationToken).ConfigureAwait(false);
                             }
@@ -1329,9 +1362,11 @@ public class Tycho : IDisposable
     /// <param name="partition">Optional partition to check within.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing a boolean indicating if the BLOB exists.</returns>
-    public ValueTask<bool> BlobExistsAsync(object key, string partition = null,
+    public ValueTask<bool> BlobExistsAsync(object key, string? partition = null,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
@@ -1380,9 +1415,11 @@ public class Tycho : IDisposable
     /// <param name="partition">Optional partition to read from.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing a Stream with the BLOB data, or Stream.Null if not found.</returns>
-    public ValueTask<Stream> ReadBlobAsync(object key, string partition = null,
+    public ValueTask<Stream> ReadBlobAsync(object key, string? partition = null,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
@@ -1410,7 +1447,7 @@ public class Tycho : IDisposable
                         Stream returnValue = Stream.Null;
                         while (reader.Read())
                         {
-                            returnValue = reader.GetStream(0);
+                            returnValue = reader.GetStream(reader.GetOrdinal(Queries.DataColumn));
                         }
 
                         return returnValue;
@@ -1432,15 +1469,17 @@ public class Tycho : IDisposable
     /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
-    public ValueTask<bool> DeleteBlobAsync(object key, string partition = null, bool withTransaction = true,
+    public ValueTask<bool> DeleteBlobAsync(object key, string? partition = null, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
                 conn =>
                 {
-                    SqliteTransaction transaction = null;
+                    SqliteTransaction? transaction = null;
 
                     if (withTransaction)
                     {
@@ -1463,7 +1502,7 @@ public class Tycho : IDisposable
                         deleteCommand.CommandText = commandBuilder.ToString();
 #pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
-                        var deletionCount = deleteCommand.ExecuteNonQuery();
+                        int deletionCount = deleteCommand.ExecuteNonQuery();
 
                         transaction?.Commit();
 
@@ -1493,12 +1532,14 @@ public class Tycho : IDisposable
     public ValueTask<(bool Successful, int Count)> DeleteBlobsAsync(string partition, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
                 conn =>
                 {
-                    SqliteTransaction transaction = null;
+                    SqliteTransaction? transaction = null;
 
                     if (withTransaction)
                     {
@@ -1519,7 +1560,7 @@ public class Tycho : IDisposable
                         deleteCommand.CommandText = commandBuilder.ToString();
 #pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
 
-                        var deletionCount = deleteCommand.ExecuteNonQuery();
+                        int deletionCount = deleteCommand.ExecuteNonQuery();
 
                         transaction?.Commit();
 
@@ -1567,6 +1608,8 @@ public class Tycho : IDisposable
     /// <returns>The current Tycho instance for method chaining.</returns>
     public Tycho CreateIndex(string propertyPathString, bool isNumeric, string objectTypeName, string indexName)
     {
+        ArgumentNullException.ThrowIfNull(this._connection);
+
         _connection
             .WithConnectionBlock(
                 _rateLimiter,
@@ -1574,7 +1617,7 @@ public class Tycho : IDisposable
                 {
                     var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
 
-                    var fullIndexName = $"idx_{indexName}_{objectTypeName}";
+                    string fullIndexName = $"idx_{indexName}_{objectTypeName}";
                     try
                     {
                         using var createIndexCommand = conn.CreateCommand();
@@ -1641,6 +1684,8 @@ public class Tycho : IDisposable
     public ValueTask<bool> CreateIndexAsync(string propertyPathString, bool isNumeric, string objectTypeName,
         string indexName, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
@@ -1648,7 +1693,7 @@ public class Tycho : IDisposable
                 {
                     using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
 
-                    var fullIndexName = $"idx_{indexName}_{objectTypeName}";
+                    string fullIndexName = $"idx_{indexName}_{objectTypeName}";
 
                     try
                     {
@@ -1691,6 +1736,8 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<TObj>();
         }
 
+        ArgumentNullException.ThrowIfNull(_connection);
+
         var processedPaths =
             propertyPaths
                 .Select(x => (QueryPropertyPath.BuildPath(x), QueryPropertyPath.IsNumeric(x)))
@@ -1703,7 +1750,7 @@ public class Tycho : IDisposable
                 {
                     var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
 
-                    var fullIndexName = $"idx_{indexName}_{GetSafeTypeName<TObj>()}";
+                    string fullIndexName = $"idx_{indexName}_{GetSafeTypeName<TObj>()}";
                     try
                     {
                         using var createIndexCommand = conn.CreateCommand();
@@ -1743,6 +1790,8 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<TObj>();
         }
 
+        ArgumentNullException.ThrowIfNull(_connection);
+
         var processedPaths =
             propertyPaths
                 .Select(x => (QueryPropertyPath.BuildPath(x), QueryPropertyPath.IsNumeric(x)))
@@ -1755,7 +1804,7 @@ public class Tycho : IDisposable
                 {
                     using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
 
-                    var fullIndexName = $"idx_{indexName}_{GetSafeTypeName<TObj>()}";
+                    string fullIndexName = $"idx_{indexName}_{GetSafeTypeName<TObj>()}";
 
                     try
                     {
@@ -1788,6 +1837,8 @@ public class Tycho : IDisposable
     /// <param name="vacuum">Whether to perform an incremental vacuum operation.</param>
     public void Cleanup(bool shrinkMemory = true, bool vacuum = false)
     {
+        ArgumentNullException.ThrowIfNull(_connection);
+
         _connection
             .WithConnectionBlock(
                 _rateLimiter,
@@ -1832,10 +1883,13 @@ public class Tycho : IDisposable
     public Func<T, object> GetIdSelectorFor<T>()
     {
         var type = typeof(T);
-
         CheckHasRegisteredType(type);
+        if (!_registeredTypeInformation.TryGetValue(type, out var rti) || rti is null)
+        {
+            throw new TychoException($"Registration missing for type: {type}");
+        }
 
-        return _registeredTypeInformation[type].GetIdSelector<T>();
+        return rti.GetIdSelector<T>();
     }
 
     /// <summary>
@@ -1848,10 +1902,13 @@ public class Tycho : IDisposable
     public object GetIdFor<T>(T obj)
     {
         var type = typeof(T);
-
         CheckHasRegisteredType(type);
+        if (!_registeredTypeInformation.TryGetValue(type, out var rti) || rti is null)
+        {
+            throw new TychoException($"Registration missing for type: {type}");
+        }
 
-        return _registeredTypeInformation[type].GetIdFor<T>(obj);
+        return rti.GetIdFor(obj);
     }
 
     /// <summary>
@@ -1865,10 +1922,13 @@ public class Tycho : IDisposable
     public bool CompareIdsFor<T>(object id1, object id2)
     {
         var type = typeof(T);
-
         CheckHasRegisteredType(type);
+        if (!_registeredTypeInformation.TryGetValue(type, out var rti) || rti is null)
+        {
+            throw new TychoException($"Registration missing for type: {type}");
+        }
 
-        return _registeredTypeInformation[type].CompareIdsFor(id1, id2);
+        return rti.CompareIdsFor(id1, id2);
     }
 
     /// <summary>
@@ -1882,10 +1942,11 @@ public class Tycho : IDisposable
     public bool CompareIdsFor<T>(T obj1, T obj2)
     {
         var type = typeof(T);
-
         CheckHasRegisteredType(type);
-
-        var rti = _registeredTypeInformation[type];
+        if (!_registeredTypeInformation.TryGetValue(type, out var rti) || rti is null)
+        {
+            throw new TychoException($"Registration missing for type: {type}");
+        }
 
         return rti.CompareIdsFor(obj1, obj2);
     }
@@ -1953,15 +2014,15 @@ public class Tycho : IDisposable
                 {
                     conn.Open();
 
-                    var supportsJson = false;
+                    bool supportsJson = false;
 
                     // Check version
                     using var getVersionCommand = conn.CreateCommand();
                     getVersionCommand.CommandText = Queries.SqliteVersion;
-                    var version = getVersionCommand.ExecuteScalar() as string;
-                    var splitVersion = version.Split('.');
+                    string? version = getVersionCommand.ExecuteScalar() as string;
+                    string[] splitVersion = version.Split('.');
 
-                    if (int.TryParse(splitVersion[0], out var major) && int.TryParse(splitVersion[1], out var minor) &&
+                    if (int.TryParse(splitVersion[0], out int major) && int.TryParse(splitVersion[1], out int minor) &&
                         (major > 3 || (major >= 3 && minor >= 38)))
                     {
                         supportsJson = true;
@@ -1975,7 +2036,7 @@ public class Tycho : IDisposable
 
                         while (jsonReader.Read())
                         {
-                            var json1Available = jsonReader.GetString(0);
+                            string? json1Available = jsonReader.GetString(0);
                             if (!(json1Available?.Equals(Queries.EnableJSON1Pragma) ?? false))
                             {
                                 continue;
@@ -2012,15 +2073,15 @@ public class Tycho : IDisposable
 
         connection.Open();
 
-        var supportsJson = false;
+        bool supportsJson = false;
 
         // Check version
-        using var getVersionCommand = connection.CreateCommand();
+        await using var getVersionCommand = connection.CreateCommand();
         getVersionCommand.CommandText = Queries.SqliteVersion;
-        var version = getVersionCommand.ExecuteScalar() as string;
-        var splitVersion = version.Split('.');
+        string? version = getVersionCommand.ExecuteScalar() as string;
+        string[] splitVersion = version.Split('.');
 
-        if (int.TryParse(splitVersion[0], out var major) && int.TryParse(splitVersion[1], out var minor) &&
+        if (int.TryParse(splitVersion[0], out int major) && int.TryParse(splitVersion[1], out int minor) &&
             (major > 3 || (major >= 3 && minor >= 38)))
         {
             supportsJson = true;
@@ -2028,13 +2089,13 @@ public class Tycho : IDisposable
         else
         {
             // Enable write-ahead logging
-            using var hasJsonCommand = connection.CreateCommand();
+            await using var hasJsonCommand = connection.CreateCommand();
             hasJsonCommand.CommandText = Queries.PragmaCompileOptions;
-            using var jsonReader = hasJsonCommand.ExecuteReader();
+            await using var jsonReader = await hasJsonCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
             while (jsonReader.Read())
             {
-                var json1Available = jsonReader.GetString(0);
+                string? json1Available = jsonReader.GetString(0);
                 if (!(json1Available?.Equals(Queries.EnableJSON1Pragma) ?? false))
                 {
                     continue;
@@ -2051,7 +2112,7 @@ public class Tycho : IDisposable
             throw new TychoException("JSON support is not available for this platform");
         }
 
-        using var command = connection.CreateCommand();
+        await using var command = connection.CreateCommand();
 
         // Enable write-ahead logging and normal synchronous mode
         command.CommandText = Queries.CreateDatabaseSchema;
@@ -2081,7 +2142,7 @@ public class Tycho : IDisposable
     /// </summary>
     private SqliteParameter GetCachedParameter(string name, SqliteType type, object value)
     {
-        var key = $"{name}_{type}";
+        string key = $"{name}_{type}";
         if (!_parameterCache.TryGetValue(key, out var parameter))
         {
             parameter = new SqliteParameter(name, type);
@@ -2098,7 +2159,7 @@ internal static class SqliteExtensions
     public static T WithConnectionBlock<T>(this SqliteConnection connection, RateLimiter rateLimiter,
         Func<SqliteConnection, T> func, bool persistConnection)
     {
-        if (connection == null)
+        if (connection is null)
         {
             throw new TychoException("Please call 'Connect' before performing an operation");
         }
@@ -2126,7 +2187,7 @@ internal static class SqliteExtensions
     public static void WithConnectionBlock(this SqliteConnection connection, RateLimiter rateLimiter,
         Action<SqliteConnection> action, bool persistConnection)
     {
-        if (connection == null)
+        if (connection is null)
         {
             throw new TychoException("Please call 'Connect' before performing an operation");
         }
@@ -2158,7 +2219,7 @@ internal static class SqliteExtensions
         bool persistConnection,
         CancellationToken cancellationToken = default)
     {
-        if (connection == null)
+        if (connection is null)
         {
             throw new TychoException("Please call 'Connect' before performing an operation");
         }
@@ -2190,7 +2251,7 @@ internal static class SqliteExtensions
         bool persistConnection,
         CancellationToken cancellationToken = default)
     {
-        if (connection == null)
+        if (connection is null)
         {
             throw new TychoException("Please call 'Connect' before performing an operation");
         }
@@ -2215,13 +2276,13 @@ internal static class SqliteExtensions
         }
     }
 
-    public static object AsValueOrDbNull<T>(this T value)
+    public static object AsValueOrDbNull<T>(this T? value)
         where T : class
     {
         return value ?? (object)DBNull.Value;
     }
 
-    public static string AsValueOrEmptyString(this string value)
+    public static string AsValueOrEmptyString(this string? value)
     {
         return value ?? string.Empty;
     }

@@ -65,7 +65,7 @@ internal static class QueryPropertyPath
 
     private class PropertyPathVisitor : ExpressionVisitor
     {
-        internal readonly List<string> PathBuilder = new List<string>();
+        internal readonly List<string> PathBuilder = new();
 
         protected override Expression VisitMember(MemberExpression node)
         {

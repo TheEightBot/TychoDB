@@ -340,7 +340,7 @@ public class Tycho : IDisposable
                     try
                     {
                         // Convert to list to avoid multiple enumeration
-                        var objsList = objs as List<T> ?? [..objs,];
+                        var objsList = objs as List<T> ?? objs.ToList();
                         int potentialTotalCount = objsList.Count;
 
                         if (potentialTotalCount == 0)

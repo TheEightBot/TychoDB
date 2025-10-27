@@ -38,7 +38,7 @@ public class TychoQueryable<T>
         ArgumentNullException.ThrowIfNull(predicate);
 
         var result = Clone();
-        result._filter = BuildFilterFromPredicate(predicate, result._filter ?? FilterBuilder<T>.Create());
+        result._filter = BuildFilterFromPredicate(predicate, result._filter);
         return result;
     }
 
@@ -255,21 +255,14 @@ public class TychoQueryable<T>
     /// <returns>A FilterBuilder that represents the predicate.</returns>
     private FilterBuilder<T> BuildFilterFromPredicate(
         Expression<Func<T, bool>> predicate,
-        FilterBuilder<T> existingFilter)
+        FilterBuilder<T>? existingFilter)
     {
-        if (existingFilter is null)
-        {
-            existingFilter = FilterBuilder<T>.Create();
-        }
-        else
-        {
-            existingFilter = existingFilter.And();
-        }
+        existingFilter = existingFilter is null ? FilterBuilder<T>.Create() : existingFilter.And();
 
         return BuildFilterFromExpressionInternal(predicate.Body, existingFilter!);
     }
 
-    private FilterBuilder<T> BuildFilterFromExpressionInternal(Expression expression, FilterBuilder<T> filterBuilder)
+    private FilterBuilder<T> BuildFilterFromExpressionInternal(Expression expression, FilterBuilder<T>? filterBuilder)
     {
         // Handle binary expressions (most common in where clauses)
         if (expression is BinaryExpression binaryExpression)

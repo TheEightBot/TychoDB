@@ -42,7 +42,7 @@ public class Tycho : IDisposable
     private readonly ThreadLocal<StringBuilder> _commandBuilder = new(() => new StringBuilder(1024));
 
     // Use ObjectPool for MemoryStream instances
-    private readonly ObjectPool<MemoryStream> _memoryStreamPool = new ObjectPool<MemoryStream>(
+    private readonly ObjectPool<MemoryStream> _memoryStreamPool = new(
         () => new MemoryStream(4096),
         stream =>
         {
@@ -63,12 +63,12 @@ public class Tycho : IDisposable
     private SqliteConnection? _connection;
     private bool _isDisposed;
 
-    private StringBuilder? ReusableStringBuilder
+    private StringBuilder ReusableStringBuilder
     {
         get
         {
-            var builder = _commandBuilder.Value;
-            builder?.Clear();
+            StringBuilder builder = _commandBuilder.Value;
+            builder.Clear();
             return builder;
         }
     }
@@ -116,7 +116,7 @@ public class Tycho : IDisposable
                 Mode = SqliteOpenMode.ReadWriteCreate,
             };
 
-        if (password != null)
+        if (password is not null)
         {
             connectionStringBuilder.Password = password;
         }
@@ -190,7 +190,7 @@ public class Tycho : IDisposable
     /// <returns>The current Tycho instance for method chaining.</returns>
     public Tycho Connect()
     {
-        if (_connection != null)
+        if (_connection is not null)
         {
             return this;
         }
@@ -206,7 +206,7 @@ public class Tycho : IDisposable
     /// <returns>A ValueTask containing the current Tycho instance for method chaining.</returns>
     public async ValueTask<Tycho> ConnectAsync()
     {
-        if (_connection != null)
+        if (_connection is not null)
         {
             return this;
         }
@@ -235,7 +235,7 @@ public class Tycho : IDisposable
     /// <returns>A ValueTask representing the asynchronous operation.</returns>
     public async ValueTask DisconnectAsync()
     {
-        if (_connection == null)
+        if (_connection is null)
         {
             return;
         }
@@ -263,7 +263,7 @@ public class Tycho : IDisposable
     public ValueTask<bool> WriteObjectAsync<T>(T obj, string? partition = null, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
-        return WriteObjectsAsync(new[] { obj }, GetIdSelectorFor<T>(), partition, withTransaction, cancellationToken);
+        return WriteObjectsAsync([obj,], GetIdSelectorFor<T>(), partition, withTransaction, cancellationToken);
     }
 
     /// <summary>
@@ -279,7 +279,7 @@ public class Tycho : IDisposable
     public ValueTask<bool> WriteObjectAsync<T>(T obj, Func<T, object> keySelector, string? partition = null,
         bool withTransaction = true, CancellationToken cancellationToken = default)
     {
-        return WriteObjectsAsync(new[] { obj }, keySelector, partition, withTransaction, cancellationToken);
+        return WriteObjectsAsync([obj,], keySelector, partition, withTransaction, cancellationToken);
     }
 
     /// <summary>
@@ -312,6 +312,7 @@ public class Tycho : IDisposable
     {
         ArgumentNullException.ThrowIfNull(objs);
         ArgumentNullException.ThrowIfNull(keySelector);
+        ArgumentNullException.ThrowIfNull(_connection);
 
         return _connection
             .WithConnectionBlockAsync(
@@ -339,7 +340,7 @@ public class Tycho : IDisposable
                     try
                     {
                         // Convert to list to avoid multiple enumeration
-                        var objsList = objs as List<T> ?? new List<T>(objs);
+                        var objsList = objs as List<T> ?? [..objs,];
                         int potentialTotalCount = objsList.Count;
 
                         if (potentialTotalCount == 0)
@@ -372,7 +373,7 @@ public class Tycho : IDisposable
                                 jsonParameter.Value = _jsonSerializer.Serialize(obj);
 
                                 var result = command.ExecuteScalar();
-                                long rowId = result != null ? (long)result : 0;
+                                long rowId = result is not null ? (long)result : 0;
                                 writeCount += rowId > 0 ? 1 : 0;
                             }
 
@@ -427,6 +428,8 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<T>();
         }
 
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
@@ -451,7 +454,7 @@ public class Tycho : IDisposable
                         selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
                             partition.AsValueOrEmptyString();
 
-                        if (filter != null)
+                        if (filter is not null)
                         {
                             filter.Build(commandBuilder, _jsonSerializer);
                         }
@@ -515,6 +518,7 @@ public class Tycho : IDisposable
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(_connection);
 
         return _connection
             .WithConnectionBlockAsync(
@@ -601,6 +605,7 @@ public class Tycho : IDisposable
         IProgress<double>? progress = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(_connection);
 
         return _connection
             .WithConnectionBlockAsync(
@@ -638,7 +643,7 @@ public class Tycho : IDisposable
                         {
                             await using var stream = reader.GetStream(reader.GetOrdinal(Queries.DataColumn));
 
-                            if (progress != null)
+                            if (progress is not null)
                             {
                                 await using var progressStream = new ProgressStream(stream, progress);
                                 returnValue = await _jsonSerializer.DeserializeAsync<T>(progressStream, cancellationToken)
@@ -679,7 +684,7 @@ public class Tycho : IDisposable
     /// <param name="progress">Optional progress reporter for deserialization. Reports a value between 0.0 and 1.0 as the object is read.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing the first matching object or default value if none found.</returns>
-    public async ValueTask<T?> ReadFirstObjectAsync<T>(
+    public async ValueTask<T> ReadFirstObjectAsync<T>(
         FilterBuilder<T> filter,
         string? partition = null,
         bool withTransaction = false,
@@ -704,7 +709,7 @@ public class Tycho : IDisposable
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing the matching object or default value if none found.</returns>
     /// <exception cref="TychoException">Thrown when multiple matching objects are found.</exception>
-    public async ValueTask<T?> ReadObjectAsync<T>(
+    public async ValueTask<T> ReadObjectAsync<T>(
         FilterBuilder<T> filter,
         string? partition = null,
         bool withTransaction = false,
@@ -753,6 +758,8 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<T>();
         }
 
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync<IEnumerable<T>>(
                 _rateLimiter,
@@ -769,17 +776,17 @@ public class Tycho : IDisposable
                     commandBuilder.Append(Queries.SelectDataFromJsonValueWithFullTypeName);
 
                     // Apply filters and sorting
-                    if (filter != null)
+                    if (filter is not null)
                     {
                         filter.Build(commandBuilder, _jsonSerializer);
                     }
 
-                    if (sort != null)
+                    if (sort is not null)
                     {
                         sort.Build(commandBuilder);
                     }
 
-                    if (top != null)
+                    if (top is not null)
                     {
                         commandBuilder.AppendLine(Queries.Limit(top.Value));
                     }
@@ -838,7 +845,7 @@ public class Tycho : IDisposable
 
                                     await using var stream = reader.GetStream(reader.GetOrdinal(Queries.DataColumn));
 
-                                    if (progress != null)
+                                    if (progress is not null)
                                     {
                                         await using Stream progressStream = new ProgressStream(stream, progress);
                                         while ((bytesRead = await progressStream
@@ -940,6 +947,8 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<TIn>();
         }
 
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync<IEnumerable<(string Key, TOut InnerObject)>>(
                 _rateLimiter,
@@ -969,7 +978,7 @@ public class Tycho : IDisposable
                         selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
                             partition.AsValueOrEmptyString();
 
-                        if (filter != null)
+                        if (filter is not null)
                         {
                             filter.Build(commandBuilder, _jsonSerializer);
                         }
@@ -1041,6 +1050,8 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<T>();
         }
 
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
@@ -1107,6 +1118,8 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<T>();
         }
 
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
@@ -1131,7 +1144,7 @@ public class Tycho : IDisposable
                         deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
                             partition.AsValueOrEmptyString();
 
-                        if (filter != null)
+                        if (filter is not null)
                         {
                             filter.Build(commandBuilder, _jsonSerializer);
                         }
@@ -1170,6 +1183,8 @@ public class Tycho : IDisposable
     public ValueTask<int> DeleteObjectsAsync(string partition, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
@@ -1225,6 +1240,8 @@ public class Tycho : IDisposable
     /// <returns>A ValueTask containing the count of deleted objects.</returns>
     public ValueTask<int> DeleteObjectsAsync(bool withTransaction = true, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
@@ -1281,6 +1298,8 @@ public class Tycho : IDisposable
     public ValueTask<bool> WriteBlobAsync(Stream stream, object key, string? partition = null,
         bool withTransaction = true, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
@@ -1346,6 +1365,8 @@ public class Tycho : IDisposable
     public ValueTask<bool> BlobExistsAsync(object key, string? partition = null,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
@@ -1397,6 +1418,8 @@ public class Tycho : IDisposable
     public ValueTask<Stream> ReadBlobAsync(object key, string? partition = null,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
@@ -1449,6 +1472,8 @@ public class Tycho : IDisposable
     public ValueTask<bool> DeleteBlobAsync(object key, string? partition = null, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
@@ -1507,6 +1532,8 @@ public class Tycho : IDisposable
     public ValueTask<(bool Successful, int Count)> DeleteBlobsAsync(string partition, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
@@ -1581,6 +1608,8 @@ public class Tycho : IDisposable
     /// <returns>The current Tycho instance for method chaining.</returns>
     public Tycho CreateIndex(string propertyPathString, bool isNumeric, string objectTypeName, string indexName)
     {
+        ArgumentNullException.ThrowIfNull(this._connection);
+
         _connection
             .WithConnectionBlock(
                 _rateLimiter,
@@ -1655,6 +1684,8 @@ public class Tycho : IDisposable
     public ValueTask<bool> CreateIndexAsync(string propertyPathString, bool isNumeric, string objectTypeName,
         string indexName, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(_connection);
+
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
@@ -1704,6 +1735,8 @@ public class Tycho : IDisposable
         {
             CheckHasRegisteredType<TObj>();
         }
+
+        ArgumentNullException.ThrowIfNull(_connection);
 
         var processedPaths =
             propertyPaths
@@ -1757,6 +1790,8 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<TObj>();
         }
 
+        ArgumentNullException.ThrowIfNull(_connection);
+
         var processedPaths =
             propertyPaths
                 .Select(x => (QueryPropertyPath.BuildPath(x), QueryPropertyPath.IsNumeric(x)))
@@ -1802,6 +1837,8 @@ public class Tycho : IDisposable
     /// <param name="vacuum">Whether to perform an incremental vacuum operation.</param>
     public void Cleanup(bool shrinkMemory = true, bool vacuum = false)
     {
+        ArgumentNullException.ThrowIfNull(_connection);
+
         _connection
             .WithConnectionBlock(
                 _rateLimiter,
@@ -1846,10 +1883,13 @@ public class Tycho : IDisposable
     public Func<T, object> GetIdSelectorFor<T>()
     {
         var type = typeof(T);
-
         CheckHasRegisteredType(type);
+        if (!_registeredTypeInformation.TryGetValue(type, out var rti) || rti is null)
+        {
+            throw new TychoException($"Registration missing for type: {type}");
+        }
 
-        return _registeredTypeInformation[type].GetIdSelector<T>();
+        return rti.GetIdSelector<T>();
     }
 
     /// <summary>
@@ -1862,10 +1902,13 @@ public class Tycho : IDisposable
     public object GetIdFor<T>(T obj)
     {
         var type = typeof(T);
-
         CheckHasRegisteredType(type);
+        if (!_registeredTypeInformation.TryGetValue(type, out var rti) || rti is null)
+        {
+            throw new TychoException($"Registration missing for type: {type}");
+        }
 
-        return _registeredTypeInformation[type].GetIdFor(obj);
+        return rti.GetIdFor(obj);
     }
 
     /// <summary>
@@ -1879,10 +1922,13 @@ public class Tycho : IDisposable
     public bool CompareIdsFor<T>(object id1, object id2)
     {
         var type = typeof(T);
-
         CheckHasRegisteredType(type);
+        if (!_registeredTypeInformation.TryGetValue(type, out var rti) || rti is null)
+        {
+            throw new TychoException($"Registration missing for type: {type}");
+        }
 
-        return _registeredTypeInformation[type].CompareIdsFor(id1, id2);
+        return rti.CompareIdsFor(id1, id2);
     }
 
     /// <summary>
@@ -1896,10 +1942,11 @@ public class Tycho : IDisposable
     public bool CompareIdsFor<T>(T obj1, T obj2)
     {
         var type = typeof(T);
-
         CheckHasRegisteredType(type);
-
-        var rti = _registeredTypeInformation[type];
+        if (!_registeredTypeInformation.TryGetValue(type, out var rti) || rti is null)
+        {
+            throw new TychoException($"Registration missing for type: {type}");
+        }
 
         return rti.CompareIdsFor(obj1, obj2);
     }
@@ -2112,7 +2159,7 @@ internal static class SqliteExtensions
     public static T WithConnectionBlock<T>(this SqliteConnection connection, RateLimiter rateLimiter,
         Func<SqliteConnection, T> func, bool persistConnection)
     {
-        if (connection == null)
+        if (connection is null)
         {
             throw new TychoException("Please call 'Connect' before performing an operation");
         }
@@ -2140,7 +2187,7 @@ internal static class SqliteExtensions
     public static void WithConnectionBlock(this SqliteConnection connection, RateLimiter rateLimiter,
         Action<SqliteConnection> action, bool persistConnection)
     {
-        if (connection == null)
+        if (connection is null)
         {
             throw new TychoException("Please call 'Connect' before performing an operation");
         }
@@ -2172,7 +2219,7 @@ internal static class SqliteExtensions
         bool persistConnection,
         CancellationToken cancellationToken = default)
     {
-        if (connection == null)
+        if (connection is null)
         {
             throw new TychoException("Please call 'Connect' before performing an operation");
         }
@@ -2204,7 +2251,7 @@ internal static class SqliteExtensions
         bool persistConnection,
         CancellationToken cancellationToken = default)
     {
-        if (connection == null)
+        if (connection is null)
         {
             throw new TychoException("Please call 'Connect' before performing an operation");
         }

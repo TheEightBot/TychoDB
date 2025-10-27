@@ -124,7 +124,7 @@ public class NewtonsoftJsonSerializer : IJsonSerializer
     private int EstimateSerializedSize<T>(T obj)
     {
         // Estimate the size based on object type
-        if (obj == null)
+        if (obj is null)
         {
             return 16; // "null" plus some overhead
         }

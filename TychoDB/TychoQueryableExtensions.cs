@@ -19,15 +19,12 @@ public static class TychoQueryableExtensions
     /// <param name="db">The Tycho database instance.</param>
     /// <param name="partition">Optional partition name for the query.</param>
     /// <returns>A queryable object for building and executing queries.</returns>
-    public static TychoQueryable<T> Query<T>(this Tycho db, string partition = null)
+    public static TychoQueryable<T> Query<T>(this Tycho db, string? partition = null)
         where T : class
     {
-        if (db == null)
-        {
-            throw new ArgumentNullException(nameof(db));
-        }
+        ArgumentNullException.ThrowIfNull(db);
 
-        return new TychoQueryable<T>(db, partition);
+        return new TychoQueryable<T>(db, partition!);
     }
 
     /// <summary>
@@ -39,19 +36,12 @@ public static class TychoQueryableExtensions
     /// <param name="partition">Optional partition name.</param>
     /// <param name="cancellationToken">A cancellation token to observe while waiting for the task to complete.</param>
     /// <returns>A task that represents the asynchronous operation. The task result contains true if the operation was successful.</returns>
-    public static ValueTask<bool> SaveAsync<T>(this Tycho db, T entity, string partition = null,
+    public static ValueTask<bool> SaveAsync<T>(this Tycho db, T entity, string? partition = null,
         CancellationToken cancellationToken = default)
         where T : class
     {
-        if (db == null)
-        {
-            throw new ArgumentNullException(nameof(db));
-        }
-
-        if (entity == null)
-        {
-            throw new ArgumentNullException(nameof(entity));
-        }
+        ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(entity);
 
         return db.WriteObjectAsync(entity, partition, true, cancellationToken);
     }
@@ -65,19 +55,13 @@ public static class TychoQueryableExtensions
     /// <param name="partition">Optional partition name.</param>
     /// <param name="cancellationToken">A cancellation token to observe while waiting for the task to complete.</param>
     /// <returns>A task that represents the asynchronous operation. The task result contains true if the operation was successful.</returns>
-    public static ValueTask<bool> SaveAllAsync<T>(this Tycho db, IEnumerable<T> entities, string partition = null,
+    public static ValueTask<bool> SaveAllAsync<T>(this Tycho db, IEnumerable<T> entities, string? partition = null,
         CancellationToken cancellationToken = default)
         where T : class
     {
-        if (db == null)
-        {
-            throw new ArgumentNullException(nameof(db));
-        }
+        ArgumentNullException.ThrowIfNull(db);
 
-        if (entities == null)
-        {
-            throw new ArgumentNullException(nameof(entities));
-        }
+        ArgumentNullException.ThrowIfNull(entities);
 
         return db.WriteObjectsAsync(entities, partition, true, cancellationToken);
     }
@@ -91,19 +75,13 @@ public static class TychoQueryableExtensions
     /// <param name="partition">Optional partition name.</param>
     /// <param name="cancellationToken">A cancellation token to observe while waiting for the task to complete.</param>
     /// <returns>A task that represents the asynchronous operation. The task result contains true if the deletion was successful.</returns>
-    public static ValueTask<bool> RemoveAsync<T>(this Tycho db, T entity, string partition = null,
+    public static ValueTask<bool> RemoveAsync<T>(this Tycho db, T entity, string? partition = null,
         CancellationToken cancellationToken = default)
         where T : class
     {
-        if (db == null)
-        {
-            throw new ArgumentNullException(nameof(db));
-        }
+        ArgumentNullException.ThrowIfNull(db);
 
-        if (entity == null)
-        {
-            throw new ArgumentNullException(nameof(entity));
-        }
+        ArgumentNullException.ThrowIfNull(entity);
 
         return db.DeleteObjectAsync(entity, partition, true, cancellationToken);
     }

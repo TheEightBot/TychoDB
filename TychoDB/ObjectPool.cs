@@ -12,7 +12,7 @@ internal sealed class ObjectPool<T>
 {
     private readonly ConcurrentBag<T> _objects;
     private readonly Func<T> _objectGenerator;
-    private readonly Func<T, T> _objectResetter;
+    private readonly Func<T, T>? _objectResetter;
     private readonly int _maxSize;
 
     /// <summary>
@@ -22,7 +22,7 @@ internal sealed class ObjectPool<T>
     /// <param name="objectGenerator">Function to create a new instance when none are available.</param>
     /// <param name="objectResetter">Optional function to reset/clear an object before returning to the pool.</param>
     /// <param name="maxSize">Maximum number of objects to keep in the pool, default is 100.</param>
-    public ObjectPool(Func<T> objectGenerator, Func<T, T> objectResetter = null, int maxSize = 100)
+    public ObjectPool(Func<T> objectGenerator, Func<T, T>? objectResetter = null, int maxSize = 100)
     {
         _objectGenerator = objectGenerator ?? throw new ArgumentNullException(nameof(objectGenerator));
         _objectResetter = objectResetter;
@@ -36,12 +36,23 @@ internal sealed class ObjectPool<T>
     /// <returns>An object of type T.</returns>
     public T Get()
     {
-        if (_objects.TryTake(out T item))
+        if (_objects.TryTake(out T item) && item is not null)
         {
             return item;
         }
 
-        return _objectGenerator();
+        if (_objectGenerator is null)
+        {
+            throw new InvalidOperationException("Object generator is not set.");
+        }
+
+        var generated = _objectGenerator();
+        if (generated is null)
+        {
+            throw new InvalidOperationException("Object generator returned null.");
+        }
+
+        return generated;
     }
 
     /// <summary>
@@ -50,19 +61,19 @@ internal sealed class ObjectPool<T>
     /// <param name="item">The object to return to the pool.</param>
     public void Return(T item)
     {
-        if (item == null)
+        if (item is null)
         {
             return;
         }
 
         // Apply the reset function if one was provided
-        if (_objectResetter != null)
+        if (_objectResetter is not null)
         {
             item = _objectResetter(item);
         }
 
-        // Only add to pool if we haven't reached max size
-        if (_objects.Count < _maxSize)
+        // Only add to pool if we haven't reached max size and item is not null
+        if (item is not null && _objects.Count < _maxSize)
         {
             _objects.Add(item);
         }

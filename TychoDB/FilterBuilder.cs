@@ -116,7 +116,7 @@ public class FilterBuilder<TObj>
                         commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value like \'%{filter.Value}\')");
                         break;
                     case FilterType.Equals:
-                        if (filter.Value == null)
+                        if (filter.Value is null)
                         {
                             commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value IS NULL)");
                             break;
@@ -174,7 +174,7 @@ public class FilterBuilder<TObj>
                         commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) <= {filter.Value})");
                         break;
                     case FilterType.NotEquals:
-                        if (filter.Value == null)
+                        if (filter.Value is null)
                         {
                             commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value IS NOT NULL)");
                             break;
@@ -206,7 +206,7 @@ public class FilterBuilder<TObj>
                         commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'%{filter.Value}\'");
                         break;
                     case FilterType.Equals:
-                        if (filter.Value == null)
+                        if (filter.Value is null)
                         {
                             commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') IS NULL");
                             break;

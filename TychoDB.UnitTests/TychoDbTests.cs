@@ -31,6 +31,7 @@ public class TychoDbTests
                     [typeof(TestClassD)] = TestJsonContext.Default.TestClassD,
                     [typeof(TestClassE)] = TestJsonContext.Default.TestClassE,
                     [typeof(TestClassF)] = TestJsonContext.Default.TestClassF,
+                    [typeof(DateTimeTestRecord)] = TestJsonContext.Default.DateTimeTestRecord,
                 });
 
     private static readonly IJsonSerializer _newtonsoftJsonSerializer = new NewtonsoftJsonSerializer();
@@ -340,7 +341,7 @@ public class TychoDbTests
 
                         var resultRead = await db.ReadObjectAsync<TestClassA>(testObj.StringProperty).ConfigureAwait(false);
 
-                        if (resultRead != null)
+                        if (resultRead is not null)
                         {
                             Interlocked.Increment(ref successReads);
                         }
@@ -1670,6 +1671,430 @@ public class TychoDbTests
         db.Cleanup();
     }
 
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadDateTime_WithFixedKeyAndPartition_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_partition";
+        var key = "test_key1";
+        var createdDate = new DateTime(2025, 10, 6, 12, 30, 45, DateTimeKind.Utc);
+
+        var testObj =
+            new DateTimeTestRecord
+            {
+                Id = key,
+                CreatedDate = createdDate,
+                ModifiedDate = null,
+                EventTimestamp = DateTimeOffset.UtcNow,
+                LastAccessTimestamp = null,
+            };
+
+        var writeResult = await db.WriteObjectAsync(testObj, x => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTimeTestRecord>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldNotBeNull();
+        readResult.Id.ShouldBe(key);
+        readResult.CreatedDate.ShouldBe(createdDate);
+        readResult.ModifiedDate.ShouldBeNull();
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadNullableDateTime_WithFixedKeyAndPartition_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_partition";
+        var key = "test_key2";
+        var createdDate = new DateTime(2025, 10, 6, 12, 30, 45, DateTimeKind.Utc);
+        var modifiedDate = new DateTime(2025, 10, 6, 14, 15, 30, DateTimeKind.Utc);
+
+        var testObj =
+            new DateTimeTestRecord
+            {
+                Id = key,
+                CreatedDate = createdDate,
+                ModifiedDate = modifiedDate,
+                EventTimestamp = DateTimeOffset.UtcNow,
+                LastAccessTimestamp = null,
+            };
+
+        var writeResult = await db.WriteObjectAsync(testObj, x => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTimeTestRecord>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldNotBeNull();
+        readResult.Id.ShouldBe(key);
+        readResult.CreatedDate.ShouldBe(createdDate);
+        readResult.ModifiedDate.ShouldNotBeNull();
+        readResult.ModifiedDate.Value.ShouldBe(modifiedDate);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadDateTimeOffset_WithFixedKeyAndPartition_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_partition";
+        var key = "test_key3";
+        var eventTimestamp = new DateTimeOffset(2025, 10, 6, 12, 30, 45, TimeSpan.FromHours(-5));
+
+        var testObj =
+            new DateTimeTestRecord
+            {
+                Id = key,
+                CreatedDate = DateTime.UtcNow,
+                ModifiedDate = null,
+                EventTimestamp = eventTimestamp,
+                LastAccessTimestamp = null,
+            };
+
+        var writeResult = await db.WriteObjectAsync(testObj, x => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTimeTestRecord>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldNotBeNull();
+        readResult.Id.ShouldBe(key);
+        readResult.EventTimestamp.ShouldBe(eventTimestamp);
+        readResult.LastAccessTimestamp.ShouldBeNull();
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadNullableDateTimeOffset_WithFixedKeyAndPartition_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_partition";
+        var key = "test_key4";
+        var eventTimestamp = new DateTimeOffset(2025, 10, 6, 12, 30, 45, TimeSpan.FromHours(-5));
+        var lastAccessTimestamp = new DateTimeOffset(2025, 10, 6, 15, 45, 30, TimeSpan.FromHours(-5));
+
+        var testObj =
+            new DateTimeTestRecord
+            {
+                Id = key,
+                CreatedDate = DateTime.UtcNow,
+                ModifiedDate = null,
+                EventTimestamp = eventTimestamp,
+                LastAccessTimestamp = lastAccessTimestamp,
+            };
+
+        var writeResult = await db.WriteObjectAsync(testObj, x => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTimeTestRecord>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldNotBeNull();
+        readResult.Id.ShouldBe(key);
+        readResult.EventTimestamp.ShouldBe(eventTimestamp);
+        readResult.LastAccessTimestamp.ShouldNotBeNull();
+        readResult.LastAccessTimestamp.Value.ShouldBe(lastAccessTimestamp);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadAllDateTimeTypes_WithFixedKeyAndPartition_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_partition";
+        var key = "test_key5";
+        var createdDate = new DateTime(2025, 10, 6, 12, 30, 45, DateTimeKind.Utc);
+        var modifiedDate = new DateTime(2025, 10, 6, 14, 15, 30, DateTimeKind.Utc);
+        var eventTimestamp = new DateTimeOffset(2025, 10, 6, 12, 30, 45, TimeSpan.FromHours(-5));
+        var lastAccessTimestamp = new DateTimeOffset(2025, 10, 6, 15, 45, 30, TimeSpan.FromHours(-5));
+
+        var testObj =
+            new DateTimeTestRecord
+            {
+                Id = key,
+                CreatedDate = createdDate,
+                ModifiedDate = modifiedDate,
+                EventTimestamp = eventTimestamp,
+                LastAccessTimestamp = lastAccessTimestamp,
+            };
+
+        var writeResult = await db.WriteObjectAsync(testObj, x => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTimeTestRecord>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldNotBeNull();
+        readResult.Id.ShouldBe(key);
+        readResult.CreatedDate.ShouldBe(createdDate);
+        readResult.ModifiedDate.ShouldNotBeNull();
+        readResult.ModifiedDate.Value.ShouldBe(modifiedDate);
+        readResult.EventTimestamp.ShouldBe(eventTimestamp);
+        readResult.LastAccessTimestamp.ShouldNotBeNull();
+        readResult.LastAccessTimestamp.Value.ShouldBe(lastAccessTimestamp);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadMultipleDateTimeRecords_WithDifferentKeysInSamePartition_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_partition";
+        var key1 = "test_key6";
+        var key2 = "test_key7";
+        var createdDate1 = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var createdDate2 = new DateTime(2025, 12, 31, 23, 59, 59, DateTimeKind.Utc);
+
+        var testObj1 =
+            new DateTimeTestRecord
+            {
+                Id = key1,
+                CreatedDate = createdDate1,
+                ModifiedDate = null,
+                EventTimestamp = DateTimeOffset.UtcNow,
+                LastAccessTimestamp = null,
+            };
+
+        var testObj2 =
+            new DateTimeTestRecord
+            {
+                Id = key2,
+                CreatedDate = createdDate2,
+                ModifiedDate = createdDate2.AddHours(1),
+                EventTimestamp = DateTimeOffset.UtcNow,
+                LastAccessTimestamp = DateTimeOffset.UtcNow.AddHours(-2),
+            };
+
+        var writeResult1 = await db.WriteObjectAsync(testObj1, x => key1, partition: partition);
+        var writeResult2 = await db.WriteObjectAsync(testObj2, x => key2, partition: partition);
+        var readResult1 = await db.ReadObjectAsync<DateTimeTestRecord>(key1, partition);
+        var readResult2 = await db.ReadObjectAsync<DateTimeTestRecord>(key2, partition);
+
+        writeResult1.ShouldBeTrue();
+        writeResult2.ShouldBeTrue();
+        readResult1.ShouldNotBeNull();
+        readResult2.ShouldNotBeNull();
+        readResult1.Id.ShouldBe(key1);
+        readResult1.CreatedDate.ShouldBe(createdDate1);
+        readResult2.Id.ShouldBe(key2);
+        readResult2.CreatedDate.ShouldBe(createdDate2);
+        readResult2.ModifiedDate.ShouldNotBeNull();
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadDateTimeRecord_WithSameKeyInDifferentPartitions_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition1 = "partition_1";
+        var partition2 = "partition_2";
+        var key = "test_key8";
+        var createdDate1 = new DateTime(2025, 5, 1, 10, 0, 0, DateTimeKind.Utc);
+        var createdDate2 = new DateTime(2025, 5, 15, 15, 30, 0, DateTimeKind.Utc);
+
+        var testObj1 =
+            new DateTimeTestRecord
+            {
+                Id = key,
+                CreatedDate = createdDate1,
+                ModifiedDate = null,
+                EventTimestamp = new DateTimeOffset(2025, 5, 1, 10, 0, 0, TimeSpan.Zero),
+                LastAccessTimestamp = null,
+            };
+
+        var testObj2 =
+            new DateTimeTestRecord
+            {
+                Id = key,
+                CreatedDate = createdDate2,
+                ModifiedDate = createdDate2.AddDays(1),
+                EventTimestamp = new DateTimeOffset(2025, 5, 15, 15, 30, 0, TimeSpan.Zero),
+                LastAccessTimestamp = new DateTimeOffset(2025, 5, 16, 8, 0, 0, TimeSpan.Zero),
+            };
+
+        var writeResult1 = await db.WriteObjectAsync(testObj1, _ => key, partition: partition1);
+        var writeResult2 = await db.WriteObjectAsync(testObj2, _ => key, partition: partition2);
+        var readResult1 = await db.ReadObjectAsync<DateTimeTestRecord>(key, partition1);
+        var readResult2 = await db.ReadObjectAsync<DateTimeTestRecord>(key, partition2);
+
+        writeResult1.ShouldBeTrue();
+        writeResult2.ShouldBeTrue();
+        readResult1.ShouldNotBeNull();
+        readResult2.ShouldNotBeNull();
+        readResult1.CreatedDate.ShouldBe(createdDate1);
+        readResult1.ModifiedDate.ShouldBeNull();
+        readResult2.CreatedDate.ShouldBe(createdDate2);
+        readResult2.ModifiedDate.ShouldNotBeNull();
+        readResult2.LastAccessTimestamp.ShouldNotBeNull();
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadDateTime_AsStandaloneValue_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_standalone";
+        var key = "datetime_value_1";
+        var testValue = new DateTime(2025, 10, 6, 9, 30, 15, DateTimeKind.Utc);
+
+        var writeResult = await db.WriteObjectAsync(testValue, _ => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTime>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldBe(testValue);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadNullableDateTime_AsStandaloneValue_WithValue_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_standalone";
+        var key = "nullable_datetime_value_1";
+        DateTime? testValue = new DateTime(2025, 10, 6, 14, 45, 30, DateTimeKind.Utc);
+
+        var writeResult = await db.WriteObjectAsync(testValue, _ => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTime?>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldNotBeNull();
+        readResult.Value.ShouldBe(testValue.Value);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadNullableDateTime_AsStandaloneValue_WithNull_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_standalone";
+        var key = "nullable_datetime_null_1";
+        DateTime? testValue = null;
+
+        var writeResult = await db.WriteObjectAsync(testValue, _ => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTime?>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldBeNull();
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadDateTimeOffset_AsStandaloneValue_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_standalone";
+        var key = "datetimeoffset_value_1";
+        var testValue = new DateTimeOffset(2025, 10, 6, 9, 30, 15, TimeSpan.FromHours(-5));
+
+        var writeResult = await db.WriteObjectAsync(testValue, _ => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTimeOffset>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldBe(testValue);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadNullableDateTimeOffset_AsStandaloneValue_WithValue_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_standalone";
+        var key = "nullable_datetimeoffset_value_1";
+        DateTimeOffset? testValue = new DateTimeOffset(2025, 10, 6, 14, 45, 30, TimeSpan.FromHours(2));
+
+        var writeResult = await db.WriteObjectAsync(testValue, _ => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTimeOffset?>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldNotBeNull();
+        readResult.Value.ShouldBe(testValue.Value);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadNullableDateTimeOffset_AsStandaloneValue_WithNull_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_standalone";
+        var key = "nullable_datetimeoffset_null_1";
+        DateTimeOffset? testValue = null;
+
+        var writeResult = await db.WriteObjectAsync(testValue, _ => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTimeOffset?>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldBeNull();
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadMultipleStandaloneDateTimeValues_WithDifferentKeys_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_standalone";
+        var dateTimeKey = "multi_datetime";
+        var dateTimeOffsetKey = "multi_datetimeoffset";
+        var nullableDateTimeKey = "multi_nullable_datetime";
+        var nullableDateTimeOffsetKey = "multi_nullable_datetimeoffset";
+
+        var dateTimeValue = new DateTime(2025, 1, 15, 10, 0, 0, DateTimeKind.Utc);
+        var dateTimeOffsetValue = new DateTimeOffset(2025, 6, 20, 15, 30, 0, TimeSpan.FromHours(-7));
+        DateTime? nullableDateTimeValue = new DateTime(2025, 8, 10, 8, 0, 0, DateTimeKind.Utc);
+        DateTimeOffset? nullableDateTimeOffsetValue = new DateTimeOffset(2025, 12, 25, 20, 0, 0, TimeSpan.FromHours(1));
+
+        await db.WriteObjectAsync(dateTimeValue, _ => dateTimeKey, partition: partition);
+        await db.WriteObjectAsync(dateTimeOffsetValue, _ => dateTimeOffsetKey, partition: partition);
+        await db.WriteObjectAsync(nullableDateTimeValue, _ => nullableDateTimeKey, partition: partition);
+        await db.WriteObjectAsync(nullableDateTimeOffsetValue, _ => nullableDateTimeOffsetKey, partition: partition);
+
+        var readDateTime = await db.ReadObjectAsync<DateTime>(dateTimeKey, partition);
+        var readDateTimeOffset = await db.ReadObjectAsync<DateTimeOffset>(dateTimeOffsetKey, partition);
+        var readNullableDateTime = await db.ReadObjectAsync<DateTime?>(nullableDateTimeKey, partition);
+        var readNullableDateTimeOffset = await db.ReadObjectAsync<DateTimeOffset?>(nullableDateTimeOffsetKey, partition);
+
+        readDateTime.ShouldBe(dateTimeValue);
+        readDateTimeOffset.ShouldBe(dateTimeOffsetValue);
+        readNullableDateTime.ShouldNotBeNull();
+        readNullableDateTime.Value.ShouldBe(nullableDateTimeValue.Value);
+        readNullableDateTimeOffset.ShouldNotBeNull();
+        readNullableDateTimeOffset.Value.ShouldBe(nullableDateTimeOffsetValue.Value);
+    }
+
     public static Tycho BuildDatabaseConnection(IJsonSerializer jsonSerializer, bool requireTypeRegistration = false)
     {
 #if ENCRYPTED
@@ -1762,6 +2187,19 @@ public abstract class ModelBase : INotifyPropertyChanged
 #pragma warning restore CS0067
 }
 
+public class DateTimeTestRecord
+{
+    public string Id { get; set; }
+
+    public DateTime CreatedDate { get; set; }
+
+    public DateTime? ModifiedDate { get; set; }
+
+    public DateTimeOffset EventTimestamp { get; set; }
+
+    public DateTimeOffset? LastAccessTimestamp { get; set; }
+}
+
 [JsonSourceGenerationOptions(
     GenerationMode = JsonSourceGenerationMode.Metadata,
     IgnoreReadOnlyFields = true,
@@ -1778,6 +2216,7 @@ public abstract class ModelBase : INotifyPropertyChanged
 [JsonSerializable(typeof(Patient))]
 [JsonSerializable(typeof(User))]
 [JsonSerializable(typeof(List<User>))]
+[JsonSerializable(typeof(DateTimeTestRecord))]
 internal partial class TestJsonContext : JsonSerializerContext
 {
 }

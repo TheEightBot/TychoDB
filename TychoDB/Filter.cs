@@ -30,7 +30,7 @@ internal class Filter
 
     public FilterType? FilterType { get; private set; }
 
-    public string PropertyPath { get; private set; }
+    public string? PropertyPath { get; private set; }
 
     public bool IsPropertyPathNumeric { get; private set; }
 
@@ -38,7 +38,7 @@ internal class Filter
 
     public bool IsPropertyPathDateTime { get; private set; }
 
-    public string PropertyValuePath { get; set; }
+    public string? PropertyValuePath { get; set; }
 
     public bool IsPropertyValuePathNumeric { get; private set; }
 
@@ -46,9 +46,9 @@ internal class Filter
 
     public bool IsPropertyValuePathDateTime { get; private set; }
 
-    public object Value { get; private set; }
+    public object? Value { get; private set; }
 
-    public Filter(FilterType filterType, string propertyPath, bool isPropertyPathNumeric, bool isPropertyPathBool, bool isPropertyPathDateTime, object value)
+    public Filter(FilterType filterType, string propertyPath, bool isPropertyPathNumeric, bool isPropertyPathBool, bool isPropertyPathDateTime, object? value)
     {
         FilterType = filterType;
         PropertyPath = propertyPath;
@@ -60,7 +60,7 @@ internal class Filter
         Value = value;
     }
 
-    public Filter(FilterType filterType, string listPropertyPath, string propertyValuePath, bool isPropertyValuePathNumeric, bool isPropertyValuePathBool, bool isPropertyValuePathDateTime, object value)
+    public Filter(FilterType filterType, string listPropertyPath, string? propertyValuePath, bool isPropertyValuePathNumeric, bool isPropertyValuePathBool, bool isPropertyValuePathDateTime, object? value)
     {
         FilterType = filterType;
         PropertyPath = listPropertyPath;

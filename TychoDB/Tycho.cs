@@ -1030,7 +1030,7 @@ public class Tycho : IDisposable
     public ValueTask<bool> DeleteObjectAsync<T>(T obj, string? partition = null, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
-        return DeleteObjectAsync(GetIdFor(obj), partition, withTransaction, cancellationToken);
+        return DeleteObjectWithKeyAsync<T>(GetIdFor(obj), partition, withTransaction, cancellationToken);
     }
 
     /// <summary>
@@ -1042,7 +1042,7 @@ public class Tycho : IDisposable
     /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
-    public ValueTask<bool> DeleteObjectAsync<T>(object key, string? partition = null, bool withTransaction = true,
+    public ValueTask<bool> DeleteObjectWithKeyAsync<T>(object key, string? partition = null, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
         if (_requireTypeRegistration)

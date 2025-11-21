@@ -1412,7 +1412,7 @@ public class TychoDbTests
             };
 
         var writeResult = await db.WriteObjectAsync(testObj, x => x.StringProperty);
-        var deleteResult = await db.DeleteObjectAsync<TestClassA>(testObj.StringProperty);
+        var deleteResult = await db.DeleteObjectWithKeyAsync<TestClassA>(testObj.StringProperty);
 
         writeResult.ShouldBeTrue();
         deleteResult.ShouldBeTrue();

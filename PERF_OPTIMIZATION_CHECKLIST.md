@@ -140,7 +140,7 @@ The goal is to identify and implement optimizations that:
 -   **Rationale:**
     -   `sealed` allows JIT to devirtualize virtual calls
 -   **Risk:** Very Low - adding `sealed` is safe
--   **Commit:** TBD
+-   **Commit:** `18bd26f`
 
 ### 10. NewtonsoftJsonSerializer.cs - Add sealed keyword
 
@@ -153,7 +153,7 @@ The goal is to identify and implement optimizations that:
 -   **Rationale:**
     -   `sealed` allows JIT to devirtualize virtual calls
 -   **Risk:** Very Low - adding `sealed` is safe
--   **Commit:** TBD
+-   **Commit:** `18bd26f`
 
 ### 11. SystemTextJsonSerializer.cs - Add sealed keyword
 
@@ -166,11 +166,11 @@ The goal is to identify and implement optimizations that:
 -   **Rationale:**
     -   `sealed` allows JIT to devirtualize virtual calls
 -   **Risk:** Very Low - adding `sealed` is safe
--   **Commit:** TBD
+-   **Commit:** `18bd26f`
 
 ### 12. TychoQueryable.cs - Optimize expression tree processing
 
--   [ ] **Status: Pending Approval**
+-   [ ] **Status: Deferred**
 -   **File:** `TychoDB/TychoQueryable.cs`
 -   **Current:** `BuildFilterFromExpressionInternal` uses reflection via `GetMethod`
 -   **Proposed:**
@@ -179,10 +179,11 @@ The goal is to identify and implement optimizations that:
 -   **Rationale:**
     -   Reflection is expensive; caching reduces overhead
 -   **Risk:** Low - internal optimization
+-   **Decision:** Deferred - complex change with medium ROI for typical usage patterns
 
 ### 13. TychoQueryable.cs - Avoid repeated Expression.Lambda creation
 
--   [ ] **Status: Pending Approval**
+-   [ ] **Status: Deferred**
 -   **File:** `TychoDB/TychoQueryable.cs`
 -   **Current:** Creates new `Expression.Lambda` and `Expression.Parameter` repeatedly
 -   **Proposed:**
@@ -191,6 +192,7 @@ The goal is to identify and implement optimizations that:
 -   **Rationale:**
     -   Expression tree creation has overhead that can be avoided
 -   **Risk:** Low - internal optimization
+-   **Decision:** Deferred - complex change with medium ROI for typical usage patterns
 
 ### 14. ProgressStream.cs - Add sealed keyword
 
@@ -202,7 +204,7 @@ The goal is to identify and implement optimizations that:
 -   **Rationale:**
     -   `sealed` allows JIT to devirtualize virtual calls
 -   **Risk:** Very Low - adding `sealed` is safe
--   **Commit:** TBD
+-   **Commit:** `18bd26f`
 
 ---
 

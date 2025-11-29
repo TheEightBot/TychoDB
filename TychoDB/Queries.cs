@@ -14,6 +14,7 @@ internal static class Queries
     public const string CreateDatabaseSchema =
         """
         PRAGMA journal_mode = WAL;
+        PRAGMA locking_mode = EXCLUSIVE;
         PRAGMA synchronous = NORMAL;
         PRAGMA temp_store = MEMORY;
         PRAGMA busy_timeout = 5000;

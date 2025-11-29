@@ -55,7 +55,7 @@ internal static class QueryPropertyPath
         }
         finally
         {
-            ArrayPool<string>.Shared.Return(segments, clearArray: true);
+            ArrayPool<string>.Shared.Return(segments, clearArray: false);
         }
     }
 

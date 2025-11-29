@@ -5,6 +5,9 @@ namespace TychoDB;
 
 internal static class Queries
 {
+    public const string KeyColumn = "Key";
+    public const string DataColumn = "Data";
+
     public const string CreateDatabaseSchema =
         """
         PRAGMA journal_mode = WAL;
@@ -72,7 +75,7 @@ internal static class Queries
 
     public const string SelectDataFromJsonValueWithKeyAndFullTypeName =
         """
-        SELECT Data
+        SELECT rowid, Data
         FROM JsonValue
         Where
         Key = $key
@@ -98,7 +101,7 @@ internal static class Queries
 
     public const string SelectDataFromStreamValueWithKey =
         """
-        SELECT Data
+        SELECT rowid, Data
         FROM StreamValue
         Where
         Key = $key
@@ -126,7 +129,7 @@ internal static class Queries
 
     public const string SelectDataFromJsonValueWithFullTypeName =
         """
-        SELECT Data
+        SELECT rowid, Data
         FROM JsonValue
         Where
         FullTypeName = $fullTypeName
@@ -154,6 +157,20 @@ internal static class Queries
         FullTypeName = $fullTypeName
         AND
         Partition = $partition
+        """;
+
+    public const string DeleteDataFromJsonValueWithPartition =
+        """
+        DELETE
+        FROM JsonValue
+        Where
+        Partition = $partition
+        """;
+
+    public const string DeleteDataFromJsonValue =
+        """
+        DELETE
+        FROM JsonValue
         """;
 
     public const string DeleteDataFromStreamValueWithKey =
@@ -188,7 +205,7 @@ internal static class Queries
     {
         return
             $"""
-            SELECT JSON_EXTRACT(Data, '{selectionPath}') AS Data
+            SELECT rowid, JSON_EXTRACT(Data, '{selectionPath}') AS Data
             FROM JsonValue
             Where
             FullTypeName = $fullTypeName
@@ -201,7 +218,7 @@ internal static class Queries
     {
         return
             $"""
-            SELECT Key, JSON_EXTRACT(Data, '{selectionPath}') AS Data
+            SELECT rowid, Key, JSON_EXTRACT(Data, '{selectionPath}') AS Data
             FROM JsonValue
             Where
             FullTypeName = $fullTypeName

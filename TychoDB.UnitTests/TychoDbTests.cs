@@ -8,8 +8,8 @@ using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading;
 using System.Threading.Tasks;
-using FluentAssertions;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using Shouldly;
 using TychoDB;
 
 [assembly: Parallelize(Scope = ExecutionScope.ClassLevel)]
@@ -31,6 +31,7 @@ public class TychoDbTests
                     [typeof(TestClassD)] = TestJsonContext.Default.TestClassD,
                     [typeof(TestClassE)] = TestJsonContext.Default.TestClassE,
                     [typeof(TestClassF)] = TestJsonContext.Default.TestClassF,
+                    [typeof(DateTimeTestRecord)] = TestJsonContext.Default.DateTimeTestRecord,
                 });
 
     private static readonly IJsonSerializer _newtonsoftJsonSerializer = new NewtonsoftJsonSerializer();
@@ -62,7 +63,7 @@ public class TychoDbTests
 
         var result = await db.WriteObjectAsync(testObj, x => x.StringProperty);
 
-        result.Should().BeTrue();
+        result.ShouldBeTrue();
     }
 
     [DataTestMethod]
@@ -84,7 +85,7 @@ public class TychoDbTests
 
         var result = await db.WriteObjectAsync(testObj);
 
-        result.Should().BeTrue();
+        result.ShouldBeTrue();
     }
 
     [DataTestMethod]
@@ -126,7 +127,7 @@ public class TychoDbTests
 
         var result = await db.WriteObjectAsync(testObj);
 
-        result.Should().BeTrue();
+        result.ShouldBeTrue();
     }
 
     [DataTestMethod]
@@ -247,7 +248,7 @@ public class TychoDbTests
 
         var result = await db.WriteObjectAsync(testObj, x => x.StringProperty);
 
-        result.Should().BeTrue();
+        result.ShouldBeTrue();
     }
 
     [DataTestMethod]
@@ -269,7 +270,7 @@ public class TychoDbTests
 
         var result = await db.WriteObjectAsync(testObj);
 
-        result.Should().BeTrue();
+        result.ShouldBeTrue();
     }
 
     [DataTestMethod]
@@ -298,8 +299,8 @@ public class TychoDbTests
                         .Create()
                         .Filter(FilterType.Equals, x => x.IsDirty, true));
 
-        result.Should().NotBeNullOrEmpty();
-        result.Should().HaveCount(1);
+        result.ShouldNotBeEmpty();
+        result.Count().ShouldBe(1);
     }
 
     [DataTestMethod]
@@ -340,7 +341,7 @@ public class TychoDbTests
 
                         var resultRead = await db.ReadObjectAsync<TestClassA>(testObj.StringProperty).ConfigureAwait(false);
 
-                        if (resultRead != null)
+                        if (resultRead is not null)
                         {
                             Interlocked.Increment(ref successReads);
                         }
@@ -353,8 +354,8 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        successWrites.Should().Be(expected);
-        successReads.Should().Be(expected);
+        successWrites.ShouldBe(expected);
+        successReads.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -393,7 +394,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        resultWrite.Should().Be(expected);
+        resultWrite.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -434,7 +435,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        resultWrite.Should().Be(expected);
+        resultWrite.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -491,7 +492,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        resultWrite.Should().Be(expected);
+        resultWrite.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -557,7 +558,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        resultReadCount.Should().Be(expected);
+        resultReadCount.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -596,7 +597,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objs.Count().Should().Be(testObjs.Count);
+        objs.Count().ShouldBe(testObjs.Count);
     }
 
     [DataTestMethod]
@@ -641,7 +642,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objs.Count().Should().Be(expected);
+        objs.Count().ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -686,7 +687,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objsCount.Should().Be(expected);
+        objsCount.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -727,7 +728,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        obj.Count().Should().Be(expected);
+        obj.Count().ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -768,7 +769,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        exists.Should().Be(expected);
+        exists.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -813,7 +814,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objs.Count().Should().Be(expected);
+        objs.Count().ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -860,8 +861,8 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objs.Count().Should().Be(expected);
-        objs.All(x => Guid.Parse(x.Key) == Guid.Parse(x.InnerObject.StringProperty)).Should().BeTrue();
+        objs.Count().ShouldBe(expected);
+        objs.All(x => Guid.Parse(x.Key) == Guid.Parse(x.InnerObject.StringProperty)).ShouldBeTrue();
     }
 
     [DataTestMethod]
@@ -906,7 +907,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objs.Count().Should().Be(expected);
+        objs.Count().ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -966,7 +967,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        count.Should().Be(expected);
+        count.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1025,7 +1026,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        count.Should().Be(expected);
+        count.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1047,11 +1048,11 @@ public class TychoDbTests
         var writeResult = await db.WriteObjectAsync(testObj, x => x.StringProperty);
         var readResult = await db.ReadObjectAsync<TestClassA>(testObj.StringProperty);
 
-        writeResult.Should().BeTrue();
-        readResult.Should().NotBeNull();
-        readResult.StringProperty.Should().Be(testObj.StringProperty);
-        readResult.IntProperty.Should().Be(testObj.IntProperty);
-        readResult.TimestampMillis.Should().Be(testObj.TimestampMillis);
+        writeResult.ShouldBeTrue();
+        readResult.ShouldNotBeNull();
+        readResult.StringProperty.ShouldBe(testObj.StringProperty);
+        readResult.IntProperty.ShouldBe(testObj.IntProperty);
+        readResult.TimestampMillis.ShouldBe(testObj.TimestampMillis);
     }
 
     [DataTestMethod]
@@ -1098,7 +1099,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objs.Count().Should().Be(expected);
+        objs.Count().ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1127,8 +1128,8 @@ public class TychoDbTests
                         .Filter(FilterType.Equals, x => x.TestClassId, expected))
                 .ConfigureAwait(false);
 
-        obj.Should().NotBeNull();
-        obj.TestClassId.Should().Be(expected);
+        obj.ShouldNotBeNull();
+        obj.TestClassId.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1157,8 +1158,8 @@ public class TychoDbTests
                         .Filter(FilterType.Equals, x => x.TestClassId, expected))
                 .ConfigureAwait(false);
 
-        obj.Should().NotBeNull();
-        obj.TestClassId.Should().Be(expected);
+        obj.ShouldNotBeNull();
+        obj.TestClassId.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1201,7 +1202,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objs.Count().Should().Be(expected);
+        objs.Count().ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1237,7 +1238,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objs.Count().Should().Be(expected);
+        objs.Count().ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1261,7 +1262,7 @@ public class TychoDbTests
 
         writeSuccessful = await db.WriteObjectAsync(testObj, x => x.PatientId).ConfigureAwait(false);
 
-        writeSuccessful.Should().BeTrue();
+        writeSuccessful.ShouldBeTrue();
 
         var objs =
             await db
@@ -1271,7 +1272,7 @@ public class TychoDbTests
                         .Filter(FilterType.Equals, x => x.DOB, testObj.DOB))
                 .ConfigureAwait(false);
 
-        objs.Count().Should().Be(expected);
+        objs.Count().ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1322,8 +1323,8 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objs.First().PatientId.Should().Be(expectedFirstId);
-        objs.Last().PatientId.Should().Be(expectedLastId);
+        objs.First().PatientId.ShouldBe(expectedFirstId);
+        objs.Last().PatientId.ShouldBe(expectedLastId);
     }
 
     [DataTestMethod]
@@ -1339,7 +1340,7 @@ public class TychoDbTests
 
         var successful = await db.CreateIndexAsync<TestClassD>(x => x.DoubleProperty, "double_index");
 
-        successful.Should().Be(expected);
+        successful.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1355,7 +1356,7 @@ public class TychoDbTests
 
         var successful = await db.CreateIndexAsync<TestClassG<object>>(x => x.Id, "id_index");
 
-        successful.Should().Be(expected);
+        successful.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1391,7 +1392,7 @@ public class TychoDbTests
                 },
                 "string_double_index");
 
-        successful.Should().Be(expected);
+        successful.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1411,10 +1412,10 @@ public class TychoDbTests
             };
 
         var writeResult = await db.WriteObjectAsync(testObj, x => x.StringProperty);
-        var deleteResult = await db.DeleteObjectAsync<TestClassA>(testObj.StringProperty);
+        var deleteResult = await db.DeleteObjectWithKeyAsync<TestClassA>(testObj.StringProperty);
 
-        writeResult.Should().BeTrue();
-        deleteResult.Should().BeTrue();
+        writeResult.ShouldBeTrue();
+        deleteResult.ShouldBeTrue();
     }
 
     [DataTestMethod]
@@ -1455,7 +1456,7 @@ public class TychoDbTests
 
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
-        objsDeleted.Should().Be(expectedCount);
+        objsDeleted.ShouldBe(expectedCount);
     }
 
     [DataTestMethod]
@@ -1475,7 +1476,7 @@ public class TychoDbTests
 
         var result = await db.WriteBlobAsync(stream, "Test");
 
-        result.Should().BeTrue();
+        result.ShouldBeTrue();
     }
 
     [DataTestMethod]
@@ -1500,8 +1501,8 @@ public class TychoDbTests
         using var resultReader = new StreamReader(queryResult);
         var streamContents = await resultReader.ReadToEndAsync();
 
-        insertResult.Should().BeTrue();
-        streamContents.Should().BeEquivalentTo(textExample);
+        insertResult.ShouldBeTrue();
+        streamContents.ShouldBeEquivalentTo(textExample);
     }
 
     [DataTestMethod]
@@ -1524,8 +1525,8 @@ public class TychoDbTests
         var insertResult = await db.WriteBlobAsync(stream, key);
         var deleteResult = await db.DeleteBlobAsync(key);
 
-        insertResult.Should().BeTrue();
-        deleteResult.Should().BeTrue();
+        insertResult.ShouldBeTrue();
+        deleteResult.ShouldBeTrue();
     }
 
     [DataTestMethod]
@@ -1548,8 +1549,8 @@ public class TychoDbTests
         var insertResult = await db.WriteBlobAsync(stream, key);
         var existsResult = await db.BlobExistsAsync(key);
 
-        insertResult.Should().BeTrue();
-        existsResult.Should().BeTrue();
+        insertResult.ShouldBeTrue();
+        existsResult.ShouldBeTrue();
     }
 
     [DataTestMethod]
@@ -1578,8 +1579,8 @@ public class TychoDbTests
 
         var deleteResult = await db.DeleteBlobsAsync(partition);
 
-        deleteResult.Successful.Should().BeTrue();
-        deleteResult.Count.Should().Be(expected);
+        deleteResult.Successful.ShouldBeTrue();
+        deleteResult.Count.ShouldBe(expected);
     }
 
     [DataTestMethod]
@@ -1614,8 +1615,8 @@ public class TychoDbTests
         var readA = await db.ReadObjectAsync<TestClassA>(key);
         var readB = await db.ReadObjectAsync<TestClassB>(key);
 
-        readA.IntProperty.Should().Be(classAIntProperty);
-        readB.DoubleProperty.Should().Be(classBDoubleProperty);
+        readA.IntProperty.ShouldBe(classAIntProperty);
+        readB.DoubleProperty.ShouldBe(classBDoubleProperty);
     }
 
     [DataTestMethod]
@@ -1655,8 +1656,8 @@ public class TychoDbTests
         var readA = await db.ReadObjectAsync<TestClassA>(key, partition1);
         var readB = await db.ReadObjectAsync<TestClassA>(key, partition2);
 
-        readA.IntProperty.Should().Be(obj1IntProperty);
-        readB.IntProperty.Should().Be(obj2IntProperty);
+        readA.IntProperty.ShouldBe(obj1IntProperty);
+        readB.IntProperty.ShouldBe(obj2IntProperty);
     }
 
     [DataTestMethod]
@@ -1668,6 +1669,430 @@ public class TychoDbTests
                 .Connect();
 
         db.Cleanup();
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadDateTime_WithFixedKeyAndPartition_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_partition";
+        var key = "test_key1";
+        var createdDate = new DateTime(2025, 10, 6, 12, 30, 45, DateTimeKind.Utc);
+
+        var testObj =
+            new DateTimeTestRecord
+            {
+                Id = key,
+                CreatedDate = createdDate,
+                ModifiedDate = null,
+                EventTimestamp = DateTimeOffset.UtcNow,
+                LastAccessTimestamp = null,
+            };
+
+        var writeResult = await db.WriteObjectAsync(testObj, x => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTimeTestRecord>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldNotBeNull();
+        readResult.Id.ShouldBe(key);
+        readResult.CreatedDate.ShouldBe(createdDate);
+        readResult.ModifiedDate.ShouldBeNull();
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadNullableDateTime_WithFixedKeyAndPartition_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_partition";
+        var key = "test_key2";
+        var createdDate = new DateTime(2025, 10, 6, 12, 30, 45, DateTimeKind.Utc);
+        var modifiedDate = new DateTime(2025, 10, 6, 14, 15, 30, DateTimeKind.Utc);
+
+        var testObj =
+            new DateTimeTestRecord
+            {
+                Id = key,
+                CreatedDate = createdDate,
+                ModifiedDate = modifiedDate,
+                EventTimestamp = DateTimeOffset.UtcNow,
+                LastAccessTimestamp = null,
+            };
+
+        var writeResult = await db.WriteObjectAsync(testObj, x => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTimeTestRecord>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldNotBeNull();
+        readResult.Id.ShouldBe(key);
+        readResult.CreatedDate.ShouldBe(createdDate);
+        readResult.ModifiedDate.ShouldNotBeNull();
+        readResult.ModifiedDate.Value.ShouldBe(modifiedDate);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadDateTimeOffset_WithFixedKeyAndPartition_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_partition";
+        var key = "test_key3";
+        var eventTimestamp = new DateTimeOffset(2025, 10, 6, 12, 30, 45, TimeSpan.FromHours(-5));
+
+        var testObj =
+            new DateTimeTestRecord
+            {
+                Id = key,
+                CreatedDate = DateTime.UtcNow,
+                ModifiedDate = null,
+                EventTimestamp = eventTimestamp,
+                LastAccessTimestamp = null,
+            };
+
+        var writeResult = await db.WriteObjectAsync(testObj, x => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTimeTestRecord>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldNotBeNull();
+        readResult.Id.ShouldBe(key);
+        readResult.EventTimestamp.ShouldBe(eventTimestamp);
+        readResult.LastAccessTimestamp.ShouldBeNull();
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadNullableDateTimeOffset_WithFixedKeyAndPartition_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_partition";
+        var key = "test_key4";
+        var eventTimestamp = new DateTimeOffset(2025, 10, 6, 12, 30, 45, TimeSpan.FromHours(-5));
+        var lastAccessTimestamp = new DateTimeOffset(2025, 10, 6, 15, 45, 30, TimeSpan.FromHours(-5));
+
+        var testObj =
+            new DateTimeTestRecord
+            {
+                Id = key,
+                CreatedDate = DateTime.UtcNow,
+                ModifiedDate = null,
+                EventTimestamp = eventTimestamp,
+                LastAccessTimestamp = lastAccessTimestamp,
+            };
+
+        var writeResult = await db.WriteObjectAsync(testObj, x => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTimeTestRecord>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldNotBeNull();
+        readResult.Id.ShouldBe(key);
+        readResult.EventTimestamp.ShouldBe(eventTimestamp);
+        readResult.LastAccessTimestamp.ShouldNotBeNull();
+        readResult.LastAccessTimestamp.Value.ShouldBe(lastAccessTimestamp);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadAllDateTimeTypes_WithFixedKeyAndPartition_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_partition";
+        var key = "test_key5";
+        var createdDate = new DateTime(2025, 10, 6, 12, 30, 45, DateTimeKind.Utc);
+        var modifiedDate = new DateTime(2025, 10, 6, 14, 15, 30, DateTimeKind.Utc);
+        var eventTimestamp = new DateTimeOffset(2025, 10, 6, 12, 30, 45, TimeSpan.FromHours(-5));
+        var lastAccessTimestamp = new DateTimeOffset(2025, 10, 6, 15, 45, 30, TimeSpan.FromHours(-5));
+
+        var testObj =
+            new DateTimeTestRecord
+            {
+                Id = key,
+                CreatedDate = createdDate,
+                ModifiedDate = modifiedDate,
+                EventTimestamp = eventTimestamp,
+                LastAccessTimestamp = lastAccessTimestamp,
+            };
+
+        var writeResult = await db.WriteObjectAsync(testObj, x => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTimeTestRecord>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldNotBeNull();
+        readResult.Id.ShouldBe(key);
+        readResult.CreatedDate.ShouldBe(createdDate);
+        readResult.ModifiedDate.ShouldNotBeNull();
+        readResult.ModifiedDate.Value.ShouldBe(modifiedDate);
+        readResult.EventTimestamp.ShouldBe(eventTimestamp);
+        readResult.LastAccessTimestamp.ShouldNotBeNull();
+        readResult.LastAccessTimestamp.Value.ShouldBe(lastAccessTimestamp);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadMultipleDateTimeRecords_WithDifferentKeysInSamePartition_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_partition";
+        var key1 = "test_key6";
+        var key2 = "test_key7";
+        var createdDate1 = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var createdDate2 = new DateTime(2025, 12, 31, 23, 59, 59, DateTimeKind.Utc);
+
+        var testObj1 =
+            new DateTimeTestRecord
+            {
+                Id = key1,
+                CreatedDate = createdDate1,
+                ModifiedDate = null,
+                EventTimestamp = DateTimeOffset.UtcNow,
+                LastAccessTimestamp = null,
+            };
+
+        var testObj2 =
+            new DateTimeTestRecord
+            {
+                Id = key2,
+                CreatedDate = createdDate2,
+                ModifiedDate = createdDate2.AddHours(1),
+                EventTimestamp = DateTimeOffset.UtcNow,
+                LastAccessTimestamp = DateTimeOffset.UtcNow.AddHours(-2),
+            };
+
+        var writeResult1 = await db.WriteObjectAsync(testObj1, x => key1, partition: partition);
+        var writeResult2 = await db.WriteObjectAsync(testObj2, x => key2, partition: partition);
+        var readResult1 = await db.ReadObjectAsync<DateTimeTestRecord>(key1, partition);
+        var readResult2 = await db.ReadObjectAsync<DateTimeTestRecord>(key2, partition);
+
+        writeResult1.ShouldBeTrue();
+        writeResult2.ShouldBeTrue();
+        readResult1.ShouldNotBeNull();
+        readResult2.ShouldNotBeNull();
+        readResult1.Id.ShouldBe(key1);
+        readResult1.CreatedDate.ShouldBe(createdDate1);
+        readResult2.Id.ShouldBe(key2);
+        readResult2.CreatedDate.ShouldBe(createdDate2);
+        readResult2.ModifiedDate.ShouldNotBeNull();
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadDateTimeRecord_WithSameKeyInDifferentPartitions_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition1 = "partition_1";
+        var partition2 = "partition_2";
+        var key = "test_key8";
+        var createdDate1 = new DateTime(2025, 5, 1, 10, 0, 0, DateTimeKind.Utc);
+        var createdDate2 = new DateTime(2025, 5, 15, 15, 30, 0, DateTimeKind.Utc);
+
+        var testObj1 =
+            new DateTimeTestRecord
+            {
+                Id = key,
+                CreatedDate = createdDate1,
+                ModifiedDate = null,
+                EventTimestamp = new DateTimeOffset(2025, 5, 1, 10, 0, 0, TimeSpan.Zero),
+                LastAccessTimestamp = null,
+            };
+
+        var testObj2 =
+            new DateTimeTestRecord
+            {
+                Id = key,
+                CreatedDate = createdDate2,
+                ModifiedDate = createdDate2.AddDays(1),
+                EventTimestamp = new DateTimeOffset(2025, 5, 15, 15, 30, 0, TimeSpan.Zero),
+                LastAccessTimestamp = new DateTimeOffset(2025, 5, 16, 8, 0, 0, TimeSpan.Zero),
+            };
+
+        var writeResult1 = await db.WriteObjectAsync(testObj1, _ => key, partition: partition1);
+        var writeResult2 = await db.WriteObjectAsync(testObj2, _ => key, partition: partition2);
+        var readResult1 = await db.ReadObjectAsync<DateTimeTestRecord>(key, partition1);
+        var readResult2 = await db.ReadObjectAsync<DateTimeTestRecord>(key, partition2);
+
+        writeResult1.ShouldBeTrue();
+        writeResult2.ShouldBeTrue();
+        readResult1.ShouldNotBeNull();
+        readResult2.ShouldNotBeNull();
+        readResult1.CreatedDate.ShouldBe(createdDate1);
+        readResult1.ModifiedDate.ShouldBeNull();
+        readResult2.CreatedDate.ShouldBe(createdDate2);
+        readResult2.ModifiedDate.ShouldNotBeNull();
+        readResult2.LastAccessTimestamp.ShouldNotBeNull();
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadDateTime_AsStandaloneValue_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_standalone";
+        var key = "datetime_value_1";
+        var testValue = new DateTime(2025, 10, 6, 9, 30, 15, DateTimeKind.Utc);
+
+        var writeResult = await db.WriteObjectAsync(testValue, _ => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTime>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldBe(testValue);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadNullableDateTime_AsStandaloneValue_WithValue_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_standalone";
+        var key = "nullable_datetime_value_1";
+        DateTime? testValue = new DateTime(2025, 10, 6, 14, 45, 30, DateTimeKind.Utc);
+
+        var writeResult = await db.WriteObjectAsync(testValue, _ => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTime?>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldNotBeNull();
+        readResult.Value.ShouldBe(testValue.Value);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadNullableDateTime_AsStandaloneValue_WithNull_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_standalone";
+        var key = "nullable_datetime_null_1";
+        DateTime? testValue = null;
+
+        var writeResult = await db.WriteObjectAsync(testValue, _ => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTime?>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldBeNull();
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadDateTimeOffset_AsStandaloneValue_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_standalone";
+        var key = "datetimeoffset_value_1";
+        var testValue = new DateTimeOffset(2025, 10, 6, 9, 30, 15, TimeSpan.FromHours(-5));
+
+        var writeResult = await db.WriteObjectAsync(testValue, _ => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTimeOffset>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldBe(testValue);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadNullableDateTimeOffset_AsStandaloneValue_WithValue_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_standalone";
+        var key = "nullable_datetimeoffset_value_1";
+        DateTimeOffset? testValue = new DateTimeOffset(2025, 10, 6, 14, 45, 30, TimeSpan.FromHours(2));
+
+        var writeResult = await db.WriteObjectAsync(testValue, _ => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTimeOffset?>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldNotBeNull();
+        readResult.Value.ShouldBe(testValue.Value);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadNullableDateTimeOffset_AsStandaloneValue_WithNull_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_standalone";
+        var key = "nullable_datetimeoffset_null_1";
+        DateTimeOffset? testValue = null;
+
+        var writeResult = await db.WriteObjectAsync(testValue, _ => key, partition: partition);
+        var readResult = await db.ReadObjectAsync<DateTimeOffset?>(key, partition);
+
+        writeResult.ShouldBeTrue();
+        readResult.ShouldBeNull();
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_WriteAndReadMultipleStandaloneDateTimeValues_WithDifferentKeys_ShouldBeSuccessful(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var partition = "datetime_standalone";
+        var dateTimeKey = "multi_datetime";
+        var dateTimeOffsetKey = "multi_datetimeoffset";
+        var nullableDateTimeKey = "multi_nullable_datetime";
+        var nullableDateTimeOffsetKey = "multi_nullable_datetimeoffset";
+
+        var dateTimeValue = new DateTime(2025, 1, 15, 10, 0, 0, DateTimeKind.Utc);
+        var dateTimeOffsetValue = new DateTimeOffset(2025, 6, 20, 15, 30, 0, TimeSpan.FromHours(-7));
+        DateTime? nullableDateTimeValue = new DateTime(2025, 8, 10, 8, 0, 0, DateTimeKind.Utc);
+        DateTimeOffset? nullableDateTimeOffsetValue = new DateTimeOffset(2025, 12, 25, 20, 0, 0, TimeSpan.FromHours(1));
+
+        await db.WriteObjectAsync(dateTimeValue, _ => dateTimeKey, partition: partition);
+        await db.WriteObjectAsync(dateTimeOffsetValue, _ => dateTimeOffsetKey, partition: partition);
+        await db.WriteObjectAsync(nullableDateTimeValue, _ => nullableDateTimeKey, partition: partition);
+        await db.WriteObjectAsync(nullableDateTimeOffsetValue, _ => nullableDateTimeOffsetKey, partition: partition);
+
+        var readDateTime = await db.ReadObjectAsync<DateTime>(dateTimeKey, partition);
+        var readDateTimeOffset = await db.ReadObjectAsync<DateTimeOffset>(dateTimeOffsetKey, partition);
+        var readNullableDateTime = await db.ReadObjectAsync<DateTime?>(nullableDateTimeKey, partition);
+        var readNullableDateTimeOffset = await db.ReadObjectAsync<DateTimeOffset?>(nullableDateTimeOffsetKey, partition);
+
+        readDateTime.ShouldBe(dateTimeValue);
+        readDateTimeOffset.ShouldBe(dateTimeOffsetValue);
+        readNullableDateTime.ShouldNotBeNull();
+        readNullableDateTime.Value.ShouldBe(nullableDateTimeValue.Value);
+        readNullableDateTimeOffset.ShouldNotBeNull();
+        readNullableDateTimeOffset.Value.ShouldBe(nullableDateTimeOffsetValue.Value);
     }
 
     public static Tycho BuildDatabaseConnection(IJsonSerializer jsonSerializer, bool requireTypeRegistration = false)
@@ -1762,6 +2187,19 @@ public abstract class ModelBase : INotifyPropertyChanged
 #pragma warning restore CS0067
 }
 
+public class DateTimeTestRecord
+{
+    public string Id { get; set; }
+
+    public DateTime CreatedDate { get; set; }
+
+    public DateTime? ModifiedDate { get; set; }
+
+    public DateTimeOffset EventTimestamp { get; set; }
+
+    public DateTimeOffset? LastAccessTimestamp { get; set; }
+}
+
 [JsonSourceGenerationOptions(
     GenerationMode = JsonSourceGenerationMode.Metadata,
     IgnoreReadOnlyFields = true,
@@ -1776,6 +2214,9 @@ public abstract class ModelBase : INotifyPropertyChanged
 [JsonSerializable(typeof(TestClassF))]
 [JsonSerializable(typeof(TestClassF))]
 [JsonSerializable(typeof(Patient))]
+[JsonSerializable(typeof(User))]
+[JsonSerializable(typeof(List<User>))]
+[JsonSerializable(typeof(DateTimeTestRecord))]
 internal partial class TestJsonContext : JsonSerializerContext
 {
 }

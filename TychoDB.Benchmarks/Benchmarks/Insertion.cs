@@ -1,14 +1,12 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
-using System.Threading;
 using System.Threading.Tasks;
 using BenchmarkDotNet.Attributes;
 using SQLite;
-using TychoDB;
 
 namespace TychoDB.Benchmarks.Benchmarks;
 
@@ -121,9 +119,7 @@ public class Insertion
     [Benchmark]
     public async Task InsertSingularAsync()
     {
-        using var db =
-            BuildDatabaseConnection()
-                .Connect();
+        using var db = await this.BuildDatabaseConnection().ConnectAsync();
 
         var testObj =
             new TestClassA
@@ -139,9 +135,7 @@ public class Insertion
     [Benchmark]
     public async Task InsertSingularWithoutTransactionAsync()
     {
-        using var db =
-            BuildDatabaseConnection()
-                .Connect();
+        using var db = await this.BuildDatabaseConnection().ConnectAsync();
 
         var testObj =
             new TestClassA
@@ -176,7 +170,7 @@ public class Insertion
     [Benchmark]
     public async Task InsertSingularLargeObjectAsync()
     {
-        using var db = BuildDatabaseConnection().Connect();
+        using var db = await this.BuildDatabaseConnection().ConnectAsync();
 
         await db.WriteObjectAsync(LargeTestObject, x => x.TestClassId).ConfigureAwait(false);
     }
@@ -184,7 +178,7 @@ public class Insertion
     [Benchmark]
     public async Task InsertManyAsync()
     {
-        using var db = BuildDatabaseConnection().Connect();
+        using var db = await this.BuildDatabaseConnection().ConnectAsync();
 
         for (int i = 100; i < 1100; i++)
         {
@@ -197,6 +191,25 @@ public class Insertion
                 };
 
             await db.WriteObjectAsync(testObj, x => x.StringProperty).ConfigureAwait(false);
+        }
+    }
+
+    [Benchmark]
+    public async Task InsertManyWithoutTranactionAsync()
+    {
+        using var db = await this.BuildDatabaseConnection().ConnectAsync();
+
+        for (int i = 100; i < 1100; i++)
+        {
+            var testObj =
+                new TestClassA
+                {
+                    StringProperty = $"Test String {i}",
+                    LongProperty = i,
+                    TimestampMillis = 123451234,
+                };
+
+            await db.WriteObjectAsync(testObj, x => x.StringProperty, withTransaction: false).ConfigureAwait(false);
         }
     }
 
@@ -229,7 +242,7 @@ public class Insertion
     [Benchmark]
     public async Task InsertManyConcurrentAsync()
     {
-        using var db = BuildDatabaseConnection().Connect();
+        using var db = await this.BuildDatabaseConnection().ConnectAsync();
 
         var tasks =
             Enumerable
@@ -255,7 +268,7 @@ public class Insertion
     [Benchmark]
     public async Task InsertManyConcurrentWithoutTransactionAsync()
     {
-        using var db = BuildDatabaseConnection().Connect();
+        using var db = await this.BuildDatabaseConnection().ConnectAsync();
 
         var tasks =
             Enumerable
@@ -308,9 +321,7 @@ public class Insertion
     [Benchmark]
     public async Task InsertManyBulkWithoutTransactionAsync()
     {
-        using var db =
-            BuildDatabaseConnection()
-                .Connect();
+        using var db = await this.BuildDatabaseConnection().ConnectAsync();
 
         var list = new List<TestClassA>();
 

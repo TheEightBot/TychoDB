@@ -114,18 +114,21 @@ The goal is to identify and implement optimizations that:
     -   `typeof(T)` is cheap but `.FullName` creates a string each time
     -   Static generic pattern means each type T gets its own cached string once
 -   **Risk:** Low - optimization only
--   **Commit:** TBD
+-   **Commit:** `75b77c2`
 
 ### 8. ObjectExtensions.cs - Cache GetSafeTypeName results
 
--   [ ] **Status: Pending Approval**
+-   [x] **Status: Completed**
 -   **File:** `TychoDB/ObjectExtensions.cs`
 -   **Current:** `GetSafeTypeName()` performs string manipulation on each call
--   **Proposed:** Add `ConcurrentDictionary<Type, string>` cache for computed type names
+-   **Proposed:**
+    -   Add `ConcurrentDictionary<Type, string>` cache for computed type names
+    -   Use static lambda for GetOrAdd to avoid closure allocation
 -   **Rationale:**
     -   Type names are immutable; caching eliminates repeated computation
     -   Same type will have same safe name always
 -   **Risk:** Low - pure optimization
+-   **Commit:** TBD
 
 ### 9. RegisteredTypeInformation.cs - Consider using init-only properties
 

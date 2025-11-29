@@ -352,7 +352,7 @@ public class Tycho : IDisposable
 
                         // Use cached parameters to reduce allocations
                         command.Parameters.Add(GetCachedParameter(ParameterFullTypeName, SqliteType.Text,
-                            typeof(T).FullName ?? string.Empty));
+                            TypeCache<T>.FullName));
                         command.Parameters.Add(GetCachedParameter(ParameterPartition, SqliteType.Text,
                             partition.AsValueOrEmptyString()));
 
@@ -450,7 +450,7 @@ public class Tycho : IDisposable
 
                         commandBuilder.Append(Queries.SelectCountFromJsonValueWithFullTypeName);
 
-                        selectCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(T).FullName;
+                        selectCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = TypeCache<T>.FullName;
                         selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
                             partition.AsValueOrEmptyString();
 
@@ -541,7 +541,7 @@ public class Tycho : IDisposable
                         commandBuilder.Append(Queries.SelectExistsFromJsonValueWithKeyAndFullTypeName);
 
                         selectCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
-                        selectCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(T).FullName;
+                        selectCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = TypeCache<T>.FullName;
                         selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
                             partition.AsValueOrEmptyString();
 
@@ -628,7 +628,7 @@ public class Tycho : IDisposable
                         commandBuilder.Append(Queries.SelectDataFromJsonValueWithKeyAndFullTypeName);
 
                         selectCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
-                        selectCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(T).FullName;
+                        selectCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = TypeCache<T>.FullName;
                         selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
                             partition.AsValueOrEmptyString();
 
@@ -805,7 +805,7 @@ public class Tycho : IDisposable
                     {
                         // Use cached parameters
                         selectCommand.Parameters.Add(GetCachedParameter(ParameterFullTypeName, SqliteType.Text,
-                            typeof(T).FullName));
+                            TypeCache<T>.FullName));
                         selectCommand.Parameters.Add(GetCachedParameter(ParameterPartition, SqliteType.Text,
                             partition.AsValueOrEmptyString()));
 
@@ -1073,7 +1073,7 @@ public class Tycho : IDisposable
                         commandBuilder.Append(Queries.DeleteDataFromJsonValueWithKeyAndFullTypeName);
 
                         deleteCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = key;
-                        deleteCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(T).FullName;
+                        deleteCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = TypeCache<T>.FullName;
                         deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
                             partition.AsValueOrEmptyString();
 
@@ -1140,7 +1140,7 @@ public class Tycho : IDisposable
 
                         commandBuilder.Append(Queries.DeleteDataFromJsonValueWithFullTypeName);
 
-                        deleteCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = typeof(T).FullName;
+                        deleteCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = TypeCache<T>.FullName;
                         deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
                             partition.AsValueOrEmptyString();
 

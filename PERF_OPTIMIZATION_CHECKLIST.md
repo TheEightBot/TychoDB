@@ -86,11 +86,11 @@ The goal is to identify and implement optimizations that:
     -   Eliminates LINQ overhead and intermediate string array from Select
     -   Direct StringBuilder manipulation is more efficient
 -   **Risk:** Low - internal implementation
--   **Commit:** TBD
+-   **Commit:** `159adac`
 
 ### 6. Tycho.cs - Eliminate closure allocations in WithConnectionBlockAsync delegates
 
--   [ ] **Status: Pending Approval**
+-   [ ] **Status: Deferred**
 -   **File:** `TychoDB/Tycho.cs`
 -   **Current:** Many methods pass lambdas to `WithConnectionBlockAsync` that capture local variables (closures)
 -   **Proposed:**
@@ -100,19 +100,21 @@ The goal is to identify and implement optimizations that:
     -   Each closure creates a hidden class instance on the heap
     -   High-frequency operations like ReadObjectsAsync benefit most
 -   **Risk:** Medium - requires careful refactoring to maintain behavior
+-   **Decision:** Deferred - 20+ closure sites with varying state; database I/O dominates performance. Low ROI for the refactoring effort.
 
 ### 7. Tycho.cs - Cache RegisteredTypeInformation lookups
 
--   [ ] **Status: Pending Approval**
--   **File:** `TychoDB/Tycho.cs`
+-   [x] **Status: Completed**
+-   **File:** `TychoDB/Tycho.cs`, `TychoDB/TypeCache.cs` (new file)
 -   **Current:** `CheckHasRegisteredType<T>()` uses `typeof(T)` which allocates
 -   **Proposed:**
-    -   Use generic type caching pattern with `TypeCache<T>` static class
-    -   Cache type full names to avoid repeated `typeof(T).FullName` allocations
+    -   Created static generic `TypeCache<T>` class with cached FullName
+    -   Replaced 6 occurrences of `typeof(T).FullName` with `TypeCache<T>.FullName`
 -   **Rationale:**
     -   `typeof(T)` is cheap but `.FullName` creates a string each time
-    -   Caching reduces allocations in hot paths
+    -   Static generic pattern means each type T gets its own cached string once
 -   **Risk:** Low - optimization only
+-   **Commit:** TBD
 
 ### 8. ObjectExtensions.cs - Cache GetSafeTypeName results
 

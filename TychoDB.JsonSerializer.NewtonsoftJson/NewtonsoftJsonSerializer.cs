@@ -9,7 +9,7 @@ using Newtonsoft.Json;
 
 namespace TychoDB;
 
-public class NewtonsoftJsonSerializer : IJsonSerializer
+public sealed class NewtonsoftJsonSerializer : IJsonSerializer
 {
     // Buffer pool for serialization work
     private static readonly ArrayPool<byte> _bytePool = ArrayPool<byte>.Shared;

@@ -5,7 +5,7 @@ using System.Threading.Tasks;
 
 namespace TychoDB;
 
-public class ProgressStream : Stream
+public sealed class ProgressStream : Stream
 {
     private readonly Stream _innerStream;
     private readonly IProgress<double> _progress;

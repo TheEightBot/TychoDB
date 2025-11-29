@@ -10,7 +10,7 @@ using System.Threading.Tasks;
 
 namespace TychoDB;
 
-public class SystemTextJsonSerializer : IJsonSerializer
+public sealed class SystemTextJsonSerializer : IJsonSerializer
 {
     private readonly JsonSerializerOptions _jsonSerializerOptions;
     private readonly Dictionary<Type, JsonTypeInfo> _jsonTypeSerializers;

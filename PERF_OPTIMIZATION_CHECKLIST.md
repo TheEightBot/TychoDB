@@ -128,43 +128,45 @@ The goal is to identify and implement optimizations that:
     -   Type names are immutable; caching eliminates repeated computation
     -   Same type will have same safe name always
 -   **Risk:** Low - pure optimization
+-   **Commit:** `3f56044`
+
+### 9. RegisteredTypeInformation.cs - Add sealed keyword
+
+-   [x] **Status: Completed**
+-   **File:** `TychoDB/RegisteredTypeInformation.cs`
+-   **Current:** Record without sealed
+-   **Proposed:**
+    -   Add `sealed` keyword to enable JIT devirtualization
+-   **Rationale:**
+    -   `sealed` allows JIT to devirtualize virtual calls
+-   **Risk:** Very Low - adding `sealed` is safe
 -   **Commit:** TBD
 
-### 9. RegisteredTypeInformation.cs - Consider using init-only properties
+### 10. NewtonsoftJsonSerializer.cs - Add sealed keyword
 
--   [ ] **Status: Pending Approval**
--   **File:** `TychoDB/RegisteredTypeInformation.cs`
--   **Current:** Record with private setters
--   **Proposed:**
-    -   Use `init` accessors where applicable
-    -   Consider if this could be a `readonly record struct` (likely not due to Delegate storage)
--   **Rationale:**
-    -   Minor optimization for clarity and potential JIT optimization
--   **Risk:** Low - API remains the same
-
-### 10. NewtonsoftJsonSerializer.cs - Improve buffer management
-
--   [ ] **Status: Pending Approval**
+-   [x] **Status: Completed (partial)**
 -   **File:** `TychoDB.JsonSerializer.NewtonsoftJson/NewtonsoftJsonSerializer.cs`
--   **Current:** Allocates new `byte[]` result array after copying from pooled buffer
+-   **Current:** Class without sealed
 -   **Proposed:**
-    -   Return `Memory<byte>` or `ReadOnlyMemory<byte>` to avoid copy
-    -   Or use `RecyclableMemoryStream` from Microsoft.IO.RecyclableMemoryStream
+    -   Add `sealed` keyword (completed)
+    -   Buffer management improvements (deferred - would require interface changes)
 -   **Rationale:**
-    -   Current implementation copies from pooled buffer to new array, negating some pooling benefits
--   **Risk:** Medium - would require interface change to `IJsonSerializer`
+    -   `sealed` allows JIT to devirtualize virtual calls
+-   **Risk:** Very Low - adding `sealed` is safe
+-   **Commit:** TBD
 
-### 11. SystemTextJsonSerializer.cs - Add JsonSerializerContext caching
+### 11. SystemTextJsonSerializer.cs - Add sealed keyword
 
--   [ ] **Status: Pending Approval**
+-   [x] **Status: Completed (partial)**
 -   **File:** `TychoDB.JsonSerializer.SystemTextJson/SystemTextJsonSerializer.cs`
--   **Current:** Good use of source-generated serializers via `JsonTypeInfo`
+-   **Current:** Good use of source-generated serializers via `JsonTypeInfo`, class not sealed
 -   **Proposed:**
-    -   Ensure all commonly used types have pre-generated `JsonTypeInfo`
-    -   Add documentation encouraging users to provide source-generated contexts
+    -   Add `sealed` keyword (completed)
+    -   JsonSerializerContext documentation (deferred - documentation only)
 -   **Rationale:**
-    -   Source generation eliminates reflection overhead
--   **Risk:** Low - documentation/best practices
+    -   `sealed` allows JIT to devirtualize virtual calls
+-   **Risk:** Very Low - adding `sealed` is safe
+-   **Commit:** TBD
 
 ### 12. TychoQueryable.cs - Optimize expression tree processing
 
@@ -190,17 +192,17 @@ The goal is to identify and implement optimizations that:
     -   Expression tree creation has overhead that can be avoided
 -   **Risk:** Low - internal optimization
 
-### 14. ProgressStream.cs - Make it a struct wrapper or use span-based approach
+### 14. ProgressStream.cs - Add sealed keyword
 
--   [ ] **Status: Pending Approval**
+-   [x] **Status: Completed**
 -   **File:** `TychoDB/ProgressStream.cs`
 -   **Current:** Class that wraps another stream
 -   **Proposed:**
-    -   Keep as class (Stream inheritance requires class)
     -   Add `sealed` keyword to enable devirtualization
 -   **Rationale:**
     -   `sealed` allows JIT to devirtualize virtual calls
 -   **Risk:** Very Low - adding `sealed` is safe
+-   **Commit:** TBD
 
 ---
 
@@ -232,18 +234,18 @@ Once approved, each item will be:
 | ---- | --------------------------------- | ----------- |
 | 1    | Filter class to struct            | ✅ Complete |
 | 2    | SortInfo class to struct          | ✅ Complete |
-| 3   | PropertyPathVisitor optimization     | ✅ Complete |
-| 4    | FilterBuilder string building     | ⏳ Pending  |
-| 5    | SortBuilder string building       | ⏳ Pending  |
-| 6    | Closure elimination in Tycho.cs   | ⏳ Pending  |
-| 7    | TypeCache for type lookups        | ⏳ Pending  |
-| 8    | GetSafeTypeName caching           | ⏳ Pending  |
-| 9    | RegisteredTypeInformation init    | ⏳ Pending  |
-| 10   | NewtonsoftJsonSerializer buffers  | ⏳ Pending  |
-| 11   | SystemTextJsonSerializer docs     | ⏳ Pending  |
-| 12   | TychoQueryable reflection caching | ⏳ Pending  |
-| 13   | Expression.Lambda caching         | ⏳ Pending  |
-| 14   | ProgressStream sealed             | ⏳ Pending  |
+| 3    | PropertyPathVisitor optimization  | ✅ Complete |
+| 4    | FilterBuilder string building     | ✅ Complete |
+| 5    | SortBuilder string building       | ✅ Complete |
+| 6    | Closure elimination in Tycho.cs   | ⏸️ Deferred |
+| 7    | TypeCache for type lookups        | ✅ Complete |
+| 8    | GetSafeTypeName caching           | ✅ Complete |
+| 9    | RegisteredTypeInformation sealed  | ✅ Complete |
+| 10   | NewtonsoftJsonSerializer sealed   | ✅ Complete |
+| 11   | SystemTextJsonSerializer sealed   | ✅ Complete |
+| 12   | TychoQueryable reflection caching | ⏸️ Deferred |
+| 13   | Expression.Lambda caching         | ⏸️ Deferred |
+| 14   | ProgressStream sealed             | ✅ Complete |
 
 ---
 

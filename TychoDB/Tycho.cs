@@ -380,11 +380,11 @@ public class Tycho : IDisposable
                                 serializationStream.SetLength(0);
                                 state._jsonSerializer.Serialize(obj, serializationStream);
 
-                                // Get the written bytes efficiently
-                                jsonParameter.Value = serializationStream.GetBuffer().AsMemory(0, (int)serializationStream.Length).ToArray();
+                                // SQLite requires byte[] - ToArray is unavoidable here
+                                // RecyclableMemoryStream still helps by pooling the underlying buffer
+                                jsonParameter.Value = serializationStream.ToArray();
 
-                                var result = command.ExecuteScalar();
-                                long rowId = result is not null ? (long)result : 0;
+                                long rowId = command.ExecuteScalar() is long id ? id : 0;
                                 writeCount += rowId > 0 ? 1 : 0;
                             }
 
@@ -835,6 +835,9 @@ public class Tycho : IDisposable
                         const int bufferSize = 32768; // 32 KB buffer
                         byte[] buffer = ArrayPool<byte>.Shared.Rent(bufferSize);
 
+                        // Reuse single RecyclableMemoryStream across all rows to avoid per-row allocation
+                        using var memoryStream = _memoryStreamManager.GetStream("TychoDB.ReadObjects");
+
                         try
                         {
                             while (reader.Read())
@@ -844,8 +847,8 @@ public class Tycho : IDisposable
                                     break;
                                 }
 
-                                // Use RecyclableMemoryStream for efficient memory management
-                                using var memoryStream = _memoryStreamManager.GetStream("TychoDB.ReadObjects");
+                                // Reset stream for reuse
+                                memoryStream.SetLength(0);
 
                                 int bytesRead;
 
@@ -1322,7 +1325,7 @@ public class Tycho : IDisposable
                             state.partition.AsValueOrEmptyString();
                         insertCommand.Parameters.AddWithValue(ParameterBlobLength, state.stream.Length);
 
-                        long rowId = (long)insertCommand.ExecuteScalar()!;
+                        long rowId = insertCommand.ExecuteScalar() is long id ? id : 0;
 
                         writeCount += rowId > 0 ? 1 : 0;
 

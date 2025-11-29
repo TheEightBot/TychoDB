@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Frozen;
+using System.Collections.Generic;
 
 namespace TychoDB;
 
@@ -306,23 +308,21 @@ internal static class Queries
         return sb.ToString();
     }
 
-    // Cache common LIMIT values to avoid repeated string allocations
-    private static readonly string[] CachedLimits = new string[]
+    // Cache common LIMIT values using FrozenDictionary for O(1) lookup
+    private static readonly FrozenDictionary<int, string> CachedLimits = new Dictionary<int, string>
     {
-        "LIMIT 0", "LIMIT 1", "LIMIT 2", "LIMIT 3", "LIMIT 4",
-        "LIMIT 5", "LIMIT 6", "LIMIT 7", "LIMIT 8", "LIMIT 9",
-        "LIMIT 10", "LIMIT 20", "LIMIT 50", "LIMIT 100", "LIMIT 500", "LIMIT 1000",
-    };
-
-    private static readonly int[] CachedLimitValues = new int[] { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 50, 100, 500, 1000 };
+        [0] = "LIMIT 0", [1] = "LIMIT 1", [2] = "LIMIT 2", [3] = "LIMIT 3", [4] = "LIMIT 4",
+        [5] = "LIMIT 5", [6] = "LIMIT 6", [7] = "LIMIT 7", [8] = "LIMIT 8", [9] = "LIMIT 9",
+        [10] = "LIMIT 10", [20] = "LIMIT 20", [50] = "LIMIT 50", [100] = "LIMIT 100",
+        [500] = "LIMIT 500", [1000] = "LIMIT 1000",
+    }.ToFrozenDictionary();
 
     public static string Limit(int count)
     {
-        // Check cached values first
-        int index = Array.IndexOf(CachedLimitValues, count);
-        if (index >= 0)
+        // O(1) lookup in FrozenDictionary
+        if (CachedLimits.TryGetValue(count, out var cached))
         {
-            return CachedLimits[index];
+            return cached;
         }
 
         return string.Concat("LIMIT ", count.ToString());

@@ -59,6 +59,14 @@ public sealed class NewtonsoftJsonSerializer : IJsonSerializer
         return ms.ToArray();
     }
 
+    /// <summary>
+    /// Serializes an object to the provided buffer writer.
+    /// </summary>
+    /// <remarks>
+    /// Note: Newtonsoft.Json does not natively support IBufferWriter, so this implementation
+    /// uses an intermediate MemoryStream. For zero-allocation serialization, consider using
+    /// System.Text.Json with a JsonSerializerContext instead.
+    /// </remarks>
     public void Serialize<T>(T obj, IBufferWriter<byte> bufferWriter)
     {
         using var ms = new MemoryStream(DefaultBufferSize);

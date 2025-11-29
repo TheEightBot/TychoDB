@@ -9,12 +9,27 @@ public enum SortDirection
     Descending = 1,
 }
 
-internal class SortInfo
+/// <summary>
+/// Represents sorting information for a query.
+/// This is a readonly struct to minimize heap allocations during query building.
+/// </summary>
+internal readonly struct SortInfo
 {
-    public SortDirection SortDirection { get; private set; }
+    /// <summary>
+    /// Gets the sort direction (ascending or descending).
+    /// </summary>
+    public SortDirection SortDirection { get; }
 
-    public string PropertyPath { get; private set; }
+    /// <summary>
+    /// Gets the JSON property path to sort by.
+    /// </summary>
+    public string PropertyPath { get; }
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="SortInfo"/> struct.
+    /// </summary>
+    /// <param name="sortDirection">The direction to sort.</param>
+    /// <param name="propertyPath">The JSON property path to sort by.</param>
     public SortInfo(SortDirection sortDirection, string propertyPath)
     {
         SortDirection = sortDirection;

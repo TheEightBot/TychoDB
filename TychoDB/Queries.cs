@@ -1,5 +1,4 @@
 using System;
-using System.Linq;
 
 namespace TychoDB;
 
@@ -8,11 +7,15 @@ internal static class Queries
     public const string KeyColumn = "Key";
     public const string DataColumn = "Data";
 
+    // Performance pragmas optimized for single-user, multithreaded configuration
+    // Mobile-friendly settings for iOS/Android apps
     public const string CreateDatabaseSchema =
         """
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous = NORMAL;
-        PRAGMA locking_mode = EXCLUSIVE;
+        PRAGMA temp_store = MEMORY;
+        PRAGMA busy_timeout = 5000;
+        PRAGMA wal_autocheckpoint = 1000;
         PRAGMA auto_vacuum = INCREMENTAL;
 
         CREATE TABLE IF NOT EXISTS JsonValue
@@ -45,7 +48,7 @@ internal static class Queries
         );
 
         CREATE INDEX IF NOT EXISTS idx_streamvalue_key_partition 
-        ON JsonValue (Key, Partition);
+        ON StreamValue (Key, Partition);
         """;
 
     public static string BuildPragmaCacheSize(uint cacheSizeBytes) =>
@@ -201,71 +204,127 @@ internal static class Queries
         Partition = $partition
         """;
 
+    // Pre-computed constant parts for dynamic query building
+    private const string ExtractDataPrefix = "SELECT rowid, JSON_EXTRACT(Data, '";
+    private const string ExtractDataSuffix =
+        """
+        ') AS Data
+        FROM JsonValue
+        Where
+        FullTypeName = $fullTypeName
+        AND
+        Partition = $partition
+        """;
+
+    private const string ExtractDataAndKeyPrefix = "SELECT rowid, Key, JSON_EXTRACT(Data, '";
+    private const string ExtractDataAndKeySuffix =
+        """
+        ') AS Data
+        FROM JsonValue
+        Where
+        FullTypeName = $fullTypeName
+        AND
+        Partition = $partition
+        """;
+
+    private const string CreateIndexPrefix = "CREATE INDEX IF NOT EXISTS ";
+    private const string CreateIndexJsonValueOn = "\nON JsonValue(FullTypeName, JSON_EXTRACT(Data, '";
+    private const string CreateIndexJsonValueOnNumeric = "\nON JsonValue(FullTypeName, CAST(JSON_EXTRACT(Data, '";
+    private const string CreateIndexSuffixNumeric = "') as NUMERIC));";
+    private const string CreateIndexSuffix = "'));";
+
     public static string ExtractDataFromJsonValueWithFullTypeName(string selectionPath)
     {
-        return
-            $"""
-            SELECT rowid, JSON_EXTRACT(Data, '{selectionPath}') AS Data
-            FROM JsonValue
-            Where
-            FullTypeName = $fullTypeName
-            AND
-            Partition = $partition
-            """;
+        return string.Concat(ExtractDataPrefix, selectionPath, ExtractDataSuffix);
     }
 
     public static string ExtractDataAndKeyFromJsonValueWithFullTypeName(string selectionPath)
     {
-        return
-            $"""
-            SELECT rowid, Key, JSON_EXTRACT(Data, '{selectionPath}') AS Data
-            FROM JsonValue
-            Where
-            FullTypeName = $fullTypeName
-            AND
-            Partition = $partition
-            """;
+        return string.Concat(ExtractDataAndKeyPrefix, selectionPath, ExtractDataAndKeySuffix);
     }
 
     public static string CreateIndexForJsonValueAsNumeric(string fullIndexName, string propertyPathString)
     {
-        return
-            $"""
-            CREATE INDEX IF NOT EXISTS {fullIndexName}
-            ON JsonValue(FullTypeName, CAST(JSON_EXTRACT(Data, '{propertyPathString}') as NUMERIC));
-            """;
+        return string.Concat(
+            CreateIndexPrefix,
+            fullIndexName,
+            CreateIndexJsonValueOnNumeric,
+            propertyPathString,
+            CreateIndexSuffixNumeric);
     }
 
     public static string CreateIndexForJsonValue(string fullIndexName, string propertyPathString)
     {
-        return
-            $"""
-            CREATE INDEX IF NOT EXISTS {fullIndexName}
-            ON JsonValue(FullTypeName, JSON_EXTRACT(Data, '{propertyPathString}'));
-            """;
+        return string.Concat(
+            CreateIndexPrefix,
+            fullIndexName,
+            CreateIndexJsonValueOn,
+            propertyPathString,
+            CreateIndexSuffix);
     }
+
+    private const string MultiIndexJsonExtractPrefix = ", JSON_EXTRACT(Data, '";
+    private const string MultiIndexJsonExtractSuffix = "')";
+    private const string MultiIndexCastPrefix = ", CAST(JSON_EXTRACT(Data, '";
+    private const string MultiIndexCastSuffix = "') as NUMERIC)";
+    private const string MultiIndexOnJsonValue = "\nON JsonValue(FullTypeName";
+    private const string MultiIndexClose = ");";
 
     public static string CreateIndexForJsonValue(string fullIndexName, (string PropertyPathString, bool IsNumeric)[] propertyPaths)
     {
-        var propertyPathStringsJoined =
-            string.Join(
-                string.Empty,
-                propertyPaths
-                    .Select(
-                        pp =>
-                            pp.IsNumeric
-                            ? $", CAST(JSON_EXTRACT(Data, '{pp.PropertyPathString}') as NUMERIC)"
-                            : $", JSON_EXTRACT(Data, '{pp.PropertyPathString}')"));
+        // Pre-calculate capacity: base string + each property path entry
+        int capacity = CreateIndexPrefix.Length + fullIndexName.Length + MultiIndexOnJsonValue.Length + MultiIndexClose.Length;
+        foreach (var pp in propertyPaths)
+        {
+            capacity += pp.IsNumeric
+                ? MultiIndexCastPrefix.Length + pp.PropertyPathString.Length + MultiIndexCastSuffix.Length
+                : MultiIndexJsonExtractPrefix.Length + pp.PropertyPathString.Length + MultiIndexJsonExtractSuffix.Length;
+        }
 
-        return
-            $"""
-            CREATE INDEX IF NOT EXISTS {fullIndexName}
-            ON JsonValue(FullTypeName{propertyPathStringsJoined});
-            """;
+        var sb = new System.Text.StringBuilder(capacity);
+        sb.Append(CreateIndexPrefix)
+          .Append(fullIndexName)
+          .Append(MultiIndexOnJsonValue);
+
+        foreach (var pp in propertyPaths)
+        {
+            if (pp.IsNumeric)
+            {
+                sb.Append(MultiIndexCastPrefix)
+                  .Append(pp.PropertyPathString)
+                  .Append(MultiIndexCastSuffix);
+            }
+            else
+            {
+                sb.Append(MultiIndexJsonExtractPrefix)
+                  .Append(pp.PropertyPathString)
+                  .Append(MultiIndexJsonExtractSuffix);
+            }
+        }
+
+        sb.Append(MultiIndexClose);
+        return sb.ToString();
     }
+
+    // Cache common LIMIT values to avoid repeated string allocations
+    private static readonly string[] CachedLimits = new string[]
+    {
+        "LIMIT 0", "LIMIT 1", "LIMIT 2", "LIMIT 3", "LIMIT 4",
+        "LIMIT 5", "LIMIT 6", "LIMIT 7", "LIMIT 8", "LIMIT 9",
+        "LIMIT 10", "LIMIT 20", "LIMIT 50", "LIMIT 100", "LIMIT 500", "LIMIT 1000",
+    };
+
+    private static readonly int[] CachedLimitValues = new int[] { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 50, 100, 500, 1000 };
 
     public static string Limit(int count)
     {
-        return $"LIMIT {count}";
+        // Check cached values first
+        int index = Array.IndexOf(CachedLimitValues, count);
+        if (index >= 0)
+        {
+            return CachedLimits[index];
+        }
+
+        return string.Concat("LIMIT ", count.ToString());
     }
 }

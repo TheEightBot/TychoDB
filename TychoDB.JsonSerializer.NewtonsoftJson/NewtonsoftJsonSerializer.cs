@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Buffers;
-using System.Collections.Concurrent;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -11,146 +10,78 @@ namespace TychoDB;
 
 public sealed class NewtonsoftJsonSerializer : IJsonSerializer
 {
-    // Buffer pool for serialization work
-    private static readonly ArrayPool<byte> _bytePool = ArrayPool<byte>.Shared;
+    private const int DefaultBufferSize = 4096;
+    private const int StreamWriterBufferSize = 1024;
 
     private readonly JsonSerializer _jsonSerializer;
-    private readonly JsonSerializerSettings _jsonSerializerSettings;
 
     public string DateTimeSerializationFormat { get; }
 
     public NewtonsoftJsonSerializer(
         JsonSerializer jsonSerializer = null,
-        JsonSerializerSettings jsonSerializerSettings = null,
         string dateTimeSerializationFormat = "O")
     {
         DateTimeSerializationFormat = dateTimeSerializationFormat;
 
-        _jsonSerializer =
-            jsonSerializer ??
-            new JsonSerializer
-            {
-                DefaultValueHandling = DefaultValueHandling.Include,
-                NullValueHandling = NullValueHandling.Ignore,
-                DateFormatString = dateTimeSerializationFormat,
-
-                // Performance optimizations
-                MaxDepth = 64, // Higher than default for complex objects
-                CheckAdditionalContent = false, // Faster but less strict
-                TypeNameHandling = TypeNameHandling.None, // Faster without type information
-                MetadataPropertyHandling = MetadataPropertyHandling.Ignore, // Faster without metadata
-            };
-
-        _jsonSerializerSettings =
-            jsonSerializerSettings ??
-            new JsonSerializerSettings
-            {
-                DefaultValueHandling = DefaultValueHandling.Include,
-                NullValueHandling = NullValueHandling.Include,
-                DateFormatString = dateTimeSerializationFormat,
-
-                // Performance optimizations
-                MaxDepth = 64,
-                CheckAdditionalContent = false,
-                TypeNameHandling = TypeNameHandling.None,
-                MetadataPropertyHandling = MetadataPropertyHandling.Ignore,
-                Formatting = Formatting.None, // No indentation for better performance
-            };
+        _jsonSerializer = jsonSerializer ?? CreateDefaultSerializer(dateTimeSerializationFormat);
     }
+
+    private static JsonSerializer CreateDefaultSerializer(string dateTimeFormat) =>
+        new()
+        {
+            DefaultValueHandling = DefaultValueHandling.Include,
+            NullValueHandling = NullValueHandling.Ignore,
+            DateFormatString = dateTimeFormat,
+            MaxDepth = 64,
+            CheckAdditionalContent = false,
+            TypeNameHandling = TypeNameHandling.None,
+            MetadataPropertyHandling = MetadataPropertyHandling.Ignore,
+            Formatting = Formatting.None,
+        };
 
     public ValueTask<T> DeserializeAsync<T>(Stream stream, CancellationToken cancellationToken)
     {
-        using var streamReader = new StreamReader(stream, Encoding.UTF8, true, 1024, true);
+        using var streamReader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, StreamWriterBufferSize, leaveOpen: true);
         using var jsonTextReader = new JsonTextReader(streamReader)
         {
             DateFormatString = DateTimeSerializationFormat,
             CloseInput = false,
         };
 
-        try
-        {
-            var result = _jsonSerializer.Deserialize<T>(jsonTextReader);
-            return new ValueTask<T>(result);
-        }
-        finally
-        {
-            jsonTextReader.Close();
-        }
+        var result = _jsonSerializer.Deserialize<T>(jsonTextReader);
+        return new ValueTask<T>(result);
     }
 
     public object Serialize<T>(T obj)
     {
-        // Estimate size based on object complexity
-        int estimatedSize = EstimateSerializedSize(obj);
-        byte[] byteBuffer = _bytePool.Rent(estimatedSize);
-
-        try
-        {
-            using (var ms = new MemoryStream(byteBuffer, 0, estimatedSize, true))
-            {
-                using (var sw = new StreamWriter(ms, Encoding.UTF8, 1024, true))
-                {
-                    var jsonTextWriter = new JsonTextWriter(sw)
-                    {
-                        DateFormatString = DateTimeSerializationFormat,
-                        Formatting = Formatting.None,
-                    };
-
-                    // Serialize using pooled writer
-                    _jsonSerializer.Serialize(jsonTextWriter, obj);
-                    jsonTextWriter.Flush();
-                    sw.Flush();
-
-                    // Copy to right-sized array
-                    byte[] result = new byte[ms.Position];
-                    Buffer.BlockCopy(byteBuffer, 0, result, 0, (int)ms.Position);
-                    return result;
-                }
-            }
-        }
-        catch
-        {
-            // If pooled serialization fails, fall back to standard method
-            byte[] jsonBytes = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(obj, _jsonSerializerSettings));
-            return jsonBytes;
-        }
-        finally
-        {
-            // Always return the buffer to the pool
-            _bytePool.Return(byteBuffer);
-        }
+        using var ms = new MemoryStream(DefaultBufferSize);
+        SerializeToStream(obj, ms);
+        return ms.ToArray();
     }
 
-    private int EstimateSerializedSize<T>(T obj)
+    public void Serialize<T>(T obj, IBufferWriter<byte> bufferWriter)
     {
-        // Estimate the size based on object type
-        if (obj is null)
+        using var ms = new MemoryStream(DefaultBufferSize);
+        SerializeToStream(obj, ms);
+
+        int bytesWritten = (int)ms.Position;
+        var span = bufferWriter.GetSpan(bytesWritten);
+        ms.GetBuffer().AsSpan(0, bytesWritten).CopyTo(span);
+        bufferWriter.Advance(bytesWritten);
+    }
+
+    private void SerializeToStream<T>(T obj, MemoryStream stream)
+    {
+        using var sw = new StreamWriter(stream, Encoding.UTF8, StreamWriterBufferSize, leaveOpen: true);
+        using var jsonTextWriter = new JsonTextWriter(sw)
         {
-            return 16; // "null" plus some overhead
-        }
+            DateFormatString = DateTimeSerializationFormat,
+            Formatting = Formatting.None,
+        };
 
-        Type type = typeof(T);
-
-        // For strings, we can make a good guess
-        if (type == typeof(string))
-        {
-            return ((string)(object)obj).Length * 2; // Allow for escaping
-        }
-
-        // For collections, try to estimate based on count
-        if (obj is System.Collections.ICollection collection)
-        {
-            return Math.Max(32, collection.Count * 32); // Rough estimate
-        }
-
-        // For simple value types like int, bool, etc.
-        if (type.IsPrimitive || type.IsEnum)
-        {
-            return 16;
-        }
-
-        // Default buffer size for complex objects - adjust based on your typical object size
-        return 4096;
+        _jsonSerializer.Serialize(jsonTextWriter, obj);
+        jsonTextWriter.Flush();
+        sw.Flush();
     }
 
     public override string ToString() => nameof(NewtonsoftJsonSerializer);

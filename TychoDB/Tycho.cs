@@ -11,6 +11,7 @@ using System.Threading;
 using System.Threading.RateLimiting;
 using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
+using Microsoft.IO;
 
 namespace TychoDB;
 
@@ -41,14 +42,16 @@ public class Tycho : IDisposable
     // Using a ThreadLocal StringBuilder for better performance with multi-threading
     private readonly ThreadLocal<StringBuilder> _commandBuilder = new(() => new StringBuilder(1024));
 
-    // Use ObjectPool for MemoryStream instances
-    private readonly ObjectPool<MemoryStream> _memoryStreamPool = new(
-        () => new MemoryStream(4096),
-        stream =>
+    // RecyclableMemoryStream for efficient memory management - optimized for mobile
+    private static readonly RecyclableMemoryStreamManager _memoryStreamManager = new(
+        new RecyclableMemoryStreamManager.Options
         {
-            stream.SetLength(0);
-            stream.Position = 0;
-            return stream;
+            BlockSize = 4096,                          // 4KB blocks (mobile-friendly)
+            LargeBufferMultiple = 1024 * 1024,         // 1MB large buffer multiple
+            MaximumBufferSize = 16 * 1024 * 1024,      // 16MB max buffer
+            MaximumSmallPoolFreeBytes = 256 * 1024,    // 256KB max small pool (mobile-friendly)
+            MaximumLargePoolFreeBytes = 4 * 1024 * 1024, // 4MB max large pool (mobile-friendly)
+            AggressiveBufferReturn = true,             // Return buffers immediately for mobile
         });
 
     private readonly RateLimiter _rateLimiter =
@@ -361,6 +364,9 @@ public class Tycho : IDisposable
                         // Batch processing for large datasets
                         const int batchSize = 100;
 
+                        // Use RecyclableMemoryStream with IBufferWriter for efficient serialization
+                        using var serializationStream = _memoryStreamManager.GetStream("TychoDB.WriteObjects");
+
                         for (int i = 0; i < potentialTotalCount; i += batchSize)
                         {
                             int currentBatchSize = Math.Min(batchSize, potentialTotalCount - i);
@@ -369,7 +375,13 @@ public class Tycho : IDisposable
                             {
                                 var obj = objsList[i + j];
                                 keyParameter.Value = state.keySelector(obj);
-                                jsonParameter.Value = state._jsonSerializer.Serialize(obj);
+
+                                // Reset and serialize using IBufferWriter pattern
+                                serializationStream.SetLength(0);
+                                state._jsonSerializer.Serialize(obj, serializationStream);
+
+                                // Get the written bytes efficiently
+                                jsonParameter.Value = serializationStream.GetBuffer().AsMemory(0, (int)serializationStream.Length).ToArray();
 
                                 var result = command.ExecuteScalar();
                                 long rowId = result is not null ? (long)result : 0;
@@ -757,9 +769,9 @@ public class Tycho : IDisposable
         ArgumentNullException.ThrowIfNull(_connection);
 
         return _connection
-            .WithConnectionBlockAsync<IEnumerable<T>, (string? partition, FilterBuilder<T>? filter, SortBuilder<T>? sort, int? top, bool withTransaction, IProgress<double>? progress, StringBuilder commandBuilder, int commandTimeout, IJsonSerializer jsonSerializer, ObjectPool<MemoryStream> memoryStreamPool, CancellationToken cancellationToken)>(
+            .WithConnectionBlockAsync<IEnumerable<T>, (string? partition, FilterBuilder<T>? filter, SortBuilder<T>? sort, int? top, bool withTransaction, IProgress<double>? progress, StringBuilder commandBuilder, int commandTimeout, IJsonSerializer jsonSerializer, CancellationToken cancellationToken)>(
                 _rateLimiter,
-                (partition, filter, sort, top, withTransaction, progress, ReusableStringBuilder, _commandTimeout, _jsonSerializer, _memoryStreamPool, cancellationToken),
+                (partition, filter, sort, top, withTransaction, progress, ReusableStringBuilder, _commandTimeout, _jsonSerializer, cancellationToken),
                 static async (conn, state) =>
                 {
                     SqliteTransaction? transaction = null;
@@ -832,42 +844,36 @@ public class Tycho : IDisposable
                                     break;
                                 }
 
-                                // Use a pooled memory stream to avoid allocations
-                                var memoryStream = state.memoryStreamPool.Get();
-                                try
+                                // Use RecyclableMemoryStream for efficient memory management
+                                using var memoryStream = _memoryStreamManager.GetStream("TychoDB.ReadObjects");
+
+                                int bytesRead;
+
+                                await using var stream = reader.GetStream(reader.GetOrdinal(Queries.DataColumn));
+
+                                if (state.progress is not null)
                                 {
-                                    int bytesRead;
-
-                                    await using var stream = reader.GetStream(reader.GetOrdinal(Queries.DataColumn));
-
-                                    if (state.progress is not null)
+                                    await using Stream progressStream = new ProgressStream(stream, state.progress);
+                                    while ((bytesRead = await progressStream
+                                               .ReadAsync(buffer, 0, buffer.Length, state.cancellationToken)
+                                               .ConfigureAwait(false)) > 0)
                                     {
-                                        await using Stream progressStream = new ProgressStream(stream, state.progress);
-                                        while ((bytesRead = await progressStream
-                                                   .ReadAsync(buffer, 0, buffer.Length, state.cancellationToken)
-                                                   .ConfigureAwait(false)) > 0)
-                                        {
-                                            memoryStream.Write(buffer, 0, bytesRead);
-                                        }
+                                        memoryStream.Write(buffer, 0, bytesRead);
                                     }
-                                    else
-                                    {
-                                        while ((bytesRead = await stream
-                                                   .ReadAsync(buffer, 0, buffer.Length, state.cancellationToken)
-                                                   .ConfigureAwait(false)) > 0)
-                                        {
-                                            memoryStream.Write(buffer, 0, bytesRead);
-                                        }
-                                    }
-
-                                    memoryStream.Position = 0;
-                                    objects.Add(await state.jsonSerializer
-                                        .DeserializeAsync<T>(memoryStream, state.cancellationToken).ConfigureAwait(false));
                                 }
-                                finally
+                                else
                                 {
-                                    state.memoryStreamPool.Return(memoryStream);
+                                    while ((bytesRead = await stream
+                                               .ReadAsync(buffer, 0, buffer.Length, state.cancellationToken)
+                                               .ConfigureAwait(false)) > 0)
+                                    {
+                                        memoryStream.Write(buffer, 0, bytesRead);
+                                    }
                                 }
+
+                                memoryStream.Position = 0;
+                                objects.Add(await state.jsonSerializer
+                                    .DeserializeAsync<T>(memoryStream, state.cancellationToken).ConfigureAwait(false));
                             }
                         }
                         finally

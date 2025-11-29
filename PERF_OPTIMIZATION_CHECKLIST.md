@@ -71,18 +71,22 @@ The goal is to identify and implement optimizations that:
     -   Constant strings are interned and reused
     -   Helper methods improve code organization while being inlined
 -   **Risk:** Low - internal implementation
--   **Commit:** TBD
+-   **Commit:** `3fc77f7`
 
 ### 5. SortBuilder.cs - Optimize string building in Build()
 
--   [ ] **Status: Pending Approval**
+-   [x] **Status: Completed**
 -   **File:** `TychoDB/SortBuilder.cs`
 -   **Current:** Uses LINQ `.Select()` with string interpolation and `string.Join`
--   **Proposed:** Use direct `StringBuilder.Append()` calls avoiding intermediate allocations
+-   **Proposed:**
+    -   Pre-allocate string constants for SQL fragments
+    -   Replace LINQ Select + AppendJoin with direct for loop and Append calls
+    -   Remove System.Linq dependency
 -   **Rationale:**
     -   Eliminates LINQ overhead and intermediate string array from Select
     -   Direct StringBuilder manipulation is more efficient
 -   **Risk:** Low - internal implementation
+-   **Commit:** TBD
 
 ### 6. Tycho.cs - Eliminate closure allocations in WithConnectionBlockAsync delegates
 

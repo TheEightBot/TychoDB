@@ -201,6 +201,7 @@ public class FilterBuilder<TObj>
                 {
                     commandBuilder.Append(ValValue).Append(Equals).Append('\'').Append(filter.Value).Append("')").AppendLine();
                 }
+
                 break;
 
             case FilterType.GreaterThan:
@@ -237,6 +238,7 @@ public class FilterBuilder<TObj>
                 {
                     commandBuilder.Append(ValValue).Append(NotEquals).Append('\'').Append(filter.Value).Append("')").AppendLine();
                 }
+
                 break;
 
             case FilterType.StartsWith:
@@ -287,6 +289,7 @@ public class FilterBuilder<TObj>
                     AppendJsonExtract(commandBuilder, filter.PropertyPath!);
                     commandBuilder.Append(Equals).Append('\'').Append(filter.Value).Append('\'').AppendLine();
                 }
+
                 break;
 
             case FilterType.GreaterThan:
@@ -320,6 +323,7 @@ public class FilterBuilder<TObj>
                     AppendJsonExtract(commandBuilder, filter.PropertyPath!);
                     commandBuilder.Append(NotEquals).Append('\'').Append(filter.Value).Append('\'').AppendLine();
                 }
+
                 break;
 
             case FilterType.StartsWith:
@@ -336,7 +340,7 @@ public class FilterBuilder<TObj>
         {
             DateTime dt => dt.ToString(jsonSerializer.DateTimeSerializationFormat),
             DateTimeOffset dto => dto.ToString(jsonSerializer.DateTimeSerializationFormat),
-            _ => string.Empty
+            _ => string.Empty,
         };
     }
 }

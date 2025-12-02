@@ -1,13 +1,38 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Linq.Expressions;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace TychoDB;
 
 public class FilterBuilder<TObj>
 {
+    // Pre-allocated string constants to avoid repeated allocations
+    private const string AndKeyword = "AND";
+    private const string OrKeyword = "OR";
+    private const string OpenParen = "(";
+    private const string CloseParen = ")";
+    private const string JsonExtractPrefix = "JSON_EXTRACT(Data, '";
+    private const string JsonExtractSuffix = "')";
+    private const string CastNumericPrefix = "CAST(JSON_EXTRACT(Data, '";
+    private const string CastNumericSuffix = "') as NUMERIC)";
+    private const string ExistsPrefix = "EXISTS(SELECT 1 FROM JSON_TREE(Data, '";
+    private const string ExistsMiddle = "') AS JT, JSON_EACH(JT.Value, '";
+    private const string ExistsSuffix = "') AS VAL WHERE ";
+    private const string ExistsEnd = ")";
+    private const string ValValue = "VAL.value";
+    private const string CastValNumeric = "CAST(VAL.value as NUMERIC)";
+    private const string IsNull = " IS NULL";
+    private const string IsNotNull = " IS NOT NULL";
+    private const string LikePrefix = " like '";
+    private const string Equals = " = ";
+    private const string NotEquals = " <> ";
+    private const string GreaterThan = " > ";
+    private const string GreaterThanOrEqual = " >= ";
+    private const string LessThan = " < ";
+    private const string LessThanOrEqual = " <= ";
+
     private readonly List<Filter> _filters = new();
 
     private FilterBuilder()
@@ -77,7 +102,7 @@ public class FilterBuilder<TObj>
 
     internal void Build(StringBuilder commandBuilder, IJsonSerializer jsonSerializer)
     {
-        if (_filters.Any())
+        if (_filters.Count > 0)
         {
             commandBuilder.AppendLine("\nAND");
         }
@@ -89,16 +114,16 @@ public class FilterBuilder<TObj>
                 switch (filter.Join.Value)
                 {
                     case FilterJoin.And:
-                        commandBuilder.AppendLine($"AND");
+                        commandBuilder.AppendLine(AndKeyword);
                         break;
                     case FilterJoin.Or:
-                        commandBuilder.AppendLine($"OR");
+                        commandBuilder.AppendLine(OrKeyword);
                         break;
                     case FilterJoin.StartGroup:
-                        commandBuilder.AppendLine($"(");
+                        commandBuilder.AppendLine(OpenParen);
                         break;
                     case FilterJoin.EndGroup:
-                        commandBuilder.AppendLine($")");
+                        commandBuilder.AppendLine(CloseParen);
                         break;
                 }
 
@@ -107,176 +132,215 @@ public class FilterBuilder<TObj>
 
             if (filter.FilterType.HasValue && !string.IsNullOrEmpty(filter.PropertyValuePath))
             {
-                switch (filter.FilterType.Value)
-                {
-                    case FilterType.Contains:
-                        commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value like \'%{filter.Value}%\')");
-                        break;
-                    case FilterType.EndsWith:
-                        commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value like \'%{filter.Value}\')");
-                        break;
-                    case FilterType.Equals:
-                        if (filter.Value is null)
-                        {
-                            commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value IS NULL)");
-                            break;
-                        }
-
-                        if (filter.IsPropertyValuePathBool)
-                        {
-                            commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value = {filter.Value})");
-                            break;
-                        }
-
-                        if (filter.IsPropertyValuePathNumeric)
-                        {
-                            commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) = \'{filter.Value}\')");
-                            break;
-                        }
-
-                        if (filter.IsPropertyValuePathDateTime)
-                        {
-                            var dateTimeString = string.Empty;
-
-                            if (filter.Value is DateTime dt)
-                            {
-                                dateTimeString = dt.ToString(jsonSerializer.DateTimeSerializationFormat);
-                            }
-                            else if (filter.Value is DateTimeOffset dto)
-                            {
-                                dateTimeString = dto.ToString(jsonSerializer.DateTimeSerializationFormat);
-                            }
-
-                            commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value = \'{dateTimeString}\')");
-                            break;
-                        }
-
-                        commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value = \'{filter.Value}\')");
-                        break;
-
-                    // TODO: This is an attack vector and should be parameterized
-                    case FilterType.GreaterThan:
-                        commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) > {filter.Value})");
-                        break;
-
-                    // TODO: This is an attack vector and should be parameterized
-                    case FilterType.GreaterThanOrEqualTo:
-                        commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) >= {filter.Value})");
-                        break;
-
-                    // TODO: This is an attack vector and should be parameterized
-                    case FilterType.LessThan:
-                        commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) < {filter.Value})");
-                        break;
-
-                    // TODO: This is an attack vector and should be parameterized
-                    case FilterType.LessThanOrEqualTo:
-                        commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE CAST(VAL.value as NUMERIC) <= {filter.Value})");
-                        break;
-                    case FilterType.NotEquals:
-                        if (filter.Value is null)
-                        {
-                            commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value IS NOT NULL)");
-                            break;
-                        }
-
-                        if (filter.IsPropertyValuePathBool)
-                        {
-                            commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value <> {filter.Value})");
-                            break;
-                        }
-
-                        commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value <> \'{filter.Value}\')");
-                        break;
-                    case FilterType.StartsWith:
-                        commandBuilder.AppendLine($"EXISTS(SELECT 1 FROM JSON_TREE(Data, \'{filter.PropertyPath}\') AS JT, JSON_EACH(JT.Value, \'{filter.PropertyValuePath}\') AS VAL WHERE VAL.value like \'{filter.Value}%\')");
-                        break;
-                }
-
+                BuildExistsFilter(commandBuilder, filter, jsonSerializer);
                 continue;
             }
             else if (filter.FilterType.HasValue)
             {
-                switch (filter.FilterType.Value)
-                {
-                    case FilterType.Contains:
-                        commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'%{filter.Value}%\'");
-                        break;
-                    case FilterType.EndsWith:
-                        commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'%{filter.Value}\'");
-                        break;
-                    case FilterType.Equals:
-                        if (filter.Value is null)
-                        {
-                            commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') IS NULL");
-                            break;
-                        }
-
-                        if (filter.IsPropertyPathBool)
-                        {
-                            commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') = {filter.Value}");
-                            break;
-                        }
-
-                        if (filter.IsPropertyPathNumeric)
-                        {
-                            commandBuilder.AppendLine($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) = \'{filter.Value}\'");
-                            break;
-                        }
-
-                        if (filter.IsPropertyPathDateTime)
-                        {
-                            var dateTimeString = string.Empty;
-
-                            if (filter.Value is DateTime dt)
-                            {
-                                dateTimeString = dt.ToString(jsonSerializer.DateTimeSerializationFormat);
-                            }
-                            else if (filter.Value is DateTimeOffset dto)
-                            {
-                                dateTimeString = dto.ToString(jsonSerializer.DateTimeSerializationFormat);
-                            }
-
-                            commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') = \'{dateTimeString}\'");
-                            break;
-                        }
-
-                        commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') = \'{filter.Value}\'");
-                        break;
-
-                    // TODO: This is an attack vector and should be parameterized
-                    case FilterType.GreaterThan:
-                        commandBuilder.AppendLine($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) > {filter.Value}");
-                        break;
-
-                    // TODO: This is an attack vector and should be parameterized
-                    case FilterType.GreaterThanOrEqualTo:
-                        commandBuilder.AppendLine($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) >= {filter.Value}");
-                        break;
-
-                    // TODO: This is an attack vector and should be parameterized
-                    case FilterType.LessThan:
-                        commandBuilder.AppendLine($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) < {filter.Value}");
-                        break;
-
-                    // TODO: This is an attack vector and should be parameterized
-                    case FilterType.LessThanOrEqualTo:
-                        commandBuilder.AppendLine($"CAST(JSON_EXTRACT(Data, \'{filter.PropertyPath}\') as NUMERIC) <= {filter.Value}");
-                        break;
-                    case FilterType.NotEquals:
-                        if (filter.IsPropertyPathBool)
-                        {
-                            commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') <> {filter.Value}");
-                            break;
-                        }
-
-                        commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') <> \'{filter.Value}\'");
-                        break;
-                    case FilterType.StartsWith:
-                        commandBuilder.AppendLine($"JSON_EXTRACT(Data, \'{filter.PropertyPath}\') like \'{filter.Value}%\'");
-                        break;
-                }
+                BuildSimpleFilter(commandBuilder, filter, jsonSerializer);
             }
         }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void AppendExistsPrefix(StringBuilder sb, in Filter filter)
+    {
+        sb.Append(ExistsPrefix)
+          .Append(filter.PropertyPath)
+          .Append(ExistsMiddle)
+          .Append(filter.PropertyValuePath)
+          .Append(ExistsSuffix);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AppendJsonExtract(StringBuilder sb, string propertyPath)
+    {
+        sb.Append(JsonExtractPrefix).Append(propertyPath).Append(JsonExtractSuffix);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AppendCastNumeric(StringBuilder sb, string propertyPath)
+    {
+        sb.Append(CastNumericPrefix).Append(propertyPath).Append(CastNumericSuffix);
+    }
+
+    private void BuildExistsFilter(StringBuilder commandBuilder, in Filter filter, IJsonSerializer jsonSerializer)
+    {
+        switch (filter.FilterType!.Value)
+        {
+            case FilterType.Contains:
+                AppendExistsPrefix(commandBuilder, filter);
+                commandBuilder.Append(ValValue).Append(LikePrefix).Append('%').Append(filter.Value).Append("%')").AppendLine();
+                break;
+
+            case FilterType.EndsWith:
+                AppendExistsPrefix(commandBuilder, filter);
+                commandBuilder.Append(ValValue).Append(LikePrefix).Append('%').Append(filter.Value).Append("')").AppendLine();
+                break;
+
+            case FilterType.Equals:
+                AppendExistsPrefix(commandBuilder, filter);
+                if (filter.Value is null)
+                {
+                    commandBuilder.Append(ValValue).Append(IsNull).Append(ExistsEnd).AppendLine();
+                }
+                else if (filter.IsPropertyValuePathBool)
+                {
+                    commandBuilder.Append(ValValue).Append(Equals).Append(filter.Value).Append(ExistsEnd).AppendLine();
+                }
+                else if (filter.IsPropertyValuePathNumeric)
+                {
+                    commandBuilder.Append(CastValNumeric).Append(Equals).Append('\'').Append(filter.Value).Append("')").AppendLine();
+                }
+                else if (filter.IsPropertyValuePathDateTime)
+                {
+                    var dateTimeString = GetDateTimeString(filter.Value, jsonSerializer);
+                    commandBuilder.Append(ValValue).Append(Equals).Append('\'').Append(dateTimeString).Append("')").AppendLine();
+                }
+                else
+                {
+                    commandBuilder.Append(ValValue).Append(Equals).Append('\'').Append(filter.Value).Append("')").AppendLine();
+                }
+
+                break;
+
+            case FilterType.GreaterThan:
+                AppendExistsPrefix(commandBuilder, filter);
+                commandBuilder.Append(CastValNumeric).Append(GreaterThan).Append(filter.Value).Append(ExistsEnd).AppendLine();
+                break;
+
+            case FilterType.GreaterThanOrEqualTo:
+                AppendExistsPrefix(commandBuilder, filter);
+                commandBuilder.Append(CastValNumeric).Append(GreaterThanOrEqual).Append(filter.Value).Append(ExistsEnd).AppendLine();
+                break;
+
+            case FilterType.LessThan:
+                AppendExistsPrefix(commandBuilder, filter);
+                commandBuilder.Append(CastValNumeric).Append(LessThan).Append(filter.Value).Append(ExistsEnd).AppendLine();
+                break;
+
+            case FilterType.LessThanOrEqualTo:
+                AppendExistsPrefix(commandBuilder, filter);
+                commandBuilder.Append(CastValNumeric).Append(LessThanOrEqual).Append(filter.Value).Append(ExistsEnd).AppendLine();
+                break;
+
+            case FilterType.NotEquals:
+                AppendExistsPrefix(commandBuilder, filter);
+                if (filter.Value is null)
+                {
+                    commandBuilder.Append(ValValue).Append(IsNotNull).Append(ExistsEnd).AppendLine();
+                }
+                else if (filter.IsPropertyValuePathBool)
+                {
+                    commandBuilder.Append(ValValue).Append(NotEquals).Append(filter.Value).Append(ExistsEnd).AppendLine();
+                }
+                else
+                {
+                    commandBuilder.Append(ValValue).Append(NotEquals).Append('\'').Append(filter.Value).Append("')").AppendLine();
+                }
+
+                break;
+
+            case FilterType.StartsWith:
+                AppendExistsPrefix(commandBuilder, filter);
+                commandBuilder.Append(ValValue).Append(LikePrefix).Append(filter.Value).Append("%')").AppendLine();
+                break;
+        }
+    }
+
+    private void BuildSimpleFilter(StringBuilder commandBuilder, in Filter filter, IJsonSerializer jsonSerializer)
+    {
+        switch (filter.FilterType!.Value)
+        {
+            case FilterType.Contains:
+                AppendJsonExtract(commandBuilder, filter.PropertyPath!);
+                commandBuilder.Append(LikePrefix).Append('%').Append(filter.Value).Append("%'").AppendLine();
+                break;
+
+            case FilterType.EndsWith:
+                AppendJsonExtract(commandBuilder, filter.PropertyPath!);
+                commandBuilder.Append(LikePrefix).Append('%').Append(filter.Value).Append('\'').AppendLine();
+                break;
+
+            case FilterType.Equals:
+                if (filter.Value is null)
+                {
+                    AppendJsonExtract(commandBuilder, filter.PropertyPath!);
+                    commandBuilder.Append(IsNull).AppendLine();
+                }
+                else if (filter.IsPropertyPathBool)
+                {
+                    AppendJsonExtract(commandBuilder, filter.PropertyPath!);
+                    commandBuilder.Append(Equals).Append(filter.Value).AppendLine();
+                }
+                else if (filter.IsPropertyPathNumeric)
+                {
+                    AppendCastNumeric(commandBuilder, filter.PropertyPath!);
+                    commandBuilder.Append(Equals).Append('\'').Append(filter.Value).Append('\'').AppendLine();
+                }
+                else if (filter.IsPropertyPathDateTime)
+                {
+                    var dateTimeString = GetDateTimeString(filter.Value, jsonSerializer);
+                    AppendJsonExtract(commandBuilder, filter.PropertyPath!);
+                    commandBuilder.Append(Equals).Append('\'').Append(dateTimeString).Append('\'').AppendLine();
+                }
+                else
+                {
+                    AppendJsonExtract(commandBuilder, filter.PropertyPath!);
+                    commandBuilder.Append(Equals).Append('\'').Append(filter.Value).Append('\'').AppendLine();
+                }
+
+                break;
+
+            case FilterType.GreaterThan:
+                AppendCastNumeric(commandBuilder, filter.PropertyPath!);
+                commandBuilder.Append(GreaterThan).Append(filter.Value).AppendLine();
+                break;
+
+            case FilterType.GreaterThanOrEqualTo:
+                AppendCastNumeric(commandBuilder, filter.PropertyPath!);
+                commandBuilder.Append(GreaterThanOrEqual).Append(filter.Value).AppendLine();
+                break;
+
+            case FilterType.LessThan:
+                AppendCastNumeric(commandBuilder, filter.PropertyPath!);
+                commandBuilder.Append(LessThan).Append(filter.Value).AppendLine();
+                break;
+
+            case FilterType.LessThanOrEqualTo:
+                AppendCastNumeric(commandBuilder, filter.PropertyPath!);
+                commandBuilder.Append(LessThanOrEqual).Append(filter.Value).AppendLine();
+                break;
+
+            case FilterType.NotEquals:
+                if (filter.IsPropertyPathBool)
+                {
+                    AppendJsonExtract(commandBuilder, filter.PropertyPath!);
+                    commandBuilder.Append(NotEquals).Append(filter.Value).AppendLine();
+                }
+                else
+                {
+                    AppendJsonExtract(commandBuilder, filter.PropertyPath!);
+                    commandBuilder.Append(NotEquals).Append('\'').Append(filter.Value).Append('\'').AppendLine();
+                }
+
+                break;
+
+            case FilterType.StartsWith:
+                AppendJsonExtract(commandBuilder, filter.PropertyPath!);
+                commandBuilder.Append(LikePrefix).Append(filter.Value).Append("%'").AppendLine();
+                break;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static string GetDateTimeString(object? value, IJsonSerializer jsonSerializer)
+    {
+        return value switch
+        {
+            DateTime dt => dt.ToString(jsonSerializer.DateTimeSerializationFormat),
+            DateTimeOffset dto => dto.ToString(jsonSerializer.DateTimeSerializationFormat),
+            _ => string.Empty,
+        };
     }
 }

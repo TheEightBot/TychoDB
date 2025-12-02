@@ -10,7 +10,7 @@ using System.Threading.Tasks;
 
 namespace TychoDB;
 
-public class SystemTextJsonSerializer : IJsonSerializer
+public sealed class SystemTextJsonSerializer : IJsonSerializer
 {
     private readonly JsonSerializerOptions _jsonSerializerOptions;
     private readonly Dictionary<Type, JsonTypeInfo> _jsonTypeSerializers;
@@ -58,6 +58,20 @@ public class SystemTextJsonSerializer : IJsonSerializer
         }
 
         return JsonSerializer.SerializeToUtf8Bytes(obj, _jsonSerializerOptions);
+    }
+
+    public void Serialize<T>(T obj, IBufferWriter<byte> bufferWriter)
+    {
+        using var writer = new Utf8JsonWriter(bufferWriter);
+
+        if (_jsonTypeSerializers.TryGetValue(typeof(T), out var jsonTypeSerializer) && jsonTypeSerializer is JsonTypeInfo<T> jtst)
+        {
+            JsonSerializer.Serialize(writer, obj, jtst);
+        }
+        else
+        {
+            JsonSerializer.Serialize(writer, obj, _jsonSerializerOptions);
+        }
     }
 
     public override string ToString() => nameof(SystemTextJsonSerializer);

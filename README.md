@@ -17,6 +17,7 @@ TychoDB is a high-performance .NET library that provides a simple and efficient 
 - **Partitioning**: Organize your data using logical partitions
 - **Binary Data Support**: Store and retrieve binary large objects (BLOBs)
 - **Indexing**: Create indexes on properties for faster query performance
+- **Encryption**: Optional AES-256 full-database encryption via SQLCipher (`TychoDB.Encrypted`)
 - **Multiple Serialization Options**: Support for System.Text.Json, Newtonsoft.Json, and MessagePack
 - **Asynchronous Operations**: Full async/await support for all database operations
 - **LINQ-like Syntax**: Familiar querying patterns for .NET developers
@@ -37,6 +38,65 @@ Depending on your preferred JSON serializer, you can also install one of the fol
 dotnet add package TychoDB.JsonSerializer.SystemTextJson
 dotnet add package TychoDB.JsonSerializer.NewtonsoftJson
 ```
+
+If you need **full database encryption** (powered by SQLCipher), use the encrypted variant instead of the standard package:
+
+```bash
+dotnet add package TychoDB.Encrypted
+```
+
+## Encryption
+
+TychoDB supports full database encryption via [SQLCipher](https://www.zetetic.net/sqlcipher/). Encryption is provided through a separate NuGet package that replaces the standard SQLite driver with the SQLCipher-backed variant.
+
+### Installing the Encrypted Package
+
+Instead of the standard `TychoDB` package, install `TychoDB.Encrypted`:
+
+```bash
+dotnet add package TychoDB.Encrypted
+```
+
+> **Note:** `TychoDB` and `TychoDB.Encrypted` are mutually exclusive — only reference one of them in a given project.
+
+### Creating an Encrypted Database
+
+Pass a `password` to the `Tycho` constructor. When a password is provided the underlying SQLCipher driver automatically encrypts the entire database file using AES-256.
+
+```csharp
+using TychoDB;
+
+var jsonSerializer = new SystemTextJsonSerializer();
+
+using var db = new Tycho(
+        dbPath: "./data",
+        jsonSerializer: jsonSerializer,
+        password: "your-strong-password")
+    .Connect();
+```
+
+All subsequent reads and writes are transparently encrypted/decrypted — the rest of the API is identical to the non-encrypted version.
+
+### Opening an Existing Encrypted Database
+
+Supply the same password that was used when the database was first created:
+
+```csharp
+using var db = new Tycho(
+        dbPath: "./data",
+        jsonSerializer: jsonSerializer,
+        dbName: "tycho_cache.db",
+        password: "your-strong-password")
+    .Connect();
+```
+
+Providing the wrong password (or no password) will cause a `SqliteException` when the connection is opened.
+
+### Security Considerations
+
+- Store the password securely — use platform secret stores (e.g. Android Keystore, iOS Keychain, Windows DPAPI, or a secrets manager) rather than hard-coding it.
+- The `TychoDB.Encrypted` package pulls in `SQLitePCLRaw.bundle_e_sqlcipher`, which links against the SQLCipher native library. Ensure your target platforms are supported by SQLCipher.
+- Changing the password of an existing database requires re-keying (outside the scope of the TychoDB API); use raw SQLCipher `PRAGMA rekey` if needed.
 
 ## Quick Start
 

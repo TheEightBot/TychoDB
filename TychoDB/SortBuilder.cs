@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Linq.Expressions;
 using System.Text;
 
@@ -8,6 +7,13 @@ namespace TychoDB;
 
 public class SortBuilder<TObj>
 {
+    private const string OrderByPrefix = "\nORDER BY\n";
+    private const string DataPrefix = "Data ->> '";
+    private const string DataSuffix = "' ";
+    private const string Asc = "ASC";
+    private const string Desc = "DESC";
+    private const string Separator = ", ";
+
     private readonly List<SortInfo> _sortInfos = new();
 
     private SortBuilder()
@@ -37,14 +43,22 @@ public class SortBuilder<TObj>
 
     internal void Build(StringBuilder commandBuilder)
     {
-        commandBuilder
-            .AppendLine("\nORDER BY")
-            .AppendJoin(
-                $", ",
-                _sortInfos.Select(x => $"Data ->> \'{x.PropertyPath}\' {GetSortDirectionSqlCommand(x.SortDirection)}"))
-            .AppendLine();
-    }
+        commandBuilder.Append(OrderByPrefix);
 
-    private string GetSortDirectionSqlCommand(SortDirection sortDirection)
-        => sortDirection == SortDirection.Ascending ? "ASC" : "DESC";
+        for (var i = 0; i < _sortInfos.Count; i++)
+        {
+            if (i > 0)
+            {
+                commandBuilder.Append(Separator);
+            }
+
+            var sortInfo = _sortInfos[i];
+            commandBuilder.Append(DataPrefix)
+                          .Append(sortInfo.PropertyPath)
+                          .Append(DataSuffix)
+                          .Append(sortInfo.SortDirection == SortDirection.Ascending ? Asc : Desc);
+        }
+
+        commandBuilder.AppendLine();
+    }
 }

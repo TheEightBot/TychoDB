@@ -4,7 +4,7 @@ using System.Linq.Expressions;
 
 namespace TychoDB;
 
-public record RegisteredTypeInformation
+public sealed record RegisteredTypeInformation
 {
     public RegisteredTypeInformation(bool requiresIdMapping, Delegate? idSelector, Delegate? idComparer, string? idProperty, string? idPropertyPath, bool isNumeric, bool isBool, string? typeFullName, string? typeName, string? safeTypeName, string? typeNamespace, Type objectType)
     {

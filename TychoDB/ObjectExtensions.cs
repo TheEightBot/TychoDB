@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Linq;
 using System.Linq.Expressions;
 
@@ -6,6 +7,9 @@ namespace TychoDB;
 
 internal static class ObjectExtensions
 {
+    // Cache for GetSafeTypeName results - type names are immutable so this is safe to cache indefinitely
+    private static readonly ConcurrentDictionary<Type, string> SafeTypeNameCache = new();
+
     public static string GetExpressionMemberName(this Expression method)
     {
         if (method is not LambdaExpression lex)
@@ -26,6 +30,11 @@ internal static class ObjectExtensions
     }
 
     public static string GetSafeTypeName(this Type type)
+    {
+        return SafeTypeNameCache.GetOrAdd(type, static t => ComputeSafeTypeName(t));
+    }
+
+    private static string ComputeSafeTypeName(Type type)
     {
         return
             !type.IsGenericType || type.IsGenericTypeDefinition

@@ -57,3 +57,13 @@ jobs:
               run: dotnet nuget push TychoDB/bin/Release/*.nupkg --api-key "${{secrets.GITHUB_TOKEN}}" --source https://nuget.pkg.github.com/theeightbot/index.json
             - name: Publish the package to NuGet
               run: dotnet nuget push TychoDB/bin/Release/*.nupkg --api-key "${{ secrets.EIGHTBOT_NUGET_APIKEY }}" --source https://api.nuget.org/v3/index.json
+
+            - name: Build Tycho (Encrypted)
+              run: dotnet build --configuration Encrypted TychoDB/TychoDB.csproj
+            - name: Create the package (Encrypted)
+              run: dotnet pack --configuration Encrypted /p:AssemblyVersion=${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.${{ steps.version.outputs.patch }} /p:Version=${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.${{ steps.version.outputs.patch }} TychoDB/TychoDB.csproj
+            - name: Publish the package to GPR (Encrypted)
+              run: dotnet nuget push TychoDB/bin/Encrypted/*.nupkg --api-key "${{secrets.GITHUB_TOKEN}}" --source https://nuget.pkg.github.com/theeightbot/index.json
+            - name: Publish the package to NuGet (Encrypted)
+              run: dotnet nuget push TychoDB/bin/Encrypted/*.nupkg --api-key "${{ secrets.EIGHTBOT_NUGET_APIKEY }}" --source https://api.nuget.org/v3/index.json
+

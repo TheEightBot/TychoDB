@@ -27,8 +27,8 @@
         <PackageReference Include="System.Threading.RateLimiting" Version="9.0.8" />
     </ItemGroup>
     <ItemGroup Condition=" '$(Configuration)' == 'Encrypted' ">
-        <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="8.0.0" />
-        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.4" />
+        <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="9.0.8" />
+        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.10" />
     </ItemGroup>
     <ItemGroup Condition=" '$(Configuration)' != 'Encrypted' ">
         <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.8" />

@@ -36,6 +36,10 @@ public class SortBuilder<TObj>
 
     public SortBuilder<TObj> OrderBy(SortDirection sortDirection, string propertyPath)
     {
+        // Raw path from the caller is emitted as an identifier inside Data ->> '...'
+        // and cannot be parameterized, so validate it against the strict grammar.
+        QueryPropertyPath.ValidatePath(propertyPath, nameof(propertyPath));
+
         _sortInfos.Add(new SortInfo(sortDirection, propertyPath));
 
         return this;

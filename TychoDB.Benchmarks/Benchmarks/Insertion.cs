@@ -300,9 +300,7 @@ public class Insertion
 
         var list = new List<TestClassA>();
 
-        var timestampStart = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-
-        for (long i = timestampStart; i < 1100; i++)
+        for (long i = 0; i < 1000; i++)
         {
             var testObj =
                 new TestClassA
@@ -325,9 +323,7 @@ public class Insertion
 
         var list = new List<TestClassA>();
 
-        var timestampStart = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-
-        for (long i = timestampStart; i < 1100; i++)
+        for (long i = 0; i < 1000; i++)
         {
             var testObj =
                 new TestClassA
@@ -351,9 +347,7 @@ public class Insertion
 
         var list = new List<TestClassA>();
 
-        var timestampStart = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-
-        for (long i = timestampStart; i < 1100; i++)
+        for (long i = 0; i < 1000; i++)
         {
             var testObj =
                 new TestClassA

@@ -521,11 +521,32 @@ await db.SaveAllAsync(people, "active_users");
 
 ## Performance Considerations
 
-- Use batch operations when dealing with multiple objects
-- Create indexes for frequently queried properties
-- Use the appropriate serializer for your needs (MessagePack for best performance)
-- Consider partitioning for large datasets
-- Use connection pooling for multi-threaded applications
+- **Write many objects with `WriteObjectsAsync`, not a loop of `WriteObjectAsync`.**
+  The bulk method batches rows into multi-row inserts inside a single transaction —
+  roughly **10× faster** and **~6× lower allocation** than calling `WriteObjectAsync`
+  in a loop (each single write is its own transaction/commit). Keep the default
+  `withTransaction: true` for bulk writes; it is faster than `withTransaction: false`.
+- Create indexes for frequently queried properties (`CreateIndex`), and make sure the
+  indexed property path matches the one used in your filters so the query planner can
+  use the index.
+- Use the appropriate serializer for your needs. System.Text.Json with a
+  `JsonSerializerContext` (source generation) is the recommended default; Newtonsoft
+  works but allocates more.
+- Consider partitioning for large datasets.
+- Use connection pooling for multi-threaded applications. Note that all database access
+  is serialized onto a single connection, so heavy concurrent workloads are executed
+  one operation at a time.
+
+## Security Considerations (Querying)
+
+Filter comparison values are always bound as SQL parameters, so it is safe to pass
+user-supplied values into filters. When you use the **raw-string overloads** —
+`FilterBuilder.Filter(FilterType, string propertyPath, …)`,
+`SortBuilder.OrderBy(SortDirection, string)`, or the string-based `CreateIndex` — the
+property path and index name are validated against a strict grammar and will throw
+`ArgumentException` if they contain anything other than letters, digits, `_`, `.`, `$`,
+`[`, `]` (paths) or a valid identifier (index names). Prefer the expression-based
+overloads (`x => x.Property`) where possible.
 
 ## License
 

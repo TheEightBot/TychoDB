@@ -13,6 +13,11 @@ public sealed class NewtonsoftJsonSerializer : IJsonSerializer
     private const int DefaultBufferSize = 4096;
     private const int StreamWriterBufferSize = 1024;
 
+    // UTF-8 without a byte-order mark. Encoding.UTF8 emits a BOM, which SQLite's
+    // json() rejects as malformed on stricter/older builds (notably the SQLCipher
+    // bundle used by TychoDB.Encrypted), corrupting every Newtonsoft-serialized write.
+    private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
     private readonly JsonSerializer _jsonSerializer;
 
     public string DateTimeSerializationFormat { get; }
@@ -80,7 +85,7 @@ public sealed class NewtonsoftJsonSerializer : IJsonSerializer
 
     private void SerializeToStream<T>(T obj, MemoryStream stream)
     {
-        using var sw = new StreamWriter(stream, Encoding.UTF8, StreamWriterBufferSize, leaveOpen: true);
+        using var sw = new StreamWriter(stream, Utf8NoBom, StreamWriterBufferSize, leaveOpen: true);
         using var jsonTextWriter = new JsonTextWriter(sw)
         {
             DateFormatString = DateTimeSerializationFormat,

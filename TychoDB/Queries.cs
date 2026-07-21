@@ -20,6 +20,8 @@ internal static class Queries
         PRAGMA busy_timeout = 5000;
         PRAGMA wal_autocheckpoint = 1000;
         PRAGMA auto_vacuum = INCREMENTAL;
+        PRAGMA cache_size = -16000;
+        PRAGMA mmap_size = 134217728;
 
         CREATE TABLE IF NOT EXISTS JsonValue
         (
@@ -70,6 +72,37 @@ internal static class Queries
 
         SELECT last_insert_rowid();
         """;
+
+    private const string BatchInsertPrefix =
+        "INSERT OR REPLACE INTO JsonValue(Key, FullTypeName, Data, Partition) VALUES ";
+
+    /// <summary>
+    /// Builds a multi-row INSERT OR REPLACE for <paramref name="rowCount"/> rows.
+    /// FullTypeName and Partition are shared parameters ($fullTypeName, $partition);
+    /// each row binds its own $key{n} and $json{n}. No trailing rowid SELECT — the
+    /// caller uses the affected-row count. Collapses N executions into one.
+    /// </summary>
+    public static string BuildBatchInsertOrReplace(int rowCount)
+    {
+        // Per-row fragment is ~"($key99, $fullTypeName, json($json99), $partition),"
+        var sb = new System.Text.StringBuilder(BatchInsertPrefix.Length + (rowCount * 48) + 1);
+        sb.Append(BatchInsertPrefix);
+
+        for (int i = 0; i < rowCount; i++)
+        {
+            if (i > 0)
+            {
+                sb.Append(',');
+            }
+
+            sb.Append("($key").Append(i)
+              .Append(", $fullTypeName, json($json").Append(i)
+              .Append("), $partition)");
+        }
+
+        sb.Append(';');
+        return sb.ToString();
+    }
 
     public const string InsertOrReplaceBlob =
         """

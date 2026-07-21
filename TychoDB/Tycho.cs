@@ -8,7 +8,6 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Text;
 using System.Threading;
-using System.Threading.RateLimiting;
 using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
 using Microsoft.IO;
@@ -54,14 +53,11 @@ public class Tycho : IDisposable
             AggressiveBufferReturn = true,             // Return buffers immediately for mobile
         });
 
-    private readonly RateLimiter _rateLimiter =
-        new ConcurrencyLimiter(
-            new ConcurrencyLimiterOptions
-            {
-                PermitLimit = 1,
-                QueueLimit = int.MaxValue,
-                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-            });
+    // Serializes all access to the single SQLite connection. A SemaphoreSlim is
+    // lighter than a rate limiter for this "one operation at a time" gate and,
+    // unlike the previous AttemptAcquire path (which ignored whether a permit was
+    // actually obtained), its synchronous Wait genuinely serializes sync callers.
+    private readonly SemaphoreSlim _connectionGate = new(1, 1);
 
     private SqliteConnection? _connection;
     private bool _isDisposed;
@@ -319,7 +315,7 @@ public class Tycho : IDisposable
 
         return _connection
             .WithConnectionBlockAsync(
-                _rateLimiter,
+                _connectionGate,
                 (objs, keySelector, partition, withTransaction, _commandTimeout, _jsonSerializer, cancellationToken),
                 static (conn, state) =>
                 {
@@ -332,19 +328,12 @@ public class Tycho : IDisposable
                         transaction = conn.BeginTransaction(IsolationLevel.Serializable);
                     }
 
-                    // GetPooledCommand(conn, Queries.InsertOrReplace);
-                    var command = conn.CreateCommand();
-#pragma warning disable CA2100
-
-                    // TODO: Review for vulnerabilities
-                    command.CommandText = Queries.InsertOrReplace;
-#pragma warning restore CA2100
-                    command.CommandTimeout = state._commandTimeout;
-
                     try
                     {
-                        // Convert to list to avoid multiple enumeration
-                        var objsList = state.objs as List<T> ?? state.objs.ToList();
+                        // Avoid multiple enumeration. Arrays and lists (the common inputs,
+                        // including the single-element array from WriteObjectAsync) already
+                        // implement IList<T>, so this avoids a per-call copy for them.
+                        var objsList = state.objs as IList<T> ?? state.objs.ToList();
                         int potentialTotalCount = objsList.Count;
 
                         if (potentialTotalCount == 0)
@@ -354,46 +343,83 @@ public class Tycho : IDisposable
                             return true;
                         }
 
-                        // Use cached parameters to reduce allocations
-                        command.Parameters.Add(new SqliteParameter(ParameterFullTypeName, SqliteType.Text) { Value = TypeCache<T>.FullName });
-                        command.Parameters.Add(new SqliteParameter(ParameterPartition, SqliteType.Text) { Value = state.partition.AsValueOrEmptyString() });
-
-                        var keyParameter = command.Parameters.Add(ParameterKey, SqliteType.Text);
-                        var jsonParameter = command.Parameters.Add(ParameterJson, SqliteType.Blob);
-
-                        // Batch processing for large datasets
+                        // Rows are written in multi-row INSERT batches (one execution per
+                        // batch instead of per row) with FullTypeName/Partition shared and
+                        // each row binding its own $key{n}/$json{n}. 100 rows * 2 params + 2
+                        // shared = 202 parameters, well under SQLite's 999 variable limit.
+                        // (Empirically 100 beats 200: larger batches pay more SQL-prepare cost
+                        // than they save in round trips on this workload.)
                         const int batchSize = 100;
+                        int fullBatchCount = potentialTotalCount / batchSize;
 
-                        // Use RecyclableMemoryStream with IBufferWriter for efficient serialization
+                        var fullTypeNameValue = TypeCache<T>.FullName;
+                        var partitionValue = state.partition.AsValueOrEmptyString();
+
+                        // Prepared command for full-size batches, reused across all of them.
+                        SqliteCommand? fullBatchCommand = null;
+                        SqliteParameter[]? fullKeyParams = null;
+                        SqliteParameter[]? fullJsonParams = null;
+
+                        if (fullBatchCount > 0)
+                        {
+                            (fullBatchCommand, fullKeyParams, fullJsonParams) =
+                                BuildBatchCommand(conn, transaction, batchSize, fullTypeNameValue, partitionValue, state._commandTimeout);
+                        }
+
+                        // Use RecyclableMemoryStream for efficient serialization.
                         using var serializationStream = _memoryStreamManager.GetStream("TychoDB.WriteObjects");
 
-                        for (int i = 0; i < potentialTotalCount; i += batchSize)
+                        int index = 0;
+                        while (index < potentialTotalCount)
                         {
-                            int currentBatchSize = Math.Min(batchSize, potentialTotalCount - i);
-
-                            for (int j = 0; j < currentBatchSize; j++)
-                            {
-                                var obj = objsList[i + j];
-                                keyParameter.Value = state.keySelector(obj);
-
-                                // Reset and serialize using IBufferWriter pattern
-                                serializationStream.SetLength(0);
-                                state._jsonSerializer.Serialize(obj, serializationStream);
-
-                                // SQLite requires byte[] - ToArray is unavoidable here
-                                // RecyclableMemoryStream still helps by pooling the underlying buffer
-                                jsonParameter.Value = serializationStream.ToArray();
-
-                                long rowId = command.ExecuteScalar() is long id ? id : 0;
-                                writeCount += rowId > 0 ? 1 : 0;
-                            }
-
-                            // Check for cancellation between batches
                             if (state.cancellationToken.IsCancellationRequested)
                             {
                                 break;
                             }
+
+                            int currentBatchSize = Math.Min(batchSize, potentialTotalCount - index);
+
+                            SqliteCommand batchCommand;
+                            SqliteParameter[] keyParams;
+                            SqliteParameter[] jsonParams;
+
+                            if (currentBatchSize == batchSize)
+                            {
+                                batchCommand = fullBatchCommand!;
+                                keyParams = fullKeyParams!;
+                                jsonParams = fullJsonParams!;
+                            }
+                            else
+                            {
+                                // Final partial batch: build a right-sized command once.
+                                (batchCommand, keyParams, jsonParams) =
+                                    BuildBatchCommand(conn, transaction, currentBatchSize, fullTypeNameValue, partitionValue, state._commandTimeout);
+                            }
+
+                            for (int j = 0; j < currentBatchSize; j++)
+                            {
+                                var obj = objsList[index + j];
+                                keyParams[j].Value = state.keySelector(obj);
+
+                                serializationStream.SetLength(0);
+                                state._jsonSerializer.Serialize(obj, serializationStream);
+
+                                // Each row's blob must stay alive until the batch executes,
+                                // so an exact-size array per row is required here.
+                                jsonParams[j].Value = serializationStream.ToArray();
+                            }
+
+                            writeCount += batchCommand.ExecuteNonQuery();
+
+                            if (currentBatchSize != batchSize)
+                            {
+                                batchCommand.Dispose();
+                            }
+
+                            index += currentBatchSize;
                         }
+
+                        fullBatchCommand?.Dispose();
 
                         bool successful = writeCount == potentialTotalCount;
 
@@ -443,7 +469,7 @@ public class Tycho : IDisposable
 
         return _connection
             .WithConnectionBlockAsync(
-                _rateLimiter,
+                _connectionGate,
                 (partition, filter, withTransaction, commandBuilder: ReusableStringBuilder, _jsonSerializer),
                 static (conn, state) =>
                 {
@@ -464,14 +490,16 @@ public class Tycho : IDisposable
                         selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
                             state.partition.AsValueOrEmptyString();
 
+                        var filterParameters = new FilterParameters();
                         if (state.filter is not null)
                         {
-                            state.filter.Build(state.commandBuilder, state._jsonSerializer);
+                            state.filter.Build(state.commandBuilder, state._jsonSerializer, filterParameters);
                         }
 
-#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
+#pragma warning disable CA2100 // Comparison values are parameterized (AddFilterParameters); only validated JSON paths/identifiers are concatenated.
                         selectCommand.CommandText = state.commandBuilder.ToString();
-#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
+#pragma warning restore CA2100
+                        selectCommand.AddFilterParameters(filterParameters);
 
                         using var reader = selectCommand.ExecuteReader();
 
@@ -532,7 +560,7 @@ public class Tycho : IDisposable
 
         return _connection
             .WithConnectionBlockAsync(
-                _rateLimiter,
+                _connectionGate,
                 (key, partition, withTransaction, commandBuilder: ReusableStringBuilder),
                 static (conn, state) =>
                 {
@@ -618,7 +646,7 @@ public class Tycho : IDisposable
 
         return _connection
             .WithConnectionBlockAsync(
-                _rateLimiter,
+                _connectionGate,
                 (key, partition, withTransaction, progress, commandBuilder: ReusableStringBuilder, _jsonSerializer, cancellationToken),
                 static async (conn, state) =>
                 {
@@ -770,7 +798,7 @@ public class Tycho : IDisposable
 
         return _connection
             .WithConnectionBlockAsync<IEnumerable<T>, (string? partition, FilterBuilder<T>? filter, SortBuilder<T>? sort, int? top, bool withTransaction, IProgress<double>? progress, StringBuilder commandBuilder, int commandTimeout, IJsonSerializer jsonSerializer, CancellationToken cancellationToken)>(
-                _rateLimiter,
+                _connectionGate,
                 (partition, filter, sort, top, withTransaction, progress, ReusableStringBuilder, _commandTimeout, _jsonSerializer, cancellationToken),
                 static async (conn, state) =>
                 {
@@ -785,9 +813,10 @@ public class Tycho : IDisposable
                     commandBuilder.Clear().Append(Queries.SelectDataFromJsonValueWithFullTypeName);
 
                     // Apply filters and sorting
+                    var filterParameters = new FilterParameters();
                     if (state.filter is not null)
                     {
-                        state.filter.Build(commandBuilder, state.jsonSerializer);
+                        state.filter.Build(commandBuilder, state.jsonSerializer, filterParameters);
                     }
 
                     if (state.sort is not null)
@@ -800,12 +829,9 @@ public class Tycho : IDisposable
                         commandBuilder.AppendLine(Queries.Limit(state.top.Value));
                     }
 
-                    // GetPooledCommand(conn, commandBuilder.ToString());
                     var selectCommand = conn.CreateCommand();
 
-#pragma warning disable CA2100
-
-                    // TODO: Review for vulnerabilities
+#pragma warning disable CA2100 // Comparison values are parameterized (AddFilterParameters); only validated JSON paths/identifiers are concatenated.
                     selectCommand.CommandText = commandBuilder.ToString();
 #pragma warning restore CA2100
                     selectCommand.CommandTimeout = state.commandTimeout;
@@ -815,6 +841,7 @@ public class Tycho : IDisposable
                         // Use cached parameters
                         selectCommand.Parameters.Add(new SqliteParameter(ParameterFullTypeName, SqliteType.Text) { Value = TypeCache<T>.FullName });
                         selectCommand.Parameters.Add(new SqliteParameter(ParameterPartition, SqliteType.Text) { Value = state.partition.AsValueOrEmptyString() });
+                        selectCommand.AddFilterParameters(filterParameters);
 
                         // Use CommandBehavior.SequentialAccess for better performance
                         await using var reader = await selectCommand.ExecuteReaderAsync(CommandBehavior.SequentialAccess, state.cancellationToken).ConfigureAwait(false);
@@ -831,7 +858,11 @@ public class Tycho : IDisposable
                             objects = new List<T>(128); // Default capacity to avoid too many resizes
                         }
 
-                        // Use efficient buffered reading with pooled resources
+                        // Read each row's bytes into a reused in-memory stream, then
+                        // deserialize from it. Deserializing from the in-memory stream is
+                        // materially cheaper than deserializing directly from the SqliteBlob
+                        // reader stream (measured), because the serializer's async path over an
+                        // in-memory stream completes synchronously without per-read allocations.
                         const int bufferSize = 32768; // 32 KB buffer
                         byte[] buffer = ArrayPool<byte>.Shared.Rent(bufferSize);
 
@@ -840,6 +871,8 @@ public class Tycho : IDisposable
 
                         try
                         {
+                            int dataOrdinal = reader.GetOrdinal(Queries.DataColumn);
+
                             while (reader.Read())
                             {
                                 if (state.cancellationToken.IsCancellationRequested)
@@ -852,7 +885,7 @@ public class Tycho : IDisposable
 
                                 int bytesRead;
 
-                                await using var stream = reader.GetStream(reader.GetOrdinal(Queries.DataColumn));
+                                await using var stream = reader.GetStream(dataOrdinal);
 
                                 if (state.progress is not null)
                                 {
@@ -957,7 +990,7 @@ public class Tycho : IDisposable
 
         return _connection
             .WithConnectionBlockAsync<IEnumerable<(string Key, TOut InnerObject)>, (string selectionPath, string? partition, FilterBuilder<TIn>? filter, bool withTransaction, StringBuilder commandBuilder, IJsonSerializer jsonSerializer, CancellationToken cancellationToken)>(
-                _rateLimiter,
+                _connectionGate,
                 (selectionPath, partition, filter, withTransaction, ReusableStringBuilder, _jsonSerializer, cancellationToken),
                 static async (conn, state) =>
                 {
@@ -982,14 +1015,16 @@ public class Tycho : IDisposable
                         selectCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
                             state.partition.AsValueOrEmptyString();
 
+                        var filterParameters = new FilterParameters();
                         if (state.filter is not null)
                         {
-                            state.filter.Build(commandBuilder, state.jsonSerializer);
+                            state.filter.Build(commandBuilder, state.jsonSerializer, filterParameters);
                         }
 
-#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
+#pragma warning disable CA2100 // Comparison values are parameterized (AddFilterParameters); only validated JSON paths/identifiers are concatenated.
                         selectCommand.CommandText = commandBuilder.ToString();
-#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
+#pragma warning restore CA2100
+                        selectCommand.AddFilterParameters(filterParameters);
 
                         await using var reader = await selectCommand.ExecuteReaderAsync(state.cancellationToken).ConfigureAwait(false);
 
@@ -1058,7 +1093,7 @@ public class Tycho : IDisposable
 
         return _connection
             .WithConnectionBlockAsync(
-                _rateLimiter,
+                _connectionGate,
                 (key, partition, withTransaction, commandBuilder: ReusableStringBuilder),
                 static (conn, state) =>
                 {
@@ -1125,7 +1160,7 @@ public class Tycho : IDisposable
 
         return _connection
             .WithConnectionBlockAsync(
-                _rateLimiter,
+                _connectionGate,
                 (partition, filter, withTransaction, commandBuilder: ReusableStringBuilder, _jsonSerializer),
                 static (conn, state) =>
                 {
@@ -1146,14 +1181,16 @@ public class Tycho : IDisposable
                         deleteCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value =
                             state.partition.AsValueOrEmptyString();
 
+                        var filterParameters = new FilterParameters();
                         if (state.filter is not null)
                         {
-                            state.filter.Build(state.commandBuilder, state._jsonSerializer);
+                            state.filter.Build(state.commandBuilder, state._jsonSerializer, filterParameters);
                         }
 
-#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
+#pragma warning disable CA2100 // Comparison values are parameterized (AddFilterParameters); only validated JSON paths/identifiers are concatenated.
                         deleteCommand.CommandText = state.commandBuilder.ToString();
-#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
+#pragma warning restore CA2100
+                        deleteCommand.AddFilterParameters(filterParameters);
 
                         int deletionCount = deleteCommand.ExecuteNonQuery();
 
@@ -1189,7 +1226,7 @@ public class Tycho : IDisposable
 
         return _connection
             .WithConnectionBlockAsync(
-                _rateLimiter,
+                _connectionGate,
                 (partition, withTransaction, commandBuilder: ReusableStringBuilder),
                 static (conn, state) =>
                 {
@@ -1245,7 +1282,7 @@ public class Tycho : IDisposable
 
         return _connection
             .WithConnectionBlockAsync(
-                _rateLimiter,
+                _connectionGate,
                 (withTransaction, commandBuilder: ReusableStringBuilder),
                 static (conn, state) =>
                 {
@@ -1302,7 +1339,7 @@ public class Tycho : IDisposable
 
         return _connection
             .WithConnectionBlockAsync(
-                _rateLimiter,
+                _connectionGate,
                 (stream, key, partition, withTransaction, cancellationToken),
                 static async (conn, state) =>
                 {
@@ -1370,7 +1407,7 @@ public class Tycho : IDisposable
 
         return _connection
             .WithConnectionBlockAsync(
-                _rateLimiter,
+                _connectionGate,
                 (key, partition, commandBuilder: ReusableStringBuilder),
                 static (conn, state) =>
                 {
@@ -1422,7 +1459,7 @@ public class Tycho : IDisposable
 
         return _connection
             .WithConnectionBlockAsync(
-                _rateLimiter,
+                _connectionGate,
                 (key, partition, commandBuilder: ReusableStringBuilder),
                 static (conn, state) =>
                 {
@@ -1475,7 +1512,7 @@ public class Tycho : IDisposable
 
         return _connection
             .WithConnectionBlockAsync(
-                _rateLimiter,
+                _connectionGate,
                 (key, partition, withTransaction, commandBuilder: ReusableStringBuilder),
                 static (conn, state) =>
                 {
@@ -1534,7 +1571,7 @@ public class Tycho : IDisposable
 
         return _connection
             .WithConnectionBlockAsync(
-                _rateLimiter,
+                _connectionGate,
                 (partition, withTransaction, commandBuilder: ReusableStringBuilder),
                 static (conn, state) =>
                 {
@@ -1607,9 +1644,15 @@ public class Tycho : IDisposable
     {
         ArgumentNullException.ThrowIfNull(this._connection);
 
+        // These values are concatenated into DDL as a path/identifiers and cannot
+        // be parameterized, so validate them against a strict grammar.
+        QueryPropertyPath.ValidatePath(propertyPathString, nameof(propertyPathString));
+        QueryPropertyPath.ValidateIdentifier(objectTypeName, nameof(objectTypeName));
+        QueryPropertyPath.ValidateIdentifier(indexName, nameof(indexName));
+
         _connection
             .WithConnectionBlock(
-                _rateLimiter,
+                _connectionGate,
                 (propertyPathString, isNumeric, objectTypeName, indexName),
                 static (conn, state) =>
                 {
@@ -1684,9 +1727,13 @@ public class Tycho : IDisposable
     {
         ArgumentNullException.ThrowIfNull(_connection);
 
+        QueryPropertyPath.ValidatePath(propertyPathString, nameof(propertyPathString));
+        QueryPropertyPath.ValidateIdentifier(objectTypeName, nameof(objectTypeName));
+        QueryPropertyPath.ValidateIdentifier(indexName, nameof(indexName));
+
         return _connection
             .WithConnectionBlockAsync(
-                _rateLimiter,
+                _connectionGate,
                 (propertyPathString, isNumeric, objectTypeName, indexName),
                 static (conn, state) =>
                 {
@@ -1737,6 +1784,8 @@ public class Tycho : IDisposable
 
         ArgumentNullException.ThrowIfNull(_connection);
 
+        QueryPropertyPath.ValidateIdentifier(indexName, nameof(indexName));
+
         var processedPaths =
             propertyPaths
                 .Select(x => (QueryPropertyPath.BuildPath(x), QueryPropertyPath.IsNumeric(x)))
@@ -1746,7 +1795,7 @@ public class Tycho : IDisposable
 
         _connection
             .WithConnectionBlock(
-                _rateLimiter,
+                _connectionGate,
                 (processedPaths, indexName, safeTypeName),
                 static (conn, state) =>
                 {
@@ -1794,6 +1843,8 @@ public class Tycho : IDisposable
 
         ArgumentNullException.ThrowIfNull(_connection);
 
+        QueryPropertyPath.ValidateIdentifier(indexName, nameof(indexName));
+
         var processedPaths =
             propertyPaths
                 .Select(x => (QueryPropertyPath.BuildPath(x), QueryPropertyPath.IsNumeric(x)))
@@ -1803,7 +1854,7 @@ public class Tycho : IDisposable
 
         return _connection
             .WithConnectionBlockAsync(
-                _rateLimiter,
+                _connectionGate,
                 (processedPaths, indexName, safeTypeName),
                 static (conn, state) =>
                 {
@@ -1846,7 +1897,7 @@ public class Tycho : IDisposable
 
         _connection
             .WithConnectionBlock(
-                _rateLimiter,
+                _connectionGate,
                 (shrinkMemory, vacuum),
                 static (conn, state) =>
                 {
@@ -1982,7 +2033,7 @@ public class Tycho : IDisposable
         if (disposing)
         {
             _commandBuilder.Dispose();
-            _rateLimiter?.Dispose();
+            _connectionGate?.Dispose();
             _connection?.Close();
             _connection?.Dispose();
         }
@@ -2015,55 +2066,18 @@ public class Tycho : IDisposable
 
         connection
             .WithConnectionBlock(
-                _rateLimiter,
+                _connectionGate,
                 connection,
                 static (conn, connectionRef) =>
                 {
                     conn.Open();
 
-                    bool supportsJson = false;
-
-                    // Check version
-                    using var getVersionCommand = conn.CreateCommand();
-                    getVersionCommand.CommandText = Queries.SqliteVersion;
-                    string? version = getVersionCommand.ExecuteScalar() as string;
-                    string[] splitVersion = version?.Split('.') ?? Array.Empty<string>();
-
-                    if (splitVersion.Length >= 2 &&
-                        int.TryParse(splitVersion[0], out int major) && int.TryParse(splitVersion[1], out int minor) &&
-                        (major > 3 || (major >= 3 && minor >= 38)))
-                    {
-                        supportsJson = true;
-                    }
-                    else
-                    {
-                        // Enable write-ahead logging
-                        using var hasJsonCommand = conn.CreateCommand();
-                        hasJsonCommand.CommandText = Queries.PragmaCompileOptions;
-                        using var jsonReader = hasJsonCommand.ExecuteReader();
-
-                        while (jsonReader.Read())
-                        {
-                            string? json1Available = jsonReader.GetString(0);
-                            if (!(json1Available?.Equals(Queries.EnableJSON1Pragma) ?? false))
-                            {
-                                continue;
-                            }
-
-                            supportsJson = true;
-                            break;
-                        }
-                    }
-
-                    if (!supportsJson)
-                    {
-                        conn.Close();
-                        throw new TychoException("JSON support is not available for this platform");
-                    }
+                    // Verified once per process (see EnsureJsonSupport).
+                    EnsureJsonSupport(conn);
 
                     using var command = connectionRef.CreateCommand();
 
-                    // Enable write-ahead logging and normal synchronous mode
+                    // Per-connection PRAGMAs + idempotent schema/index creation.
                     command.CommandText = Queries.CreateDatabaseSchema;
 
                     command.ExecuteNonQuery();
@@ -2075,43 +2089,77 @@ public class Tycho : IDisposable
 
     private async ValueTask<SqliteConnection> BuildConnectionAsync(CancellationToken cancellationToken = default)
     {
-        using var rla = await _rateLimiter.AcquireAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        await _connectionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-        var connection = new SqliteConnection(_dbConnectionString);
+        try
+        {
+            var connection = new SqliteConnection(_dbConnectionString);
 
-        connection.Open();
+            connection.Open();
+
+            // JSON support depends only on the process-wide native SQLite build, so
+            // it is verified once and cached rather than re-queried on every connect.
+            EnsureJsonSupport(connection);
+
+            await using var command = connection.CreateCommand();
+
+            // Per-connection PRAGMAs + idempotent schema/index creation.
+            command.CommandText = Queries.CreateDatabaseSchema;
+
+            command.ExecuteNonQuery();
+
+            return connection;
+        }
+        finally
+        {
+            _connectionGate.Release();
+        }
+    }
+
+    // 0 = not yet verified this process, 1 = verified as supported.
+    private static int _jsonSupportVerified;
+
+    /// <summary>
+    /// Verifies (once per process) that the native SQLite build provides JSON
+    /// support. The SQLite version is constant for the lifetime of the process, so
+    /// the version/compile-option query is skipped on all connects after the first.
+    /// </summary>
+    private static void EnsureJsonSupport(SqliteConnection connection)
+    {
+        if (Volatile.Read(ref _jsonSupportVerified) == 1)
+        {
+            return;
+        }
 
         bool supportsJson = false;
 
-        // Check version
-        await using var getVersionCommand = connection.CreateCommand();
-        getVersionCommand.CommandText = Queries.SqliteVersion;
-        string? version = getVersionCommand.ExecuteScalar() as string;
-        string[] splitVersion = version?.Split('.') ?? Array.Empty<string>();
+        using (var getVersionCommand = connection.CreateCommand())
+        {
+            getVersionCommand.CommandText = Queries.SqliteVersion;
+            string? version = getVersionCommand.ExecuteScalar() as string;
+            string[] splitVersion = version?.Split('.') ?? Array.Empty<string>();
 
-        if (splitVersion.Length >= 2 &&
-            int.TryParse(splitVersion[0], out int major) && int.TryParse(splitVersion[1], out int minor) &&
-            (major > 3 || (major >= 3 && minor >= 38)))
-        {
-            supportsJson = true;
+            if (splitVersion.Length >= 2 &&
+                int.TryParse(splitVersion[0], out int major) && int.TryParse(splitVersion[1], out int minor) &&
+                (major > 3 || (major >= 3 && minor >= 38)))
+            {
+                supportsJson = true;
+            }
         }
-        else
+
+        if (!supportsJson)
         {
-            // Enable write-ahead logging
-            await using var hasJsonCommand = connection.CreateCommand();
+            using var hasJsonCommand = connection.CreateCommand();
             hasJsonCommand.CommandText = Queries.PragmaCompileOptions;
-            await using var jsonReader = await hasJsonCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            using var jsonReader = hasJsonCommand.ExecuteReader();
 
             while (jsonReader.Read())
             {
-                string? json1Available = jsonReader.GetString(0);
-                if (!(json1Available?.Equals(Queries.EnableJSON1Pragma) ?? false))
+                if (jsonReader.GetString(0)?.Equals(Queries.EnableJSON1Pragma) ?? false)
                 {
-                    continue;
+                    supportsJson = true;
+                    break;
                 }
-
-                supportsJson = true;
-                break;
             }
         }
 
@@ -2121,14 +2169,7 @@ public class Tycho : IDisposable
             throw new TychoException("JSON support is not available for this platform");
         }
 
-        await using var command = connection.CreateCommand();
-
-        // Enable write-ahead logging and normal synchronous mode
-        command.CommandText = Queries.CreateDatabaseSchema;
-
-        command.ExecuteNonQuery();
-
-        return connection;
+        Volatile.Write(ref _jsonSupportVerified, 1);
     }
 
     private void CheckHasRegisteredType<T>()
@@ -2144,6 +2185,45 @@ public class Tycho : IDisposable
         {
             throw new TychoException($"Registration missing for type: {type}");
         }
+    }
+
+    /// <summary>
+    /// Builds a command for a multi-row INSERT OR REPLACE batch of <paramref name="rowCount"/>
+    /// rows, returning the per-row key/json parameter arrays for value binding.
+    /// </summary>
+    private static (SqliteCommand Command, SqliteParameter[] KeyParams, SqliteParameter[] JsonParams) BuildBatchCommand(
+        SqliteConnection conn,
+        SqliteTransaction? transaction,
+        int rowCount,
+        object fullTypeNameValue,
+        object partitionValue,
+        int commandTimeout)
+    {
+        var command = conn.CreateCommand();
+        if (transaction is not null)
+        {
+            command.Transaction = transaction;
+        }
+
+        command.CommandTimeout = commandTimeout;
+#pragma warning disable CA2100 // Query is composed only from constants and integer row indices; row values are parameterized.
+        command.CommandText = Queries.BuildBatchInsertOrReplace(rowCount);
+#pragma warning restore CA2100
+
+        command.Parameters.Add(new SqliteParameter(ParameterFullTypeName, SqliteType.Text) { Value = fullTypeNameValue });
+        command.Parameters.Add(new SqliteParameter(ParameterPartition, SqliteType.Text) { Value = partitionValue });
+
+        var keyParams = new SqliteParameter[rowCount];
+        var jsonParams = new SqliteParameter[rowCount];
+
+        for (int i = 0; i < rowCount; i++)
+        {
+            var indexText = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            keyParams[i] = command.Parameters.Add("$key" + indexText, SqliteType.Text);
+            jsonParams[i] = command.Parameters.Add("$json" + indexText, SqliteType.Blob);
+        }
+
+        return (command, keyParams, jsonParams);
     }
 
     /// <summary>
@@ -2165,7 +2245,23 @@ public class Tycho : IDisposable
 
 internal static class SqliteExtensions
 {
-    public static T WithConnectionBlock<T>(this SqliteConnection connection, RateLimiter rateLimiter,
+    /// <summary>
+    /// Binds filter comparison values collected during query building onto the
+    /// command as parameters, so they are never concatenated into the SQL text.
+    /// </summary>
+    public static void AddFilterParameters(this SqliteCommand command, FilterParameters parameters)
+    {
+        var values = parameters.Values;
+        for (int i = 0; i < values.Count; i++)
+        {
+            command.Parameters.Add(
+                new SqliteParameter(
+                    FilterParameters.ParameterPrefix + i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    values[i] ?? DBNull.Value));
+        }
+    }
+
+    public static T WithConnectionBlock<T>(this SqliteConnection connection, SemaphoreSlim gate,
         Func<SqliteConnection, T> func, bool persistConnection)
     {
         if (connection is null)
@@ -2173,7 +2269,7 @@ internal static class SqliteExtensions
             throw new TychoException("Please call 'Connect' before performing an operation");
         }
 
-        using var rla = rateLimiter.AttemptAcquire();
+        gate.Wait();
 
         try
         {
@@ -2190,6 +2286,8 @@ internal static class SqliteExtensions
             {
                 connection.Close();
             }
+
+            gate.Release();
         }
     }
 
@@ -2198,7 +2296,7 @@ internal static class SqliteExtensions
     /// </summary>
     public static T WithConnectionBlock<T, TState>(
         this SqliteConnection connection,
-        RateLimiter rateLimiter,
+        SemaphoreSlim gate,
         TState state,
         Func<SqliteConnection, TState, T> func,
         bool persistConnection)
@@ -2208,7 +2306,7 @@ internal static class SqliteExtensions
             throw new TychoException("Please call 'Connect' before performing an operation");
         }
 
-        using var rla = rateLimiter.AttemptAcquire();
+        gate.Wait();
 
         try
         {
@@ -2225,10 +2323,12 @@ internal static class SqliteExtensions
             {
                 connection.Close();
             }
+
+            gate.Release();
         }
     }
 
-    public static void WithConnectionBlock(this SqliteConnection connection, RateLimiter rateLimiter,
+    public static void WithConnectionBlock(this SqliteConnection connection, SemaphoreSlim gate,
         Action<SqliteConnection> action, bool persistConnection)
     {
         if (connection is null)
@@ -2236,7 +2336,7 @@ internal static class SqliteExtensions
             throw new TychoException("Please call 'Connect' before performing an operation");
         }
 
-        using var rla = rateLimiter.AttemptAcquire();
+        gate.Wait();
 
         try
         {
@@ -2253,6 +2353,8 @@ internal static class SqliteExtensions
             {
                 connection.Close();
             }
+
+            gate.Release();
         }
     }
 
@@ -2261,7 +2363,7 @@ internal static class SqliteExtensions
     /// </summary>
     public static void WithConnectionBlock<TState>(
         this SqliteConnection connection,
-        RateLimiter rateLimiter,
+        SemaphoreSlim gate,
         TState state,
         Action<SqliteConnection, TState> action,
         bool persistConnection)
@@ -2271,7 +2373,7 @@ internal static class SqliteExtensions
             throw new TychoException("Please call 'Connect' before performing an operation");
         }
 
-        using var rla = rateLimiter.AttemptAcquire();
+        gate.Wait();
 
         try
         {
@@ -2288,12 +2390,14 @@ internal static class SqliteExtensions
             {
                 connection.Close();
             }
+
+            gate.Release();
         }
     }
 
     public static async ValueTask<T> WithConnectionBlockAsync<T>(
         this SqliteConnection connection,
-        RateLimiter rateLimiter,
+        SemaphoreSlim gate,
         Func<SqliteConnection, T> func,
         bool persistConnection,
         CancellationToken cancellationToken = default)
@@ -2303,7 +2407,7 @@ internal static class SqliteExtensions
             throw new TychoException("Please call 'Connect' before performing an operation");
         }
 
-        using var rla = await rateLimiter.AcquireAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
@@ -2320,6 +2424,8 @@ internal static class SqliteExtensions
             {
                 connection.Close();
             }
+
+            gate.Release();
         }
     }
 
@@ -2328,7 +2434,7 @@ internal static class SqliteExtensions
     /// </summary>
     public static async ValueTask<T> WithConnectionBlockAsync<T, TState>(
         this SqliteConnection connection,
-        RateLimiter rateLimiter,
+        SemaphoreSlim gate,
         TState state,
         Func<SqliteConnection, TState, T> func,
         bool persistConnection,
@@ -2339,7 +2445,7 @@ internal static class SqliteExtensions
             throw new TychoException("Please call 'Connect' before performing an operation");
         }
 
-        using var rla = await rateLimiter.AcquireAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
@@ -2356,12 +2462,14 @@ internal static class SqliteExtensions
             {
                 connection.Close();
             }
+
+            gate.Release();
         }
     }
 
     public static async ValueTask<T> WithConnectionBlockAsync<T>(
         this SqliteConnection connection,
-        RateLimiter rateLimiter,
+        SemaphoreSlim gate,
         Func<SqliteConnection, ValueTask<T>> func,
         bool persistConnection,
         CancellationToken cancellationToken = default)
@@ -2371,7 +2479,7 @@ internal static class SqliteExtensions
             throw new TychoException("Please call 'Connect' before performing an operation");
         }
 
-        using var rla = await rateLimiter.AcquireAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
@@ -2388,6 +2496,8 @@ internal static class SqliteExtensions
             {
                 connection.Close();
             }
+
+            gate.Release();
         }
     }
 
@@ -2396,7 +2506,7 @@ internal static class SqliteExtensions
     /// </summary>
     public static async ValueTask<T> WithConnectionBlockAsync<T, TState>(
         this SqliteConnection connection,
-        RateLimiter rateLimiter,
+        SemaphoreSlim gate,
         TState state,
         Func<SqliteConnection, TState, ValueTask<T>> func,
         bool persistConnection,
@@ -2407,7 +2517,7 @@ internal static class SqliteExtensions
             throw new TychoException("Please call 'Connect' before performing an operation");
         }
 
-        using var rla = await rateLimiter.AcquireAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
@@ -2424,6 +2534,8 @@ internal static class SqliteExtensions
             {
                 connection.Close();
             }
+
+            gate.Release();
         }
     }
 

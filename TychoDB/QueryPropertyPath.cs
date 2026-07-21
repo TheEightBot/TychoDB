@@ -104,6 +104,56 @@ internal static class QueryPropertyPath
         return $"$.{string.Join('.', visitor.PathBuilder)}";
     }
 
+    /// <summary>
+    /// Validates a caller-supplied JSON property path. Paths are emitted into the
+    /// SQL text as identifiers inside JSON_EXTRACT/JSON_TREE and cannot be bound as
+    /// parameters, so they are restricted to a strict grammar (letters, digits,
+    /// '_', '.', '$', '[' and ']') to prevent SQL injection through the path
+    /// position. Paths produced from expression trees always satisfy this.
+    /// </summary>
+    public static void ValidatePath(string path, string paramName)
+    {
+        if (string.IsNullOrEmpty(path))
+        {
+            throw new ArgumentException("Property path must not be null or empty.", paramName);
+        }
+
+        foreach (var c in path)
+        {
+            if (!(char.IsLetterOrDigit(c) || c is '$' or '.' or '_' or '[' or ']'))
+            {
+                throw new ArgumentException(
+                    $"Property path contains an invalid character '{c}'. Only letters, digits, '_', '.', '$', '[' and ']' are permitted.",
+                    paramName);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Validates a caller-supplied SQL identifier (e.g. an index name). Identifiers
+    /// are concatenated into DDL and cannot be parameterized, so they are limited
+    /// to letters, digits and '_' and must not start with a digit.
+    /// </summary>
+    public static void ValidateIdentifier(string identifier, string paramName)
+    {
+        if (string.IsNullOrEmpty(identifier))
+        {
+            throw new ArgumentException("Identifier must not be null or empty.", paramName);
+        }
+
+        for (int i = 0; i < identifier.Length; i++)
+        {
+            char c = identifier[i];
+            bool valid = char.IsLetterOrDigit(c) || c == '_';
+            if (!valid || (i == 0 && char.IsDigit(c)))
+            {
+                throw new ArgumentException(
+                    $"Identifier '{identifier}' is invalid. Use only letters, digits and '_', and do not start with a digit.",
+                    paramName);
+            }
+        }
+    }
+
     public static bool IsNumeric<TPathObj, TProp>(Expression<Func<TPathObj, TProp>> expression)
     {
         if (expression.Body is MemberExpression memEx && memEx.Member is PropertyInfo propInfo)

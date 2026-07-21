@@ -7,6 +7,8 @@ public static class Program
 {
     public static void Main(string[] args)
     {
-        var summary = BenchmarkRunner.Run<Benchmarks.Insertion>();
+        // Discover all benchmark classes so runs can be selected with --filter
+        // (e.g. --filter '*Insertion*' or --filter '*Querying*').
+        BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
     }
 }

@@ -13,6 +13,13 @@ public sealed class NewtonsoftJsonSerializer : IJsonSerializer
     private const int DefaultBufferSize = 4096;
     private const int StreamWriterBufferSize = 1024;
 
+    // UTF-8 without a byte-order mark. Encoding.UTF8 emits a BOM (EF BB BF) as its
+    // preamble, which StreamWriter writes ahead of the JSON. That BOM ends up in the
+    // stored blob and is passed to SQLite's json($json) as a BLOB argument, where a
+    // leading BOM is not valid JSON/JSONB and is rejected as "malformed JSON" on
+    // stricter SQLite builds. Serialize clean UTF-8 bytes instead.
+    private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: false);
+
     private readonly JsonSerializer _jsonSerializer;
 
     public string DateTimeSerializationFormat { get; }
@@ -80,7 +87,7 @@ public sealed class NewtonsoftJsonSerializer : IJsonSerializer
 
     private void SerializeToStream<T>(T obj, MemoryStream stream)
     {
-        using var sw = new StreamWriter(stream, Encoding.UTF8, StreamWriterBufferSize, leaveOpen: true);
+        using var sw = new StreamWriter(stream, Utf8NoBom, StreamWriterBufferSize, leaveOpen: true);
         using var jsonTextWriter = new JsonTextWriter(sw)
         {
             DateFormatString = DateTimeSerializationFormat,

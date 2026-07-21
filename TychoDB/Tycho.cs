@@ -32,6 +32,9 @@ public class Tycho : IDisposable
 
     private readonly Lock _connectionLock = new();
     private readonly string _dbConnectionString;
+
+    // Per-connection setup script (profile PRAGMAs + schema DDL), built once.
+    private readonly string _connectionScript;
     private readonly IJsonSerializer _jsonSerializer;
     private readonly bool _persistConnection;
     private readonly bool _requireTypeRegistration;
@@ -84,6 +87,9 @@ public class Tycho : IDisposable
     /// <param name="requireTypeRegistration">Indicates whether type registration is required. Default is true.</param>
     /// <param name="useConnectionPooling">Indicates whether to use connection pooling. Default is true.</param>
     /// <param name="commandTimeout">The timeout for commands in seconds. Default is 30 seconds.</param>
+    /// <param name="performanceProfile">Selects device-appropriate SQLite PRAGMA tuning. Default is <see cref="TychoPerformanceProfile.Mobile"/>.</param>
+    /// <param name="cacheSizeKb">Optional override for the SQLite page cache size, in KiB. Overrides the profile default.</param>
+    /// <param name="mmapSizeBytes">Optional override for the SQLite memory-map size, in bytes (0 disables mmap). Overrides the profile default.</param>
     public Tycho(
         string dbPath,
         IJsonSerializer jsonSerializer,
@@ -93,7 +99,10 @@ public class Tycho : IDisposable
         bool rebuildCache = false,
         bool requireTypeRegistration = true,
         bool useConnectionPooling = true,
-        int commandTimeout = 30)
+        int commandTimeout = 30,
+        TychoPerformanceProfile performanceProfile = TychoPerformanceProfile.Mobile,
+        int? cacheSizeKb = null,
+        long? mmapSizeBytes = null)
     {
         SQLitePCL.Batteries_V2.Init();
 
@@ -111,7 +120,11 @@ public class Tycho : IDisposable
             new SqliteConnectionStringBuilder
             {
                 ConnectionString = $"Filename={databasePath}",
-                Cache = SqliteCacheMode.Shared, // Use shared cache for better performance
+
+                // A single persistent connection with locking_mode=EXCLUSIVE owns the
+                // database, so a shared cache (which is for coordinating multiple
+                // connections) would contradict that; use a private cache.
+                Cache = SqliteCacheMode.Private,
                 Mode = SqliteOpenMode.ReadWriteCreate,
             };
 
@@ -126,6 +139,7 @@ public class Tycho : IDisposable
         _dbConnectionString = connectionStringBuilder.ToString();
         _persistConnection = persistConnection;
         _requireTypeRegistration = requireTypeRegistration;
+        _connectionScript = Queries.BuildConnectionScript(performanceProfile, cacheSizeKb, mmapSizeBytes);
     }
 
     /// <summary>
@@ -2067,18 +2081,21 @@ public class Tycho : IDisposable
         connection
             .WithConnectionBlock(
                 _connectionGate,
-                connection,
-                static (conn, connectionRef) =>
+                _connectionScript,
+                static (conn, script) =>
                 {
                     conn.Open();
 
                     // Verified once per process (see EnsureJsonSupport).
                     EnsureJsonSupport(conn);
 
-                    using var command = connectionRef.CreateCommand();
+                    using var command = conn.CreateCommand();
 
-                    // Per-connection PRAGMAs + idempotent schema/index creation.
-                    command.CommandText = Queries.CreateDatabaseSchema;
+                    // Profile PRAGMAs + idempotent schema/index creation. Composed from
+                    // library constants and numeric profile values only (no user input).
+#pragma warning disable CA2100
+                    command.CommandText = script;
+#pragma warning restore CA2100
 
                     command.ExecuteNonQuery();
                 },
@@ -2103,8 +2120,11 @@ public class Tycho : IDisposable
 
             await using var command = connection.CreateCommand();
 
-            // Per-connection PRAGMAs + idempotent schema/index creation.
-            command.CommandText = Queries.CreateDatabaseSchema;
+            // Profile PRAGMAs + idempotent schema/index creation. Composed from
+            // library constants and numeric profile values only (no user input).
+#pragma warning disable CA2100
+            command.CommandText = _connectionScript;
+#pragma warning restore CA2100
 
             command.ExecuteNonQuery();
 

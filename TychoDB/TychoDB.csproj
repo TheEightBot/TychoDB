@@ -23,6 +23,9 @@
         <CollectSQLiteInteropFiles>false</CollectSQLiteInteropFiles>
     </PropertyGroup>
     <ItemGroup>
+        <InternalsVisibleTo Include="TychoDB.UnitTests" />
+    </ItemGroup>
+    <ItemGroup>
         <PackageReference Include="Microsoft.IO.RecyclableMemoryStream" Version="3.0.1" />
         <PackageReference Include="System.Threading.RateLimiting" Version="9.0.8" />
     </ItemGroup>

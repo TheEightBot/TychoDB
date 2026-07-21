@@ -9,20 +9,24 @@ internal static class Queries
     public const string KeyColumn = "Key";
     public const string DataColumn = "Data";
 
-    // Performance pragmas optimized for single-user, multithreaded configuration
-    // Mobile-friendly settings for iOS/Android apps
-    public const string CreateDatabaseSchema =
+    // PRAGMAs shared by every profile. These are single-user / single-connection
+    // choices: WAL journaling with EXCLUSIVE locking (one persistent connection),
+    // NORMAL synchronous (safe under WAL), in-memory temp store, and incremental
+    // auto-vacuum. auto_vacuum only takes effect when the database is first created,
+    // so it must precede the table DDL.
+    private const string SharedPragmas =
         """
         PRAGMA journal_mode = WAL;
         PRAGMA locking_mode = EXCLUSIVE;
         PRAGMA synchronous = NORMAL;
         PRAGMA temp_store = MEMORY;
         PRAGMA busy_timeout = 5000;
-        PRAGMA wal_autocheckpoint = 1000;
         PRAGMA auto_vacuum = INCREMENTAL;
-        PRAGMA cache_size = -16000;
-        PRAGMA mmap_size = 134217728;
+        """;
 
+    // Table + index DDL. Idempotent (IF NOT EXISTS); runs on every connect.
+    private const string SchemaDdl =
+        """
         CREATE TABLE IF NOT EXISTS JsonValue
         (
             Key             TEXT NOT NULL,
@@ -32,16 +36,16 @@ internal static class Queries
             PRIMARY KEY (Key, FullTypeName, Partition)
         );
 
-        CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename 
+        CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename
         ON JsonValue (FullTypeName);
 
-        CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename_partition 
+        CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename_partition
         ON JsonValue (FullTypeName, Partition);
 
-        CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename 
+        CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename
         ON JsonValue (Key, FullTypeName);
 
-        CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename_partition 
+        CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename_partition
         ON JsonValue (Key, FullTypeName, Partition);
 
         CREATE TABLE IF NOT EXISTS StreamValue
@@ -52,12 +56,46 @@ internal static class Queries
             PRIMARY KEY (Key, Partition)
         );
 
-        CREATE INDEX IF NOT EXISTS idx_streamvalue_key_partition 
+        CREATE INDEX IF NOT EXISTS idx_streamvalue_key_partition
         ON StreamValue (Key, Partition);
         """;
 
-    public static string BuildPragmaCacheSize(uint cacheSizeBytes) =>
-        $"PRAGMA cache_size = -{cacheSizeBytes};";
+    // Profile defaults. cache_size is in KiB (negative = KiB, not pages);
+    // mmap_size is in bytes; wal_autocheckpoint is in pages.
+    private const int MobileCacheSizeKb = 8_000;         // ~8 MB page cache
+    private const long MobileMmapSizeBytes = 33_554_432; // 32 MB memory-map
+    private const int MobileWalAutocheckpoint = 512;     // small WAL
+
+    private const int DesktopCacheSizeKb = 65_536;        // 64 MB page cache
+    private const long DesktopMmapSizeBytes = 268_435_456; // 256 MB memory-map
+    private const int DesktopWalAutocheckpoint = 2_000;
+
+    /// <summary>
+    /// Builds the full per-connection setup script (PRAGMAs + schema DDL) for the
+    /// given performance profile, honoring optional cache-size / mmap overrides.
+    /// </summary>
+    public static string BuildConnectionScript(
+        TychoPerformanceProfile profile,
+        int? cacheSizeKbOverride = null,
+        long? mmapSizeBytesOverride = null)
+    {
+        bool desktop = profile == TychoPerformanceProfile.Desktop;
+
+        int cacheSizeKb = cacheSizeKbOverride ?? (desktop ? DesktopCacheSizeKb : MobileCacheSizeKb);
+        long mmapSizeBytes = mmapSizeBytesOverride ?? (desktop ? DesktopMmapSizeBytes : MobileMmapSizeBytes);
+        int walAutocheckpoint = desktop ? DesktopWalAutocheckpoint : MobileWalAutocheckpoint;
+
+        var sb = new System.Text.StringBuilder(SharedPragmas.Length + SchemaDdl.Length + 128);
+        var ic = System.Globalization.CultureInfo.InvariantCulture;
+
+        sb.Append(SharedPragmas).Append('\n')
+          .Append("PRAGMA cache_size = -").Append(cacheSizeKb.ToString(ic)).Append(";\n")
+          .Append("PRAGMA mmap_size = ").Append(mmapSizeBytes.ToString(ic)).Append(";\n")
+          .Append("PRAGMA wal_autocheckpoint = ").Append(walAutocheckpoint.ToString(ic)).Append(";\n\n")
+          .Append(SchemaDdl);
+
+        return sb.ToString();
+    }
 
     public const string PragmaCompileOptions = "PRAGMA compile_options;";
 

@@ -33,6 +33,15 @@ some query behavior changes (see Breaking changes).
 
 ### Performance
 
+- **Device-aware SQLite tuning.** A new `TychoPerformanceProfile` (`Mobile` /
+  `Desktop`) constructor parameter selects a preset of PRAGMA tuning, with optional
+  `cacheSizeKb` / `mmapSizeBytes` overrides. `Mobile` (the default) uses a small page
+  cache (8 MB), a modest 32 MB memory-map, and frequent WAL checkpoints to keep memory
+  and the WAL file small; `Desktop` uses a 64 MB cache, a 256 MB memory-map, and less
+  frequent checkpoints for read/write throughput. Previously a single fixed set
+  (16 MB cache / 128 MB mmap) was used for all devices.
+- `Cache=Shared` was removed from the connection string; it contradicted
+  `locking_mode = EXCLUSIVE` (single persistent connection), so a private cache is used.
 - **Bulk writes batched.** `WriteObjectsAsync` now writes rows in multi-row
   `INSERT OR REPLACE` batches (100 rows/execution) and no longer runs a redundant
   `SELECT last_insert_rowid()` per row. Measured (System.Text.Json, 1000 objects):

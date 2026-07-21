@@ -373,6 +373,31 @@ db.Disconnect();
 await db.DisconnectAsync();
 ```
 
+### Device Performance Profiles
+
+TychoDB tunes its SQLite PRAGMAs (page cache, memory-map, WAL checkpointing) for the
+target device class. Choose a profile via the constructor — `Mobile` is the default:
+
+```csharp
+// Mobile (default): small page cache (8 MB), 32 MB mmap, frequent WAL checkpoints —
+// keeps memory footprint and the WAL file small on phones/tablets.
+var mobileDb = new Tycho(dbPath, serializer);
+
+// Desktop: large page cache (64 MB), 256 MB mmap, less frequent checkpoints —
+// favors read/write throughput on desktops and servers.
+var desktopDb = new Tycho(dbPath, serializer,
+    performanceProfile: TychoPerformanceProfile.Desktop);
+
+// Fine-tune individual values (override the profile defaults):
+var tunedDb = new Tycho(dbPath, serializer,
+    performanceProfile: TychoPerformanceProfile.Desktop,
+    cacheSizeKb: 131072,        // 128 MB page cache
+    mmapSizeBytes: 0);          // disable memory-mapped I/O
+```
+
+> **Note:** memory-mapped I/O (`mmap_size`) is a no-op on the encrypted (SQLCipher)
+> build, which does not support mmap.
+
 ## Advanced Features
 
 ### Batch Operations

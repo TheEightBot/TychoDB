@@ -373,6 +373,31 @@ db.Disconnect();
 await db.DisconnectAsync();
 ```
 
+### Device Performance Profiles
+
+TychoDB tunes its SQLite PRAGMAs (page cache, memory-map, WAL checkpointing) for the
+target device class. Choose a profile via the constructor — `Mobile` is the default:
+
+```csharp
+// Mobile (default): small page cache (8 MB), 32 MB mmap, frequent WAL checkpoints —
+// keeps memory footprint and the WAL file small on phones/tablets.
+var mobileDb = new Tycho(dbPath, serializer);
+
+// Desktop: large page cache (64 MB), 256 MB mmap, less frequent checkpoints —
+// favors read/write throughput on desktops and servers.
+var desktopDb = new Tycho(dbPath, serializer,
+    performanceProfile: TychoPerformanceProfile.Desktop);
+
+// Fine-tune individual values (override the profile defaults):
+var tunedDb = new Tycho(dbPath, serializer,
+    performanceProfile: TychoPerformanceProfile.Desktop,
+    cacheSizeKb: 131072,        // 128 MB page cache
+    mmapSizeBytes: 0);          // disable memory-mapped I/O
+```
+
+> **Note:** memory-mapped I/O (`mmap_size`) is a no-op on the encrypted (SQLCipher)
+> build, which does not support mmap.
+
 ## Advanced Features
 
 ### Batch Operations
@@ -521,11 +546,32 @@ await db.SaveAllAsync(people, "active_users");
 
 ## Performance Considerations
 
-- Use batch operations when dealing with multiple objects
-- Create indexes for frequently queried properties
-- Use the appropriate serializer for your needs (MessagePack for best performance)
-- Consider partitioning for large datasets
-- Use connection pooling for multi-threaded applications
+- **Write many objects with `WriteObjectsAsync`, not a loop of `WriteObjectAsync`.**
+  The bulk method batches rows into multi-row inserts inside a single transaction —
+  roughly **10× faster** and **~6× lower allocation** than calling `WriteObjectAsync`
+  in a loop (each single write is its own transaction/commit). Keep the default
+  `withTransaction: true` for bulk writes; it is faster than `withTransaction: false`.
+- Create indexes for frequently queried properties (`CreateIndex`), and make sure the
+  indexed property path matches the one used in your filters so the query planner can
+  use the index.
+- Use the appropriate serializer for your needs. System.Text.Json with a
+  `JsonSerializerContext` (source generation) is the recommended default; Newtonsoft
+  works but allocates more.
+- Consider partitioning for large datasets.
+- Use connection pooling for multi-threaded applications. Note that all database access
+  is serialized onto a single connection, so heavy concurrent workloads are executed
+  one operation at a time.
+
+## Security Considerations (Querying)
+
+Filter comparison values are always bound as SQL parameters, so it is safe to pass
+user-supplied values into filters. When you use the **raw-string overloads** —
+`FilterBuilder.Filter(FilterType, string propertyPath, …)`,
+`SortBuilder.OrderBy(SortDirection, string)`, or the string-based `CreateIndex` — the
+property path and index name are validated against a strict grammar and will throw
+`ArgumentException` if they contain anything other than letters, digits, `_`, `.`, `$`,
+`[`, `]` (paths) or a valid identifier (index names). Prefer the expression-based
+overloads (`x => x.Property`) where possible.
 
 ## License
 

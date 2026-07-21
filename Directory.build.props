@@ -3,6 +3,7 @@
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
         <LangVersion>latest</LangVersion>
         <NoWarn>$(NoWarn);CS1591</NoWarn>
+        <Version>5.0.0</Version>
     </PropertyGroup>
     <PropertyGroup>
         <Authors>Eight-Bot, Inc.</Authors>

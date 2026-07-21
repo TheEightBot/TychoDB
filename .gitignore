@@ -402,3 +402,5 @@ FodyWeavers.xsd
 .idea/
 
 tools/
+
+.junie/

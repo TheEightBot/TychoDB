@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
@@ -395,6 +396,39 @@ public class TychoDbTests
         Console.WriteLine($"Total Processing Time: {stopWatch.ElapsedMilliseconds}ms");
 
         resultWrite.ShouldBe(expected);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public void TychoDb_SerializedJson_ShouldNotStartWithByteOrderMark(IJsonSerializer jsonSerializer)
+    {
+        // A UTF-8 BOM (EF BB BF) at the front of the serialized bytes ends up in the
+        // stored blob and is handed to SQLite's json($json) as a BLOB argument, which
+        // stricter SQLite builds reject as "malformed JSON". Guard both serialization
+        // overloads against ever emitting one.
+        var utf8Bom = new byte[] { 0xEF, 0xBB, 0xBF };
+
+        var testObj =
+            new TestClassA
+            {
+                StringProperty = "Test String",
+                IntProperty = 100,
+                TimestampMillis = 123451234,
+            };
+
+        // Serialize<T>(T) overload.
+        var directBytes = (byte[])jsonSerializer.Serialize(testObj);
+        directBytes.Length.ShouldBeGreaterThanOrEqualTo(3);
+        directBytes.Take(3).ShouldNotBe(utf8Bom);
+        directBytes[0].ShouldBe((byte)'{');
+
+        // Serialize<T>(T, IBufferWriter<byte>) overload - the path Tycho.WriteObjectsAsync uses.
+        var bufferWriter = new ArrayBufferWriter<byte>();
+        jsonSerializer.Serialize(testObj, bufferWriter);
+        var bufferBytes = bufferWriter.WrittenSpan.ToArray();
+        bufferBytes.Length.ShouldBeGreaterThanOrEqualTo(3);
+        bufferBytes.Take(3).ShouldNotBe(utf8Bom);
+        bufferBytes[0].ShouldBe((byte)'{');
     }
 
     [DataTestMethod]

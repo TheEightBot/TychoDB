@@ -1,5 +1,6 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -25,7 +26,8 @@ public class FilterBuilder<TObj>
     private const string CastValNumeric = "CAST(VAL.value as NUMERIC)";
     private const string IsNull = " IS NULL";
     private const string IsNotNull = " IS NOT NULL";
-    private const string LikePrefix = " like '";
+    private const string LikeOperator = " like ";
+    private const string LikeEscapeClause = " ESCAPE '\\'";
     private const string Equals = " = ";
     private const string NotEquals = " <> ";
     private const string GreaterThan = " > ";
@@ -71,6 +73,12 @@ public class FilterBuilder<TObj>
 
     public FilterBuilder<TObj> Filter(FilterType filterType, string propertyPath, bool isPropertyPathNumeric, bool isPropertyPathBool, bool isPropertyPathDateTime, object value)
     {
+        // This overload accepts a raw JSON path string from the caller. Because
+        // the path is emitted as an identifier inside JSON_EXTRACT(...) and
+        // cannot be parameterized, validate it against a strict grammar to
+        // prevent it from being used as an injection vector.
+        QueryPropertyPath.ValidatePath(propertyPath, nameof(propertyPath));
+
         _filters.Add(new Filter(filterType, propertyPath, isPropertyPathNumeric, isPropertyPathBool, isPropertyPathDateTime, value));
 
         return this;
@@ -100,7 +108,7 @@ public class FilterBuilder<TObj>
         return this;
     }
 
-    internal void Build(StringBuilder commandBuilder, IJsonSerializer jsonSerializer)
+    internal void Build(StringBuilder commandBuilder, IJsonSerializer jsonSerializer, FilterParameters parameters)
     {
         if (_filters.Count > 0)
         {
@@ -132,12 +140,12 @@ public class FilterBuilder<TObj>
 
             if (filter.FilterType.HasValue && !string.IsNullOrEmpty(filter.PropertyValuePath))
             {
-                BuildExistsFilter(commandBuilder, filter, jsonSerializer);
+                BuildExistsFilter(commandBuilder, filter, jsonSerializer, parameters);
                 continue;
             }
             else if (filter.FilterType.HasValue)
             {
-                BuildSimpleFilter(commandBuilder, filter, jsonSerializer);
+                BuildSimpleFilter(commandBuilder, filter, jsonSerializer, parameters);
             }
         }
     }
@@ -164,18 +172,131 @@ public class FilterBuilder<TObj>
         sb.Append(CastNumericPrefix).Append(propertyPath).Append(CastNumericSuffix);
     }
 
-    private void BuildExistsFilter(StringBuilder commandBuilder, in Filter filter, IJsonSerializer jsonSerializer)
+    /// <summary>
+    /// Emits a comparison value. Genuine numeric and boolean CLR values are
+    /// written as safe literals (no user text can reach the SQL); everything
+    /// else — including strings, and values whose runtime type does not match
+    /// the property's declared type — is bound as a parameter.
+    /// </summary>
+    private static void AppendValue(StringBuilder sb, FilterParameters parameters, object? value)
+    {
+        if (TryAppendSafeLiteral(sb, value))
+        {
+            return;
+        }
+
+        // Bind the same textual form that was previously concatenated (JSON stores
+        // values such as Guids/enums as their string representation), so behavior
+        // is unchanged while the value can no longer break out of the SQL text.
+        sb.Append(parameters.Add(value?.ToString()));
+    }
+
+    /// <summary>
+    /// Emits a value for a numeric comparison (&gt;, &gt;=, &lt;, &lt;=). Genuine
+    /// numeric CLR values become literals; anything else is parameterized so a
+    /// non-numeric payload can never be injected as raw SQL.
+    /// </summary>
+    private static void AppendNumericValue(StringBuilder sb, FilterParameters parameters, object? value)
+    {
+        if (TryAppendNumericLiteral(sb, value))
+        {
+            return;
+        }
+
+        sb.Append(parameters.Add(value?.ToString()));
+    }
+
+    private static bool TryAppendSafeLiteral(StringBuilder sb, object? value)
+    {
+        if (value is bool b)
+        {
+            sb.Append(b ? '1' : '0');
+            return true;
+        }
+
+        return TryAppendNumericLiteral(sb, value);
+    }
+
+    private static bool TryAppendNumericLiteral(StringBuilder sb, object? value)
+    {
+        switch (value)
+        {
+            case byte or sbyte or short or ushort or int or uint or long:
+                sb.Append(Convert.ToInt64(value, CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture));
+                return true;
+            case ulong ul:
+                sb.Append(ul.ToString(CultureInfo.InvariantCulture));
+                return true;
+            case float f:
+                sb.Append(f.ToString("R", CultureInfo.InvariantCulture));
+                return true;
+            case double d:
+                sb.Append(d.ToString("R", CultureInfo.InvariantCulture));
+                return true;
+            case decimal m:
+                sb.Append(m.ToString(CultureInfo.InvariantCulture));
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Escapes LIKE metacharacters (\ % _) so a user-supplied value matches
+    /// literally and cannot force full-table scans via leading wildcards. Used
+    /// together with an explicit ESCAPE clause.
+    /// </summary>
+    private static string BuildLikePattern(object? value, bool leadingWildcard, bool trailingWildcard)
+    {
+        var raw = value?.ToString() ?? string.Empty;
+        var sb = new StringBuilder(raw.Length + 4);
+
+        if (leadingWildcard)
+        {
+            sb.Append('%');
+        }
+
+        foreach (var c in raw)
+        {
+            if (c is '\\' or '%' or '_')
+            {
+                sb.Append('\\');
+            }
+
+            sb.Append(c);
+        }
+
+        if (trailingWildcard)
+        {
+            sb.Append('%');
+        }
+
+        return sb.ToString();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AppendLike(StringBuilder sb, FilterParameters parameters, object? value, bool leadingWildcard, bool trailingWildcard)
+    {
+        var pattern = BuildLikePattern(value, leadingWildcard, trailingWildcard);
+        sb.Append(LikeOperator).Append(parameters.Add(pattern)).Append(LikeEscapeClause);
+    }
+
+    private void BuildExistsFilter(StringBuilder commandBuilder, in Filter filter, IJsonSerializer jsonSerializer, FilterParameters parameters)
     {
         switch (filter.FilterType!.Value)
         {
             case FilterType.Contains:
                 AppendExistsPrefix(commandBuilder, filter);
-                commandBuilder.Append(ValValue).Append(LikePrefix).Append('%').Append(filter.Value).Append("%')").AppendLine();
+                commandBuilder.Append(ValValue);
+                AppendLike(commandBuilder, parameters, filter.Value, leadingWildcard: true, trailingWildcard: true);
+                commandBuilder.Append(ExistsEnd).AppendLine();
                 break;
 
             case FilterType.EndsWith:
                 AppendExistsPrefix(commandBuilder, filter);
-                commandBuilder.Append(ValValue).Append(LikePrefix).Append('%').Append(filter.Value).Append("')").AppendLine();
+                commandBuilder.Append(ValValue);
+                AppendLike(commandBuilder, parameters, filter.Value, leadingWildcard: true, trailingWildcard: false);
+                commandBuilder.Append(ExistsEnd).AppendLine();
                 break;
 
             case FilterType.Equals:
@@ -184,44 +305,52 @@ public class FilterBuilder<TObj>
                 {
                     commandBuilder.Append(ValValue).Append(IsNull).Append(ExistsEnd).AppendLine();
                 }
-                else if (filter.IsPropertyValuePathBool)
-                {
-                    commandBuilder.Append(ValValue).Append(Equals).Append(filter.Value).Append(ExistsEnd).AppendLine();
-                }
                 else if (filter.IsPropertyValuePathNumeric)
                 {
-                    commandBuilder.Append(CastValNumeric).Append(Equals).Append('\'').Append(filter.Value).Append("')").AppendLine();
+                    commandBuilder.Append(CastValNumeric).Append(Equals);
+                    AppendNumericValue(commandBuilder, parameters, filter.Value);
+                    commandBuilder.Append(ExistsEnd).AppendLine();
                 }
                 else if (filter.IsPropertyValuePathDateTime)
                 {
                     var dateTimeString = GetDateTimeString(filter.Value, jsonSerializer);
-                    commandBuilder.Append(ValValue).Append(Equals).Append('\'').Append(dateTimeString).Append("')").AppendLine();
+                    commandBuilder.Append(ValValue).Append(Equals).Append(parameters.Add(dateTimeString)).Append(ExistsEnd).AppendLine();
                 }
                 else
                 {
-                    commandBuilder.Append(ValValue).Append(Equals).Append('\'').Append(filter.Value).Append("')").AppendLine();
+                    commandBuilder.Append(ValValue).Append(Equals);
+                    AppendValue(commandBuilder, parameters, filter.Value);
+                    commandBuilder.Append(ExistsEnd).AppendLine();
                 }
 
                 break;
 
             case FilterType.GreaterThan:
                 AppendExistsPrefix(commandBuilder, filter);
-                commandBuilder.Append(CastValNumeric).Append(GreaterThan).Append(filter.Value).Append(ExistsEnd).AppendLine();
+                commandBuilder.Append(CastValNumeric).Append(GreaterThan);
+                AppendNumericValue(commandBuilder, parameters, filter.Value);
+                commandBuilder.Append(ExistsEnd).AppendLine();
                 break;
 
             case FilterType.GreaterThanOrEqualTo:
                 AppendExistsPrefix(commandBuilder, filter);
-                commandBuilder.Append(CastValNumeric).Append(GreaterThanOrEqual).Append(filter.Value).Append(ExistsEnd).AppendLine();
+                commandBuilder.Append(CastValNumeric).Append(GreaterThanOrEqual);
+                AppendNumericValue(commandBuilder, parameters, filter.Value);
+                commandBuilder.Append(ExistsEnd).AppendLine();
                 break;
 
             case FilterType.LessThan:
                 AppendExistsPrefix(commandBuilder, filter);
-                commandBuilder.Append(CastValNumeric).Append(LessThan).Append(filter.Value).Append(ExistsEnd).AppendLine();
+                commandBuilder.Append(CastValNumeric).Append(LessThan);
+                AppendNumericValue(commandBuilder, parameters, filter.Value);
+                commandBuilder.Append(ExistsEnd).AppendLine();
                 break;
 
             case FilterType.LessThanOrEqualTo:
                 AppendExistsPrefix(commandBuilder, filter);
-                commandBuilder.Append(CastValNumeric).Append(LessThanOrEqual).Append(filter.Value).Append(ExistsEnd).AppendLine();
+                commandBuilder.Append(CastValNumeric).Append(LessThanOrEqual);
+                AppendNumericValue(commandBuilder, parameters, filter.Value);
+                commandBuilder.Append(ExistsEnd).AppendLine();
                 break;
 
             case FilterType.NotEquals:
@@ -230,36 +359,38 @@ public class FilterBuilder<TObj>
                 {
                     commandBuilder.Append(ValValue).Append(IsNotNull).Append(ExistsEnd).AppendLine();
                 }
-                else if (filter.IsPropertyValuePathBool)
-                {
-                    commandBuilder.Append(ValValue).Append(NotEquals).Append(filter.Value).Append(ExistsEnd).AppendLine();
-                }
                 else
                 {
-                    commandBuilder.Append(ValValue).Append(NotEquals).Append('\'').Append(filter.Value).Append("')").AppendLine();
+                    commandBuilder.Append(ValValue).Append(NotEquals);
+                    AppendValue(commandBuilder, parameters, filter.Value);
+                    commandBuilder.Append(ExistsEnd).AppendLine();
                 }
 
                 break;
 
             case FilterType.StartsWith:
                 AppendExistsPrefix(commandBuilder, filter);
-                commandBuilder.Append(ValValue).Append(LikePrefix).Append(filter.Value).Append("%')").AppendLine();
+                commandBuilder.Append(ValValue);
+                AppendLike(commandBuilder, parameters, filter.Value, leadingWildcard: false, trailingWildcard: true);
+                commandBuilder.Append(ExistsEnd).AppendLine();
                 break;
         }
     }
 
-    private void BuildSimpleFilter(StringBuilder commandBuilder, in Filter filter, IJsonSerializer jsonSerializer)
+    private void BuildSimpleFilter(StringBuilder commandBuilder, in Filter filter, IJsonSerializer jsonSerializer, FilterParameters parameters)
     {
         switch (filter.FilterType!.Value)
         {
             case FilterType.Contains:
                 AppendJsonExtract(commandBuilder, filter.PropertyPath!);
-                commandBuilder.Append(LikePrefix).Append('%').Append(filter.Value).Append("%'").AppendLine();
+                AppendLike(commandBuilder, parameters, filter.Value, leadingWildcard: true, trailingWildcard: true);
+                commandBuilder.AppendLine();
                 break;
 
             case FilterType.EndsWith:
                 AppendJsonExtract(commandBuilder, filter.PropertyPath!);
-                commandBuilder.Append(LikePrefix).Append('%').Append(filter.Value).Append('\'').AppendLine();
+                AppendLike(commandBuilder, parameters, filter.Value, leadingWildcard: true, trailingWildcard: false);
+                commandBuilder.AppendLine();
                 break;
 
             case FilterType.Equals:
@@ -271,64 +402,83 @@ public class FilterBuilder<TObj>
                 else if (filter.IsPropertyPathBool)
                 {
                     AppendJsonExtract(commandBuilder, filter.PropertyPath!);
-                    commandBuilder.Append(Equals).Append(filter.Value).AppendLine();
+                    commandBuilder.Append(Equals);
+                    AppendValue(commandBuilder, parameters, filter.Value);
+                    commandBuilder.AppendLine();
                 }
                 else if (filter.IsPropertyPathNumeric)
                 {
                     AppendCastNumeric(commandBuilder, filter.PropertyPath!);
-                    commandBuilder.Append(Equals).Append('\'').Append(filter.Value).Append('\'').AppendLine();
+                    commandBuilder.Append(Equals);
+                    AppendNumericValue(commandBuilder, parameters, filter.Value);
+                    commandBuilder.AppendLine();
                 }
                 else if (filter.IsPropertyPathDateTime)
                 {
                     var dateTimeString = GetDateTimeString(filter.Value, jsonSerializer);
                     AppendJsonExtract(commandBuilder, filter.PropertyPath!);
-                    commandBuilder.Append(Equals).Append('\'').Append(dateTimeString).Append('\'').AppendLine();
+                    commandBuilder.Append(Equals).Append(parameters.Add(dateTimeString)).AppendLine();
                 }
                 else
                 {
                     AppendJsonExtract(commandBuilder, filter.PropertyPath!);
-                    commandBuilder.Append(Equals).Append('\'').Append(filter.Value).Append('\'').AppendLine();
+                    commandBuilder.Append(Equals);
+                    AppendValue(commandBuilder, parameters, filter.Value);
+                    commandBuilder.AppendLine();
                 }
 
                 break;
 
             case FilterType.GreaterThan:
                 AppendCastNumeric(commandBuilder, filter.PropertyPath!);
-                commandBuilder.Append(GreaterThan).Append(filter.Value).AppendLine();
+                commandBuilder.Append(GreaterThan);
+                AppendNumericValue(commandBuilder, parameters, filter.Value);
+                commandBuilder.AppendLine();
                 break;
 
             case FilterType.GreaterThanOrEqualTo:
                 AppendCastNumeric(commandBuilder, filter.PropertyPath!);
-                commandBuilder.Append(GreaterThanOrEqual).Append(filter.Value).AppendLine();
+                commandBuilder.Append(GreaterThanOrEqual);
+                AppendNumericValue(commandBuilder, parameters, filter.Value);
+                commandBuilder.AppendLine();
                 break;
 
             case FilterType.LessThan:
                 AppendCastNumeric(commandBuilder, filter.PropertyPath!);
-                commandBuilder.Append(LessThan).Append(filter.Value).AppendLine();
+                commandBuilder.Append(LessThan);
+                AppendNumericValue(commandBuilder, parameters, filter.Value);
+                commandBuilder.AppendLine();
                 break;
 
             case FilterType.LessThanOrEqualTo:
                 AppendCastNumeric(commandBuilder, filter.PropertyPath!);
-                commandBuilder.Append(LessThanOrEqual).Append(filter.Value).AppendLine();
+                commandBuilder.Append(LessThanOrEqual);
+                AppendNumericValue(commandBuilder, parameters, filter.Value);
+                commandBuilder.AppendLine();
                 break;
 
             case FilterType.NotEquals:
                 if (filter.IsPropertyPathBool)
                 {
                     AppendJsonExtract(commandBuilder, filter.PropertyPath!);
-                    commandBuilder.Append(NotEquals).Append(filter.Value).AppendLine();
+                    commandBuilder.Append(NotEquals);
+                    AppendValue(commandBuilder, parameters, filter.Value);
+                    commandBuilder.AppendLine();
                 }
                 else
                 {
                     AppendJsonExtract(commandBuilder, filter.PropertyPath!);
-                    commandBuilder.Append(NotEquals).Append('\'').Append(filter.Value).Append('\'').AppendLine();
+                    commandBuilder.Append(NotEquals);
+                    AppendValue(commandBuilder, parameters, filter.Value);
+                    commandBuilder.AppendLine();
                 }
 
                 break;
 
             case FilterType.StartsWith:
                 AppendJsonExtract(commandBuilder, filter.PropertyPath!);
-                commandBuilder.Append(LikePrefix).Append(filter.Value).Append("%'").AppendLine();
+                AppendLike(commandBuilder, parameters, filter.Value, leadingWildcard: false, trailingWildcard: true);
+                commandBuilder.AppendLine();
                 break;
         }
     }

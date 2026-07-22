@@ -12,16 +12,20 @@ internal static class Queries
     // PRAGMAs shared by every profile. These are single-user / single-connection
     // choices: WAL journaling with EXCLUSIVE locking (one persistent connection),
     // NORMAL synchronous (safe under WAL), in-memory temp store, and incremental
-    // auto-vacuum. auto_vacuum only takes effect when the database is first created,
-    // so it must precede the table DDL.
+    // auto-vacuum.
+    //
+    // auto_vacuum MUST be the first statement: it can only be applied when the
+    // database is first created, and switching to WAL writes the database header —
+    // so if auto_vacuum is set after journal_mode = WAL it silently stays at the
+    // default (NONE) even on a brand-new file, leaving incremental_vacuum a no-op.
     private const string SharedPragmas =
         """
+        PRAGMA auto_vacuum = INCREMENTAL;
         PRAGMA journal_mode = WAL;
         PRAGMA locking_mode = EXCLUSIVE;
         PRAGMA synchronous = NORMAL;
         PRAGMA temp_store = MEMORY;
         PRAGMA busy_timeout = 5000;
-        PRAGMA auto_vacuum = INCREMENTAL;
         """;
 
     // Table + index DDL. Idempotent (IF NOT EXISTS); runs on every connect.

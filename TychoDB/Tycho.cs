@@ -1903,8 +1903,15 @@ public class Tycho : IDisposable
     /// <summary>
     /// Performs database cleanup operations to optimize performance and reduce size.
     /// </summary>
-    /// <param name="shrinkMemory">Whether to shrink the database's memory usage.</param>
-    /// <param name="vacuum">Whether to perform an incremental vacuum operation.</param>
+    /// <param name="shrinkMemory">Whether to release heap memory held by SQLite.</param>
+    /// <param name="vacuum">
+    /// Whether to reclaim free space to disk. On a database already in incremental
+    /// auto-vacuum mode this runs a cheap in-place <c>incremental_vacuum</c>. On a
+    /// legacy database that was created without incremental auto-vacuum (e.g. by an
+    /// older version, or before the auto_vacuum ordering fix), <c>incremental_vacuum</c>
+    /// is a no-op, so this instead runs a one-time full <c>VACUUM</c> that both reclaims
+    /// the space and converts the database to incremental auto-vacuum for the future.
+    /// </param>
     public void Cleanup(bool shrinkMemory = true, bool vacuum = false)
     {
         ArgumentNullException.ThrowIfNull(_connection);
@@ -1917,29 +1924,50 @@ public class Tycho : IDisposable
                 {
                     try
                     {
-                        using var createIndexCommand = conn.CreateCommand();
-
-                        string? command = null;
-
                         if (state.shrinkMemory)
                         {
-                            command += "PRAGMA shrink_memory; ";
+                            using var shrinkCommand = conn.CreateCommand();
+                            shrinkCommand.CommandText = "PRAGMA shrink_memory;";
+                            shrinkCommand.ExecuteNonQuery();
                         }
 
-                        if (state.vacuum)
+                        if (!state.vacuum)
                         {
-                            command += "PRAGMA incremental_vacuum; ";
+                            return;
                         }
 
-#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
-                        createIndexCommand.CommandText = command;
-#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
+                        // incremental_vacuum only reclaims space when the database is in
+                        // INCREMENTAL (2) auto-vacuum mode.
+                        long autoVacuumMode;
+                        using (var modeCommand = conn.CreateCommand())
+                        {
+                            modeCommand.CommandText = "PRAGMA auto_vacuum;";
+                            autoVacuumMode = modeCommand.ExecuteScalar() is long mode ? mode : 0L;
+                        }
 
-                        createIndexCommand.ExecuteNonQuery();
+                        using var vacuumCommand = conn.CreateCommand();
+
+                        if (autoVacuumMode == 2)
+                        {
+                            vacuumCommand.CommandText = "PRAGMA incremental_vacuum;";
+                        }
+                        else
+                        {
+                            // Legacy/NONE database: a full VACUUM reclaims free space and
+                            // converts to incremental auto-vacuum. Use a file-backed temp
+                            // store for the rebuild so a large database does not spike
+                            // memory (VACUUM would otherwise honor temp_store = MEMORY and
+                            // build the whole copy in RAM), then restore the in-memory
+                            // temp store for normal operation.
+                            vacuumCommand.CommandText =
+                                "PRAGMA temp_store = FILE; PRAGMA auto_vacuum = INCREMENTAL; VACUUM; PRAGMA temp_store = MEMORY;";
+                        }
+
+                        vacuumCommand.ExecuteNonQuery();
                     }
                     catch (Exception ex)
                     {
-                        throw new TychoException($"Failed to shrink memory", ex);
+                        throw new TychoException("Failed to clean up database", ex);
                     }
                 },
                 _persistConnection);

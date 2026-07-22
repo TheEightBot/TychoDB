@@ -236,9 +236,13 @@ public class Tycho : IDisposable
     {
         lock (_connectionLock)
         {
-            _connection?.Close();
-            _connection?.Dispose();
-            _connection = null;
+            if (_connection is not null)
+            {
+                RunOptimize(_connection);
+                _connection.Close();
+                _connection.Dispose();
+                _connection = null;
+            }
         }
     }
 
@@ -253,10 +257,32 @@ public class Tycho : IDisposable
             return;
         }
 
+        RunOptimize(_connection);
+
         await _connection.CloseAsync().ConfigureAwait(false);
         await _connection.DisposeAsync().ConfigureAwait(false);
 
         _connection = null;
+    }
+
+    /// <summary>
+    /// Runs SQLite's recommended <c>PRAGMA optimize</c> (bounded by
+    /// <c>analysis_limit</c>) before closing a connection, refreshing query-planner
+    /// statistics so indexes — including expression indexes over JSON_EXTRACT — keep
+    /// being chosen. Best-effort: failures never block teardown.
+    /// </summary>
+    private static void RunOptimize(SqliteConnection connection)
+    {
+        try
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA analysis_limit = 400; PRAGMA optimize;";
+            command.ExecuteNonQuery();
+        }
+        catch
+        {
+            // Advisory only — ignore failures during teardown.
+        }
     }
 
     public void Backup(SqliteConnection backupDatabaseConnection)
@@ -1949,7 +1975,10 @@ public class Tycho : IDisposable
 
                         if (autoVacuumMode == 2)
                         {
-                            vacuumCommand.CommandText = "PRAGMA incremental_vacuum;";
+                            // In-place free-page reclamation, then truncate the WAL file so
+                            // its space is returned to disk too.
+                            vacuumCommand.CommandText =
+                                "PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);";
                         }
                         else
                         {
@@ -1958,9 +1987,9 @@ public class Tycho : IDisposable
                             // store for the rebuild so a large database does not spike
                             // memory (VACUUM would otherwise honor temp_store = MEMORY and
                             // build the whole copy in RAM), then restore the in-memory
-                            // temp store for normal operation.
+                            // temp store for normal operation and truncate the WAL.
                             vacuumCommand.CommandText =
-                                "PRAGMA temp_store = FILE; PRAGMA auto_vacuum = INCREMENTAL; VACUUM; PRAGMA temp_store = MEMORY;";
+                                "PRAGMA temp_store = FILE; PRAGMA auto_vacuum = INCREMENTAL; VACUUM; PRAGMA temp_store = MEMORY; PRAGMA wal_checkpoint(TRUNCATE);";
                         }
 
                         vacuumCommand.ExecuteNonQuery();
@@ -2074,6 +2103,11 @@ public class Tycho : IDisposable
 
         if (disposing)
         {
+            if (_connection is not null)
+            {
+                RunOptimize(_connection);
+            }
+
             _commandBuilder.Dispose();
             _connectionGate?.Dispose();
             _connection?.Close();

@@ -70,6 +70,11 @@ internal static class Queries
     private const long MobileMmapSizeBytes = 33_554_432; // 32 MB memory-map
     private const int MobileWalAutocheckpoint = 512;     // small WAL
 
+    // Cap the WAL file on mobile so it truncates back to this size after a
+    // checkpoint instead of growing unbounded; -1 leaves it unlimited (desktop).
+    private const long MobileJournalSizeLimitBytes = 8_388_608; // 8 MB
+    private const long DesktopJournalSizeLimitBytes = -1;       // unlimited
+
     private const int DesktopCacheSizeKb = 65_536;        // 64 MB page cache
     private const long DesktopMmapSizeBytes = 268_435_456; // 256 MB memory-map
     private const int DesktopWalAutocheckpoint = 2_000;
@@ -88,14 +93,16 @@ internal static class Queries
         int cacheSizeKb = cacheSizeKbOverride ?? (desktop ? DesktopCacheSizeKb : MobileCacheSizeKb);
         long mmapSizeBytes = mmapSizeBytesOverride ?? (desktop ? DesktopMmapSizeBytes : MobileMmapSizeBytes);
         int walAutocheckpoint = desktop ? DesktopWalAutocheckpoint : MobileWalAutocheckpoint;
+        long journalSizeLimit = desktop ? DesktopJournalSizeLimitBytes : MobileJournalSizeLimitBytes;
 
-        var sb = new System.Text.StringBuilder(SharedPragmas.Length + SchemaDdl.Length + 128);
+        var sb = new System.Text.StringBuilder(SharedPragmas.Length + SchemaDdl.Length + 160);
         var ic = System.Globalization.CultureInfo.InvariantCulture;
 
         sb.Append(SharedPragmas).Append('\n')
           .Append("PRAGMA cache_size = -").Append(cacheSizeKb.ToString(ic)).Append(";\n")
           .Append("PRAGMA mmap_size = ").Append(mmapSizeBytes.ToString(ic)).Append(";\n")
-          .Append("PRAGMA wal_autocheckpoint = ").Append(walAutocheckpoint.ToString(ic)).Append(";\n\n")
+          .Append("PRAGMA wal_autocheckpoint = ").Append(walAutocheckpoint.ToString(ic)).Append(";\n")
+          .Append("PRAGMA journal_size_limit = ").Append(journalSizeLimit.ToString(ic)).Append(";\n\n")
           .Append(SchemaDdl);
 
         return sb.ToString();

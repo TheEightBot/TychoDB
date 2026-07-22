@@ -21,6 +21,7 @@ public class ConfigurationTests
         script.ShouldContain("PRAGMA cache_size = -8000;");
         script.ShouldContain("PRAGMA mmap_size = 33554432;");
         script.ShouldContain("PRAGMA wal_autocheckpoint = 512;");
+        script.ShouldContain("PRAGMA journal_size_limit = 8388608;");
 
         // Shared PRAGMAs still present.
         script.ShouldContain("PRAGMA journal_mode = WAL;");
@@ -39,6 +40,7 @@ public class ConfigurationTests
         script.ShouldContain("PRAGMA cache_size = -65536;");
         script.ShouldContain("PRAGMA mmap_size = 268435456;");
         script.ShouldContain("PRAGMA wal_autocheckpoint = 2000;");
+        script.ShouldContain("PRAGMA journal_size_limit = -1;");
     }
 
     [TestMethod]

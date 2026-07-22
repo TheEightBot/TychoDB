@@ -33,6 +33,16 @@ some query behavior changes (see Breaking changes).
 
 ### Performance
 
+- **`PRAGMA optimize` on disconnect.** `Disconnect`/`DisconnectAsync`/`Dispose` now run
+  SQLite's recommended `PRAGMA optimize` (bounded by `analysis_limit = 400`) so the
+  query planner keeps fresh statistics and continues to choose indexes — including
+  expression indexes over `JSON_EXTRACT`.
+- **Bounded WAL on mobile.** The `Mobile` profile sets `journal_size_limit = 8 MB` so
+  the WAL file truncates after a checkpoint instead of growing unbounded; `Desktop`
+  leaves it unlimited.
+- **`Cleanup` truncates the WAL.** `Cleanup(vacuum: true)` now runs
+  `wal_checkpoint(TRUNCATE)` after reclaiming free space, returning the WAL file's space
+  to disk as well.
 - **Device-aware SQLite tuning.** A new `TychoPerformanceProfile` (`Mobile` /
   `Desktop`) constructor parameter selects a preset of PRAGMA tuning, with optional
   `cacheSizeKb` / `mmapSizeBytes` overrides. `Mobile` (the default) uses a small page

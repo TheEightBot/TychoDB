@@ -12,16 +12,20 @@ internal static class Queries
     // PRAGMAs shared by every profile. These are single-user / single-connection
     // choices: WAL journaling with EXCLUSIVE locking (one persistent connection),
     // NORMAL synchronous (safe under WAL), in-memory temp store, and incremental
-    // auto-vacuum. auto_vacuum only takes effect when the database is first created,
-    // so it must precede the table DDL.
+    // auto-vacuum.
+    //
+    // auto_vacuum MUST be the first statement: it can only be applied when the
+    // database is first created, and switching to WAL writes the database header —
+    // so if auto_vacuum is set after journal_mode = WAL it silently stays at the
+    // default (NONE) even on a brand-new file, leaving incremental_vacuum a no-op.
     private const string SharedPragmas =
         """
+        PRAGMA auto_vacuum = INCREMENTAL;
         PRAGMA journal_mode = WAL;
         PRAGMA locking_mode = EXCLUSIVE;
         PRAGMA synchronous = NORMAL;
         PRAGMA temp_store = MEMORY;
         PRAGMA busy_timeout = 5000;
-        PRAGMA auto_vacuum = INCREMENTAL;
         """;
 
     // Table + index DDL. Idempotent (IF NOT EXISTS); runs on every connect.
@@ -66,6 +70,11 @@ internal static class Queries
     private const long MobileMmapSizeBytes = 33_554_432; // 32 MB memory-map
     private const int MobileWalAutocheckpoint = 512;     // small WAL
 
+    // Cap the WAL file on mobile so it truncates back to this size after a
+    // checkpoint instead of growing unbounded; -1 leaves it unlimited (desktop).
+    private const long MobileJournalSizeLimitBytes = 8_388_608; // 8 MB
+    private const long DesktopJournalSizeLimitBytes = -1;       // unlimited
+
     private const int DesktopCacheSizeKb = 65_536;        // 64 MB page cache
     private const long DesktopMmapSizeBytes = 268_435_456; // 256 MB memory-map
     private const int DesktopWalAutocheckpoint = 2_000;
@@ -84,14 +93,16 @@ internal static class Queries
         int cacheSizeKb = cacheSizeKbOverride ?? (desktop ? DesktopCacheSizeKb : MobileCacheSizeKb);
         long mmapSizeBytes = mmapSizeBytesOverride ?? (desktop ? DesktopMmapSizeBytes : MobileMmapSizeBytes);
         int walAutocheckpoint = desktop ? DesktopWalAutocheckpoint : MobileWalAutocheckpoint;
+        long journalSizeLimit = desktop ? DesktopJournalSizeLimitBytes : MobileJournalSizeLimitBytes;
 
-        var sb = new System.Text.StringBuilder(SharedPragmas.Length + SchemaDdl.Length + 128);
+        var sb = new System.Text.StringBuilder(SharedPragmas.Length + SchemaDdl.Length + 160);
         var ic = System.Globalization.CultureInfo.InvariantCulture;
 
         sb.Append(SharedPragmas).Append('\n')
           .Append("PRAGMA cache_size = -").Append(cacheSizeKb.ToString(ic)).Append(";\n")
           .Append("PRAGMA mmap_size = ").Append(mmapSizeBytes.ToString(ic)).Append(";\n")
-          .Append("PRAGMA wal_autocheckpoint = ").Append(walAutocheckpoint.ToString(ic)).Append(";\n\n")
+          .Append("PRAGMA wal_autocheckpoint = ").Append(walAutocheckpoint.ToString(ic)).Append(";\n")
+          .Append("PRAGMA journal_size_limit = ").Append(journalSizeLimit.ToString(ic)).Append(";\n\n")
           .Append(SchemaDdl);
 
         return sb.ToString();

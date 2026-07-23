@@ -10,7 +10,7 @@ using System.Threading.Tasks;
 
 namespace TychoDB;
 
-public sealed class SystemTextJsonSerializer : IJsonSerializer
+public sealed class SystemTextJsonSerializer : IJsonSerializer, IUtf8JsonDeserializer
 {
     private readonly JsonSerializerOptions _jsonSerializerOptions;
     private readonly Dictionary<Type, JsonTypeInfo> _jsonTypeSerializers;
@@ -48,6 +48,16 @@ public sealed class SystemTextJsonSerializer : IJsonSerializer
         }
 
         return await JsonSerializer.DeserializeAsync<T>(stream, _jsonSerializerOptions, cancellationToken).ConfigureAwait(false);
+    }
+
+    public T Deserialize<T>(ReadOnlySpan<byte> utf8Json)
+    {
+        if (_jsonTypeSerializers.TryGetValue(typeof(T), out var jsonTypeSerializer) && jsonTypeSerializer is JsonTypeInfo<T> jtst)
+        {
+            return JsonSerializer.Deserialize(utf8Json, jtst);
+        }
+
+        return JsonSerializer.Deserialize<T>(utf8Json, _jsonSerializerOptions);
     }
 
     public object Serialize<T>(T obj)

@@ -634,6 +634,53 @@ public class TychoDbTests
         objs.Count().ShouldBe(testObjs.Count);
     }
 
+    /// <summary>
+    /// The bulk read has two paths: a fast path that deserializes straight from the row's
+    /// UTF-8 bytes (no progress reporter), and a streaming path that copies through
+    /// ProgressStream so progress can be reported. They must return identical data.
+    /// </summary>
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_ReadManyObjectsWithAndWithoutProgress_ShouldMatch(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var testObjs =
+            Enumerable
+                .Range(0, 250)
+                .Select(
+                    i =>
+                        new TestClassA
+                        {
+                            StringProperty = $"Test String {i}",
+                            IntProperty = i,
+                            TimestampMillis = 123451234 + i,
+                        })
+                .ToList();
+
+        await db.WriteObjectsAsync(testObjs, x => x.StringProperty).ConfigureAwait(false);
+
+        var fastPath =
+            (await db.ReadObjectsAsync<TestClassA>().ConfigureAwait(false)).ToList();
+
+        var progressPath =
+            (await db.ReadObjectsAsync<TestClassA>(progress: new Progress<double>(_ => { }))
+                .ConfigureAwait(false)).ToList();
+
+        fastPath.Count.ShouldBe(testObjs.Count);
+        progressPath.Count.ShouldBe(testObjs.Count);
+
+        fastPath
+            .OrderBy(x => x.IntProperty)
+            .Select(x => x.StringProperty)
+            .ShouldBe(
+                progressPath
+                    .OrderBy(x => x.IntProperty)
+                    .Select(x => x.StringProperty));
+    }
+
     [DataTestMethod]
     [DynamicData(nameof(JsonSerializers))]
     public async Task TychoDb_ReadManyObjectsWithPartition_ShouldBeSuccessful(IJsonSerializer jsonSerializer)

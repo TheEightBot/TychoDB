@@ -8,7 +8,7 @@ using Newtonsoft.Json;
 
 namespace TychoDB;
 
-public sealed class NewtonsoftJsonSerializer : IJsonSerializer
+public sealed class NewtonsoftJsonSerializer : IJsonSerializer, IUtf8JsonDeserializer
 {
     private const int DefaultBufferSize = 4096;
     private const int StreamWriterBufferSize = 1024;
@@ -57,6 +57,22 @@ public sealed class NewtonsoftJsonSerializer : IJsonSerializer
 
         var result = _jsonSerializer.Deserialize<T>(jsonTextReader);
         return new ValueTask<T>(result);
+    }
+
+    public T Deserialize<T>(ReadOnlySpan<byte> utf8Json)
+    {
+        // Newtonsoft has no UTF-8 span reader, so transcode once. Still avoids the
+        // per-row stream + async state machine the bulk read path used to pay.
+        var json = Utf8NoBom.GetString(utf8Json);
+
+        using var stringReader = new StringReader(json);
+        using var jsonTextReader = new JsonTextReader(stringReader)
+        {
+            DateFormatString = DateTimeSerializationFormat,
+            CloseInput = false,
+        };
+
+        return _jsonSerializer.Deserialize<T>(jsonTextReader);
     }
 
     public object Serialize<T>(T obj)

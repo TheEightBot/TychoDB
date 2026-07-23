@@ -913,11 +913,33 @@ public class Tycho : IDisposable
                         {
                             int dataOrdinal = reader.GetOrdinal(Queries.DataColumn);
 
+                            // Fast path is available when the serializer can deserialize straight
+                            // from a UTF-8 span and no per-byte progress reporting was requested.
+                            // Resolved once per read, not per row.
+                            var utf8Deserializer =
+                                state.progress is null
+                                    ? state.jsonSerializer as IUtf8JsonDeserializer
+                                    : null;
+
                             while (reader.Read())
                             {
                                 if (state.cancellationToken.IsCancellationRequested)
                                 {
                                     break;
+                                }
+
+                                if (utf8Deserializer is not null)
+                                {
+                                    // The reader has already materialized the row's value, so hand
+                                    // its UTF-8 bytes straight to the serializer. Avoids, per row:
+                                    // an extra Stream allocation, a second full copy of every byte
+                                    // into the scratch stream, and the ~4 async state-machine
+                                    // transitions (ReadAsync loop, DeserializeAsync, DisposeAsync)
+                                    // that dominated large reads.
+                                    objects.Add(
+                                        utf8Deserializer.Deserialize<T>(
+                                            reader.GetFieldValue<byte[]>(dataOrdinal)));
+                                    continue;
                                 }
 
                                 // Reset stream for reuse

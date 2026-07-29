@@ -2176,6 +2176,95 @@ public class TychoDbTests
         readNullableDateTimeOffset.Value.ShouldBe(nullableDateTimeOffsetValue.Value);
     }
 
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_ReadObjectsWithProgress_ShouldReportRowProgressToCompletion(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var testObjs =
+            Enumerable
+                .Range(0, 1000)
+                .Select(
+                    i =>
+                        new TestClassA
+                        {
+                            StringProperty = $"Test String {i}",
+                            IntProperty = i,
+                            TimestampMillis = 123451234,
+                        })
+                .ToList();
+
+        await db.WriteObjectsAsync(testObjs, x => x.StringProperty).ConfigureAwait(false);
+
+        var recorder = new RecordingProgress();
+
+        var results = await db.ReadObjectsAsync<TestClassA>(progress: recorder).ConfigureAwait(false);
+
+        results.Count().ShouldBe(testObjs.Count);
+
+        // Throttled to whole-percent steps: the initial 0.0 plus at most one report per percent.
+        recorder.Reports.Count.ShouldBeInRange(2, 102);
+        recorder.Reports.First().ShouldBe(0.0);
+        recorder.Reports.Last().ShouldBe(1.0);
+
+        for (var i = 1; i < recorder.Reports.Count; i++)
+        {
+            recorder.Reports[i].ShouldBeGreaterThanOrEqualTo(recorder.Reports[i - 1]);
+        }
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_ReadObjectsWithProgressAndTop_ShouldCompleteAgainstLimitedTotal(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var testObjs =
+            Enumerable
+                .Range(0, 200)
+                .Select(
+                    i =>
+                        new TestClassA
+                        {
+                            StringProperty = $"Test String {i}",
+                            IntProperty = i,
+                            TimestampMillis = 123451234,
+                        })
+                .ToList();
+
+        await db.WriteObjectsAsync(testObjs, x => x.StringProperty).ConfigureAwait(false);
+
+        var recorder = new RecordingProgress();
+
+        var results = await db.ReadObjectsAsync<TestClassA>(top: 50, progress: recorder).ConfigureAwait(false);
+
+        // Progress totals are clamped to the top limit, so a limited read still finishes at 1.0.
+        results.Count().ShouldBe(50);
+        recorder.Reports.First().ShouldBe(0.0);
+        recorder.Reports.Last().ShouldBe(1.0);
+    }
+
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_ReadObjectsWithProgressOnEmptyResult_ShouldReportCompletion(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var recorder = new RecordingProgress();
+
+        var results = await db.ReadObjectsAsync<TestClassA>(progress: recorder).ConfigureAwait(false);
+
+        results.Count().ShouldBe(0);
+        recorder.Reports.Last().ShouldBe(1.0);
+    }
+
     public static Tycho BuildDatabaseConnection(IJsonSerializer jsonSerializer, bool requireTypeRegistration = false)
     {
 #if ENCRYPTED
@@ -2184,6 +2273,15 @@ public class TychoDbTests
 
         return new Tycho(Path.GetTempPath(), jsonSerializer, dbName: $"{Guid.NewGuid()}.db", rebuildCache: true, requireTypeRegistration: requireTypeRegistration);
 #endif
+    }
+
+    // Records synchronously on the reporting thread, unlike Progress<T>, so tests can assert
+    // on the exact report sequence without racing the SynchronizationContext.
+    private sealed class RecordingProgress : IProgress<double>
+    {
+        public List<double> Reports { get; } = new();
+
+        public void Report(double value) => Reports.Add(value);
     }
 }
 

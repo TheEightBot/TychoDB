@@ -817,7 +817,12 @@ public class Tycho : IDisposable
     /// <param name="sort">Optional sorting to apply to the result set.</param>
     /// <param name="top">Optional limit on the number of objects to return.</param>
     /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
-    /// /// <param name="progress">Optional progress reporter for deserialization. Reports a value between 0.0 and 1.0 as the object is read.</param>
+    /// <param name="progress">
+    ///     Optional progress reporter for the overall read. Reports a value between 0.0 and 1.0 based on rows
+    ///     read out of the total matching rows, throttled to whole-percent steps (at most ~100 reports per read).
+    ///     The matching rows are counted up front with the same predicate, so supplying a reporter adds one
+    ///     count query but does not change how rows are deserialized.
+    /// </param>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing an enumerable of the matching objects.</returns>
     public ValueTask<IEnumerable<T>> ReadObjectsAsync<T>(
@@ -866,7 +871,10 @@ public class Tycho : IDisposable
 
                     if (state.top is not null)
                     {
-                        commandBuilder.AppendLine(Queries.Limit(state.top.Value));
+                        // The base query and filter/sort fragments do not end with a newline, so
+                        // one must be inserted here or LIMIT fuses onto the previous token
+                        // (e.g. "$partitionLIMIT 50") and fails to parse.
+                        commandBuilder.AppendLine().AppendLine(Queries.Limit(state.top.Value));
                     }
 
                     var selectCommand = conn.CreateCommand();
@@ -882,6 +890,47 @@ public class Tycho : IDisposable
                         selectCommand.Parameters.Add(new SqliteParameter(ParameterFullTypeName, SqliteType.Text) { Value = TypeCache<T>.FullName });
                         selectCommand.Parameters.Add(new SqliteParameter(ParameterPartition, SqliteType.Text) { Value = state.partition.AsValueOrEmptyString() });
                         selectCommand.AddFilterParameters(filterParameters);
+
+                        // Overall progress needs the result-set size up front. Count with the same
+                        // predicate before streaming rows; the select command's text is already
+                        // captured, so the shared builder can be reused for the count SQL.
+                        long totalRows = 0;
+                        var lastReportedStep = -1;
+
+                        if (state.progress is not null)
+                        {
+                            commandBuilder.Clear().Append(Queries.SelectCountFromJsonValueWithFullTypeName);
+
+                            var countFilterParameters = new FilterParameters();
+                            if (state.filter is not null)
+                            {
+                                state.filter.Build(commandBuilder, state.jsonSerializer, countFilterParameters);
+                            }
+
+                            using var countCommand = conn.CreateCommand();
+
+#pragma warning disable CA2100 // Comparison values are parameterized (AddFilterParameters); only validated JSON paths/identifiers are concatenated.
+                            countCommand.CommandText = commandBuilder.ToString();
+#pragma warning restore CA2100
+                            countCommand.CommandTimeout = state.commandTimeout;
+                            countCommand.Parameters.Add(new SqliteParameter(ParameterFullTypeName, SqliteType.Text) { Value = TypeCache<T>.FullName });
+                            countCommand.Parameters.Add(new SqliteParameter(ParameterPartition, SqliteType.Text) { Value = state.partition.AsValueOrEmptyString() });
+                            countCommand.AddFilterParameters(countFilterParameters);
+
+                            await using var countReader = await countCommand.ExecuteReaderAsync(state.cancellationToken).ConfigureAwait(false);
+                            while (countReader.Read())
+                            {
+                                ++totalRows;
+                            }
+
+                            if (state.top is not null && totalRows > state.top.Value)
+                            {
+                                totalRows = state.top.Value;
+                            }
+
+                            state.progress.Report(0.0);
+                            lastReportedStep = 0;
+                        }
 
                         // Use CommandBehavior.SequentialAccess for better performance
                         await using var reader = await selectCommand.ExecuteReaderAsync(CommandBehavior.SequentialAccess, state.cancellationToken).ConfigureAwait(false);
@@ -914,12 +963,11 @@ public class Tycho : IDisposable
                             int dataOrdinal = reader.GetOrdinal(Queries.DataColumn);
 
                             // Fast path is available when the serializer can deserialize straight
-                            // from a UTF-8 span and no per-byte progress reporting was requested.
-                            // Resolved once per read, not per row.
-                            var utf8Deserializer =
-                                state.progress is null
-                                    ? state.jsonSerializer as IUtf8JsonDeserializer
-                                    : null;
+                            // from a UTF-8 span. Resolved once per read, not per row. Progress is
+                            // row-count based, so reporting never forces the slow streaming path.
+                            var utf8Deserializer = state.jsonSerializer as IUtf8JsonDeserializer;
+
+                            long rowsRead = 0;
 
                             while (reader.Read())
                             {
@@ -939,39 +987,48 @@ public class Tycho : IDisposable
                                     objects.Add(
                                         utf8Deserializer.Deserialize<T>(
                                             reader.GetFieldValue<byte[]>(dataOrdinal)));
-                                    continue;
-                                }
-
-                                // Reset stream for reuse
-                                memoryStream.SetLength(0);
-
-                                int bytesRead;
-
-                                await using var stream = reader.GetStream(dataOrdinal);
-
-                                if (state.progress is not null)
-                                {
-                                    await using Stream progressStream = new ProgressStream(stream, state.progress);
-                                    while ((bytesRead = await progressStream
-                                               .ReadAsync(buffer, 0, buffer.Length, state.cancellationToken)
-                                               .ConfigureAwait(false)) > 0)
-                                    {
-                                        memoryStream.Write(buffer, 0, bytesRead);
-                                    }
                                 }
                                 else
                                 {
+                                    // Reset stream for reuse
+                                    memoryStream.SetLength(0);
+
+                                    int bytesRead;
+
+                                    await using var stream = reader.GetStream(dataOrdinal);
+
                                     while ((bytesRead = await stream
                                                .ReadAsync(buffer, 0, buffer.Length, state.cancellationToken)
                                                .ConfigureAwait(false)) > 0)
                                     {
                                         memoryStream.Write(buffer, 0, bytesRead);
                                     }
+
+                                    memoryStream.Position = 0;
+                                    objects.Add(await state.jsonSerializer
+                                        .DeserializeAsync<T>(memoryStream, state.cancellationToken).ConfigureAwait(false));
                                 }
 
-                                memoryStream.Position = 0;
-                                objects.Add(await state.jsonSerializer
-                                    .DeserializeAsync<T>(memoryStream, state.cancellationToken).ConfigureAwait(false));
+                                ++rowsRead;
+
+                                if (state.progress is not null && totalRows > 0)
+                                {
+                                    // Throttle to whole-percent steps so a large read posts at most
+                                    // ~100 reports instead of one per row.
+                                    var step = (int)Math.Min(100, rowsRead * 100 / totalRows);
+                                    if (step != lastReportedStep)
+                                    {
+                                        lastReportedStep = step;
+                                        state.progress.Report(Math.Min(1.0, (double)rowsRead / totalRows));
+                                    }
+                                }
+                            }
+
+                            if (state.progress is not null
+                                && lastReportedStep < 100
+                                && !state.cancellationToken.IsCancellationRequested)
+                            {
+                                state.progress.Report(1.0);
                             }
                         }
                         finally

@@ -26,13 +26,21 @@ internal readonly struct SortInfo
     public string PropertyPath { get; }
 
     /// <summary>
+    /// Gets a value indicating whether the property is numeric, and so must be
+    /// ordered by the same CAST(... as NUMERIC) expression its index is built on.
+    /// </summary>
+    public bool IsNumeric { get; }
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="SortInfo"/> struct.
     /// </summary>
     /// <param name="sortDirection">The direction to sort.</param>
     /// <param name="propertyPath">The JSON property path to sort by.</param>
-    public SortInfo(SortDirection sortDirection, string propertyPath)
+    /// <param name="isNumeric">Whether the property is numeric.</param>
+    public SortInfo(SortDirection sortDirection, string propertyPath, bool isNumeric = false)
     {
         SortDirection = sortDirection;
         PropertyPath = propertyPath;
+        IsNumeric = isNumeric;
     }
 }

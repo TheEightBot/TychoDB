@@ -27,6 +27,13 @@ public class Tycho : IDisposable
         TableStreamValue = "StreamValue",
         TableStreamValueDataColumn = "Data";
 
+    /// <summary>
+    /// Version of the generated index shape. Bumping this invalidates every stored
+    /// index definition so the next CreateIndex call rebuilds it in the new shape.
+    /// v2 = partial indexes led by Partition, scoped by FullTypeName.
+    /// </summary>
+    private const int IndexShapeVersion = 2;
+
     // Parameter cache - reuse parameter objects to reduce allocations
     private readonly ConcurrentDictionary<string, SqliteParameter> _parameterCache = new();
 
@@ -267,9 +274,15 @@ public class Tycho : IDisposable
 
     /// <summary>
     /// Runs SQLite's recommended <c>PRAGMA optimize</c> (bounded by
-    /// <c>analysis_limit</c>) before closing a connection, refreshing query-planner
-    /// statistics so indexes — including expression indexes over JSON_EXTRACT — keep
-    /// being chosen. Best-effort: failures never block teardown.
+    /// <c>analysis_limit</c>), refreshing query-planner statistics so indexes —
+    /// including expression indexes over JSON_EXTRACT — keep being chosen.
+    /// <para>
+    /// Called both when opening and when closing a connection. The open-time call is
+    /// what SQLite recommends for long-lived processes: a mobile app that connects
+    /// once and never cleanly disconnects would otherwise run its entire lifetime on
+    /// default planner heuristics.
+    /// </para>
+    /// Best-effort: failures never block connect or teardown.
     /// </summary>
     private static void RunOptimize(SqliteConnection connection)
     {
@@ -1747,8 +1760,275 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<TObj>();
         }
 
-        return CreateIndex(QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath),
-            GetSafeTypeName<TObj>(), indexName);
+        return CreateIndexCore(
+            indexName,
+            GetSafeTypeName<TObj>(),
+            new[] { (QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath)) },
+            TypeCache<TObj>.FullName);
+    }
+
+    /// <summary>
+    /// Describes one logical index: the physical SQLite index name, the DDL, and the
+    /// identity under which it is recorded in the TychoIndex metadata table.
+    /// </summary>
+    private readonly record struct IndexDefinition(
+        string IndexName,
+        string MetadataTypeName,
+        string PhysicalName,
+        string LegacyPhysicalName,
+        string CommandText);
+
+    /// <summary>
+    /// Builds the physical index name and the CREATE INDEX statement for a set of
+    /// indexed property paths. Every CreateIndex overload funnels through here, so
+    /// the generated DDL has exactly one definition.
+    /// <para>
+    /// When <paramref name="fullTypeName"/> is known (the generic overloads) the index
+    /// is partial and scoped to that type, and its physical name is suffixed with a
+    /// stable hash of the full type name so two same-named types in different
+    /// namespaces no longer collide on one index.
+    /// </para>
+    /// </summary>
+    private static IndexDefinition BuildIndexDefinition(
+        string indexName,
+        string objectTypeName,
+        (string PropertyPathString, bool IsNumeric)[] propertyPaths,
+        string? fullTypeName)
+    {
+        string legacyName = $"idx_{indexName}_{objectTypeName}";
+
+        string physicalName = fullTypeName is null
+            ? legacyName
+            : $"{legacyName}_{StableHashSuffix(fullTypeName)}";
+
+        return new IndexDefinition(
+            indexName,
+            fullTypeName ?? objectTypeName,
+            physicalName,
+            legacyName,
+            Queries.CreateIndexForJsonValue(physicalName, propertyPaths, fullTypeName));
+    }
+
+    /// <summary>
+    /// Deterministic 32-bit FNV-1a hash rendered as 8 hex chars. String.GetHashCode
+    /// is randomized per process and must not be used for a name persisted in the
+    /// database schema.
+    /// </summary>
+    private static string StableHashSuffix(string value)
+    {
+        const uint offsetBasis = 2166136261;
+        const uint prime = 16777619;
+
+        uint hash = offsetBasis;
+        foreach (char c in value)
+        {
+            hash = (hash ^ (byte)(c & 0xFF)) * prime;
+            hash = (hash ^ (byte)(c >> 8)) * prime;
+        }
+
+        return hash.ToString("x8", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// Validates the identifiers and paths that are concatenated into index DDL
+    /// (they cannot be parameterized) and returns the path/numeric pairs.
+    /// </summary>
+    private static (string PropertyPathString, bool IsNumeric)[] ValidateIndexInputs(
+        string indexName,
+        string objectTypeName,
+        (string PropertyPathString, bool IsNumeric)[] propertyPaths)
+    {
+        QueryPropertyPath.ValidateIdentifier(objectTypeName, nameof(objectTypeName));
+        QueryPropertyPath.ValidateIdentifier(indexName, nameof(indexName));
+
+        foreach (var (propertyPathString, _) in propertyPaths)
+        {
+            QueryPropertyPath.ValidatePath(propertyPathString, nameof(propertyPaths));
+        }
+
+        return propertyPaths;
+    }
+
+    private static void ExecuteNonQuery(SqliteConnection conn, string commandText)
+    {
+        using var command = conn.CreateCommand();
+
+#pragma warning disable CA2100 // Only validated identifiers/paths are concatenated (ValidateIndexInputs).
+        command.CommandText = commandText;
+#pragma warning restore CA2100
+
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Creates an index if an identical one is not already recorded, migrating away
+    /// from any previous shape or name for the same logical index.
+    /// <para>
+    /// Mobile apps typically call CreateIndex on every launch, so the already-current
+    /// case must be cheap: it costs one metadata lookup and one sqlite_master probe,
+    /// with no DDL and no ANALYZE.
+    /// </para>
+    /// </summary>
+    private static bool ExecuteCreateIndex(SqliteConnection conn, IndexDefinition definition)
+    {
+        using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
+
+        try
+        {
+            if (IsIndexCurrent(conn, definition))
+            {
+                transaction.Commit();
+                return true;
+            }
+
+            // Drop the previously recorded physical index (shape or definition
+            // changed) and any pre-metadata index that used the legacy name, so an
+            // upgraded database does not keep maintaining a stale b-tree forever.
+            foreach (var stalePhysicalName in ReadRecordedPhysicalNames(conn, definition))
+            {
+                ExecuteNonQuery(conn, Queries.DropIndex(stalePhysicalName));
+            }
+
+            if (!string.Equals(definition.LegacyPhysicalName, definition.PhysicalName, StringComparison.Ordinal))
+            {
+                ExecuteNonQuery(conn, Queries.DropIndex(definition.LegacyPhysicalName));
+            }
+
+            ExecuteNonQuery(conn, definition.CommandText);
+
+            using (var upsert = conn.CreateCommand())
+            {
+                upsert.CommandText = Queries.UpsertIndexMetadata;
+                upsert.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = definition.IndexName });
+                upsert.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = definition.MetadataTypeName });
+                upsert.Parameters.Add(new SqliteParameter("$physicalName", SqliteType.Text) { Value = definition.PhysicalName });
+                upsert.Parameters.Add(new SqliteParameter("$definition", SqliteType.Text) { Value = definition.CommandText });
+                upsert.Parameters.Add(new SqliteParameter("$shapeVersion", SqliteType.Integer) { Value = IndexShapeVersion });
+                upsert.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
+        }
+        catch (Exception ex)
+        {
+            transaction.Rollback();
+            throw new TychoException($"Failed to Create Index: {definition.PhysicalName}", ex);
+        }
+
+        // Refresh planner statistics outside the transaction so the index just
+        // created is usable by the very next query rather than only after a
+        // Disconnect. Advisory: a failure here must not fail index creation.
+        try
+        {
+            ExecuteNonQuery(conn, Queries.AnalyzeBounded);
+        }
+        catch
+        {
+            // Statistics are an optimization, not a correctness requirement.
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// True when the recorded definition matches what would be created now and the
+    /// physical index is still present in the schema.
+    /// </summary>
+    private static bool IsIndexCurrent(SqliteConnection conn, IndexDefinition definition)
+    {
+        using var lookup = conn.CreateCommand();
+        lookup.CommandText = Queries.SelectIndexMetadata;
+        lookup.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = definition.IndexName });
+        lookup.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = definition.MetadataTypeName });
+
+        string? recordedDefinition = null;
+        long recordedVersion = -1;
+
+        using (var reader = lookup.ExecuteReader())
+        {
+            if (reader.Read())
+            {
+                recordedDefinition = reader.GetString(1);
+                recordedVersion = reader.GetInt64(2);
+            }
+        }
+
+        if (recordedVersion != IndexShapeVersion ||
+            !string.Equals(recordedDefinition, definition.CommandText, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        using var exists = conn.CreateCommand();
+        exists.CommandText = Queries.SelectPhysicalIndexExists;
+        exists.Parameters.Add(new SqliteParameter("$physicalName", SqliteType.Text) { Value = definition.PhysicalName });
+        return exists.ExecuteScalar() is not null;
+    }
+
+    private static List<string> ReadRecordedPhysicalNames(SqliteConnection conn, IndexDefinition definition)
+    {
+        var names = new List<string>(1);
+
+        using var lookup = conn.CreateCommand();
+        lookup.CommandText = Queries.SelectIndexMetadata;
+        lookup.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = definition.IndexName });
+        lookup.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = definition.MetadataTypeName });
+
+        using var reader = lookup.ExecuteReader();
+        while (reader.Read())
+        {
+            names.Add(reader.GetString(0));
+        }
+
+        return names;
+    }
+
+    private Tycho CreateIndexCore(
+        string indexName,
+        string objectTypeName,
+        (string PropertyPathString, bool IsNumeric)[] propertyPaths,
+        string? fullTypeName = null)
+    {
+        ArgumentNullException.ThrowIfNull(_connection);
+
+        var definition = BuildIndexDefinition(
+            indexName,
+            objectTypeName,
+            ValidateIndexInputs(indexName, objectTypeName, propertyPaths),
+            fullTypeName);
+
+        _connection
+            .WithConnectionBlock(
+                _connectionGate,
+                definition,
+                static (conn, state) => ExecuteCreateIndex(conn, state),
+                _persistConnection);
+
+        return this;
+    }
+
+    private ValueTask<bool> CreateIndexCoreAsync(
+        string indexName,
+        string objectTypeName,
+        (string PropertyPathString, bool IsNumeric)[] propertyPaths,
+        CancellationToken cancellationToken,
+        string? fullTypeName = null)
+    {
+        ArgumentNullException.ThrowIfNull(_connection);
+
+        var definition = BuildIndexDefinition(
+            indexName,
+            objectTypeName,
+            ValidateIndexInputs(indexName, objectTypeName, propertyPaths),
+            fullTypeName);
+
+        return _connection
+            .WithConnectionBlockAsync(
+                _connectionGate,
+                definition,
+                static (conn, state) => ExecuteCreateIndex(conn, state),
+                _persistConnection,
+                cancellationToken);
     }
 
     /// <summary>
@@ -1760,57 +2040,7 @@ public class Tycho : IDisposable
     /// <param name="indexName">The name to give to the index.</param>
     /// <returns>The current Tycho instance for method chaining.</returns>
     public Tycho CreateIndex(string propertyPathString, bool isNumeric, string objectTypeName, string indexName)
-    {
-        ArgumentNullException.ThrowIfNull(this._connection);
-
-        // These values are concatenated into DDL as a path/identifiers and cannot
-        // be parameterized, so validate them against a strict grammar.
-        QueryPropertyPath.ValidatePath(propertyPathString, nameof(propertyPathString));
-        QueryPropertyPath.ValidateIdentifier(objectTypeName, nameof(objectTypeName));
-        QueryPropertyPath.ValidateIdentifier(indexName, nameof(indexName));
-
-        _connection
-            .WithConnectionBlock(
-                _connectionGate,
-                (propertyPathString, isNumeric, objectTypeName, indexName),
-                static (conn, state) =>
-                {
-                    var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
-
-                    string fullIndexName = $"idx_{state.indexName}_{state.objectTypeName}";
-                    try
-                    {
-                        using var createIndexCommand = conn.CreateCommand();
-
-                        if (state.isNumeric)
-                        {
-#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
-                            createIndexCommand.CommandText =
-                                Queries.CreateIndexForJsonValueAsNumeric(fullIndexName, state.propertyPathString);
-#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
-                        }
-                        else
-                        {
-#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
-                            createIndexCommand.CommandText =
-                                Queries.CreateIndexForJsonValue(fullIndexName, state.propertyPathString);
-#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
-                        }
-
-                        createIndexCommand.ExecuteNonQuery();
-
-                        transaction.Commit();
-                    }
-                    catch (Exception ex)
-                    {
-                        transaction.Rollback();
-                        throw new TychoException($"Failed to Create Index: {fullIndexName}", ex);
-                    }
-                },
-                _persistConnection);
-
-        return this;
-    }
+        => CreateIndexCore(indexName, objectTypeName, new[] { (propertyPathString, isNumeric) });
 
     /// <summary>
     /// Asynchronously creates an index for a specific property of a registered type.
@@ -1828,8 +2058,12 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<TObj>();
         }
 
-        return CreateIndexAsync(QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath),
-            GetSafeTypeName<TObj>(), indexName, cancellationToken);
+        return CreateIndexCoreAsync(
+            indexName,
+            GetSafeTypeName<TObj>(),
+            new[] { (QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath)) },
+            cancellationToken,
+            TypeCache<TObj>.FullName);
     }
 
     /// <summary>
@@ -1843,49 +2077,7 @@ public class Tycho : IDisposable
     /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
     public ValueTask<bool> CreateIndexAsync(string propertyPathString, bool isNumeric, string objectTypeName,
         string indexName, CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(_connection);
-
-        QueryPropertyPath.ValidatePath(propertyPathString, nameof(propertyPathString));
-        QueryPropertyPath.ValidateIdentifier(objectTypeName, nameof(objectTypeName));
-        QueryPropertyPath.ValidateIdentifier(indexName, nameof(indexName));
-
-        return _connection
-            .WithConnectionBlockAsync(
-                _connectionGate,
-                (propertyPathString, isNumeric, objectTypeName, indexName),
-                static (conn, state) =>
-                {
-                    using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
-
-                    string fullIndexName = $"idx_{state.indexName}_{state.objectTypeName}";
-
-                    try
-                    {
-                        using var createIndexCommand = conn.CreateCommand();
-
-#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
-                        createIndexCommand.CommandText =
-                            state.isNumeric
-                                ? Queries.CreateIndexForJsonValueAsNumeric(fullIndexName, state.propertyPathString)
-                                : Queries.CreateIndexForJsonValue(fullIndexName, state.propertyPathString);
-#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
-
-                        createIndexCommand.ExecuteNonQuery();
-
-                        transaction.Commit();
-                    }
-                    catch (Exception ex)
-                    {
-                        transaction.Rollback();
-                        throw new TychoException($"Failed to Create Index: {fullIndexName}", ex);
-                    }
-
-                    return true;
-                },
-                _persistConnection,
-                cancellationToken);
-    }
+        => CreateIndexCoreAsync(indexName, objectTypeName, new[] { (propertyPathString, isNumeric) }, cancellationToken);
 
     /// <summary>
     /// Creates a composite index on multiple properties of a registered type.
@@ -1901,47 +2093,26 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<TObj>();
         }
 
-        ArgumentNullException.ThrowIfNull(_connection);
+        return CreateIndexCore(indexName, GetSafeTypeName<TObj>(), ProcessIndexPaths(propertyPaths), TypeCache<TObj>.FullName);
+    }
 
-        QueryPropertyPath.ValidateIdentifier(indexName, nameof(indexName));
+    /// <summary>
+    /// Resolves each indexed property expression to its JSON path and numeric
+    /// classification. The same <see cref="QueryPropertyPath"/> helpers back the
+    /// filter builder, so an index and the filters over it agree on the SQL
+    /// expression by construction.
+    /// </summary>
+    private static (string PropertyPathString, bool IsNumeric)[] ProcessIndexPaths<TObj>(Expression<Func<TObj, object>>[] propertyPaths)
+    {
+        ArgumentNullException.ThrowIfNull(propertyPaths);
 
-        var processedPaths =
-            propertyPaths
-                .Select(x => (QueryPropertyPath.BuildPath(x), QueryPropertyPath.IsNumeric(x)))
-                .ToArray();
+        var processed = new (string PropertyPathString, bool IsNumeric)[propertyPaths.Length];
+        for (int i = 0; i < propertyPaths.Length; i++)
+        {
+            processed[i] = (QueryPropertyPath.BuildPath(propertyPaths[i]), QueryPropertyPath.IsNumeric(propertyPaths[i]));
+        }
 
-        string safeTypeName = GetSafeTypeName<TObj>();
-
-        _connection
-            .WithConnectionBlock(
-                _connectionGate,
-                (processedPaths, indexName, safeTypeName),
-                static (conn, state) =>
-                {
-                    var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
-
-                    string fullIndexName = $"idx_{state.indexName}_{state.safeTypeName}";
-                    try
-                    {
-                        using var createIndexCommand = conn.CreateCommand();
-
-#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
-                        createIndexCommand.CommandText = Queries.CreateIndexForJsonValue(fullIndexName, state.processedPaths);
-#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
-
-                        createIndexCommand.ExecuteNonQuery();
-
-                        transaction.Commit();
-                    }
-                    catch (Exception ex)
-                    {
-                        transaction.Rollback();
-                        throw new TychoException($"Failed to Create Index: {fullIndexName}", ex);
-                    }
-                },
-                _persistConnection);
-
-        return this;
+        return processed;
     }
 
     /// <summary>
@@ -1960,49 +2131,130 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<TObj>();
         }
 
-        ArgumentNullException.ThrowIfNull(_connection);
+        return CreateIndexCoreAsync(indexName, GetSafeTypeName<TObj>(), ProcessIndexPaths(propertyPaths), cancellationToken, TypeCache<TObj>.FullName);
+    }
 
+    /// <summary>
+    /// Drops an index previously created for <typeparamref name="TObj"/>, together
+    /// with its metadata record.
+    /// </summary>
+    /// <typeparam name="TObj">The indexed type.</typeparam>
+    /// <param name="indexName">The logical index name passed to CreateIndex.</param>
+    /// <returns>True if an index was dropped; false if no such index was recorded.</returns>
+    public bool DropIndex<TObj>(string indexName)
+    {
+        ArgumentNullException.ThrowIfNull(_connection);
         QueryPropertyPath.ValidateIdentifier(indexName, nameof(indexName));
 
-        var processedPaths =
-            propertyPaths
-                .Select(x => (QueryPropertyPath.BuildPath(x), QueryPropertyPath.IsNumeric(x)))
-                .ToArray();
+        return _connection
+            .WithConnectionBlock(
+                _connectionGate,
+                (indexName, typeName: TypeCache<TObj>.FullName),
+                static (conn, state) => ExecuteDropIndex(conn, state.indexName, state.typeName),
+                _persistConnection);
+    }
 
-        string safeTypeName = GetSafeTypeName<TObj>();
+    /// <summary>
+    /// Asynchronously drops an index previously created for <typeparamref name="TObj"/>.
+    /// </summary>
+    /// <typeparam name="TObj">The indexed type.</typeparam>
+    /// <param name="indexName">The logical index name passed to CreateIndex.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>True if an index was dropped; false if no such index was recorded.</returns>
+    public ValueTask<bool> DropIndexAsync<TObj>(string indexName, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(_connection);
+        QueryPropertyPath.ValidateIdentifier(indexName, nameof(indexName));
 
         return _connection
             .WithConnectionBlockAsync(
                 _connectionGate,
-                (processedPaths, indexName, safeTypeName),
-                static (conn, state) =>
-                {
-                    using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
-
-                    string fullIndexName = $"idx_{state.indexName}_{state.safeTypeName}";
-
-                    try
-                    {
-                        using var createIndexCommand = conn.CreateCommand();
-
-#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
-                        createIndexCommand.CommandText = Queries.CreateIndexForJsonValue(fullIndexName, state.processedPaths);
-#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
-
-                        createIndexCommand.ExecuteNonQuery();
-
-                        transaction.Commit();
-                    }
-                    catch (Exception ex)
-                    {
-                        transaction.Rollback();
-                        throw new TychoException($"Failed to Create Index: {fullIndexName}", ex);
-                    }
-
-                    return true;
-                },
+                (indexName, typeName: TypeCache<TObj>.FullName),
+                static (conn, state) => ExecuteDropIndex(conn, state.indexName, state.typeName),
                 _persistConnection,
                 cancellationToken);
+    }
+
+    private static bool ExecuteDropIndex(SqliteConnection conn, string indexName, string typeName)
+    {
+        using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
+
+        try
+        {
+            string? physicalName = null;
+
+            using (var lookup = conn.CreateCommand())
+            {
+                lookup.CommandText = Queries.SelectIndexMetadata;
+                lookup.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = indexName });
+                lookup.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = typeName });
+
+                using var reader = lookup.ExecuteReader();
+                if (reader.Read())
+                {
+                    physicalName = reader.GetString(0);
+                }
+            }
+
+            if (physicalName is null)
+            {
+                transaction.Commit();
+                return false;
+            }
+
+            ExecuteNonQuery(conn, Queries.DropIndex(physicalName));
+
+            using (var delete = conn.CreateCommand())
+            {
+                delete.CommandText = Queries.DeleteIndexMetadata;
+                delete.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = indexName });
+                delete.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = typeName });
+                delete.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            transaction.Rollback();
+            throw new TychoException($"Failed to Drop Index: {indexName}", ex);
+        }
+    }
+
+    /// <summary>
+    /// Lists the indexes Tycho has created, as recorded in its metadata table.
+    /// Indexes created directly against the database outside Tycho are not listed.
+    /// </summary>
+    /// <returns>The recorded indexes, ordered by type then index name.</returns>
+    public IReadOnlyList<TychoIndexInfo> ListIndexes()
+    {
+        ArgumentNullException.ThrowIfNull(_connection);
+
+        return _connection
+            .WithConnectionBlock<IReadOnlyList<TychoIndexInfo>, object?>(
+                _connectionGate,
+                null,
+                static (conn, _) =>
+                {
+                    var results = new List<TychoIndexInfo>();
+
+                    using var command = conn.CreateCommand();
+                    command.CommandText = Queries.SelectAllIndexMetadata;
+
+                    using var reader = command.ExecuteReader();
+                    while (reader.Read())
+                    {
+                        results.Add(new TychoIndexInfo(
+                            reader.GetString(0),
+                            reader.GetString(1),
+                            reader.GetString(2),
+                            reader.GetString(3)));
+                    }
+
+                    return results;
+                },
+                _persistConnection);
     }
 
     /// <summary>
@@ -2239,6 +2491,8 @@ public class Tycho : IDisposable
 #pragma warning restore CA2100
 
                     command.ExecuteNonQuery();
+
+                    RunOptimize(conn);
                 },
                 _persistConnection);
 
@@ -2268,6 +2522,8 @@ public class Tycho : IDisposable
 #pragma warning restore CA2100
 
             command.ExecuteNonQuery();
+
+            RunOptimize(connection);
 
             return connection;
         }

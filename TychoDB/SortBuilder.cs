@@ -48,13 +48,28 @@ public class SortBuilder<TObj>
     }
 
     public SortBuilder<TObj> OrderBy(SortDirection sortDirection, string propertyPath)
+        => OrderBy(sortDirection, propertyPath, isPropertyPathNumeric: false);
+
+    /// <summary>
+    /// Orders by a raw JSON property path.
+    /// </summary>
+    /// <param name="sortDirection">The direction to sort.</param>
+    /// <param name="propertyPath">The JSON path to order by.</param>
+    /// <param name="isPropertyPathNumeric">
+    /// Whether the property is numeric. Numeric properties are indexed as
+    /// <c>CAST(JSON_EXTRACT(…) as NUMERIC)</c>, so this must be true for the ordering
+    /// to be satisfied by such an index instead of falling back to a temporary
+    /// b-tree. The expression-based overload determines this automatically.
+    /// </param>
+    /// <returns>The current builder for chaining.</returns>
+    public SortBuilder<TObj> OrderBy(SortDirection sortDirection, string propertyPath, bool isPropertyPathNumeric)
     {
         // Raw path from the caller is emitted as an identifier inside
         // JSON_EXTRACT(Data, '...') and cannot be parameterized, so validate it
         // against the strict grammar.
         QueryPropertyPath.ValidatePath(propertyPath, nameof(propertyPath));
 
-        _sortInfos.Add(new SortInfo(sortDirection, propertyPath));
+        _sortInfos.Add(new SortInfo(sortDirection, propertyPath, isPropertyPathNumeric));
 
         return this;
     }

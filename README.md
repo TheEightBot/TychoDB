@@ -391,6 +391,15 @@ Index names are scoped per type, so the same name can be reused for different ty
 and always scan. Range filters (`>`, `>=`, `<`, `<=`) compile to a numeric comparison, so
 they use an index only on numeric properties.
 
+**Raw-string paths.** The expression overloads infer whether a property is numeric. If you
+use the raw-string overloads, say so explicitly, or the ordering/comparison will not match
+a numeric index:
+
+```csharp
+SortBuilder<Person>.Create()
+    .OrderBy(SortDirection.Ascending, "$.Age", isPropertyPathNumeric: true);
+```
+
 For the measurements behind this design — including why the previous implementation could
 be slower than no index at all — see [docs/indexing-analysis.md](docs/indexing-analysis.md).
 

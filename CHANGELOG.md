@@ -66,7 +66,14 @@ query plans: [docs/indexing-analysis.md](docs/indexing-analysis.md).
 - **Planner statistics.** A bounded `ANALYZE` runs after an index is created, and
   `PRAGMA optimize` now also runs on connect. Previously `sqlite_stat1` was never
   created at all, so the planner always ran on default heuristics.
-- **New API:** `DropIndex<T>`, `DropIndexAsync<T>`, and `ListIndexes()` (additive).
+- **New API:** `DropIndex<T>`, `DropIndexAsync<T>`, and `ListIndexes()` (additive), plus
+  `SortBuilder.OrderBy(SortDirection, string propertyPath, bool isPropertyPathNumeric)`
+  so the raw-string sort overload can emit the numeric form its index is built on —
+  matching the existing raw-string `FilterBuilder.Filter` overload.
+- **Closed generic types are indexable.** Derived type names for closed generics contain
+  characters that are not valid in a SQL identifier (e.g. `Dictionary_2__String,Int32__`);
+  they are now normalized instead of rejected. Caller-supplied identifiers are still
+  validated strictly.
 
 Measured on 25,000 rows: numeric equality **6,320 → 18.5 µs**, numeric range
 **6,372 → 85 µs**, sorts **~6,700 → ~53 µs** (all previously gained nothing from an

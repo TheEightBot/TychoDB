@@ -1762,7 +1762,7 @@ public class Tycho : IDisposable
 
         return CreateIndexCore(
             indexName,
-            GetSafeTypeName<TObj>(),
+            ToSafeIdentifier(GetSafeTypeName<TObj>()),
             new[] { (QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath)) },
             TypeCache<TObj>.FullName);
     }
@@ -1836,17 +1836,36 @@ public class Tycho : IDisposable
     private static (string PropertyPathString, bool IsNumeric)[] ValidateIndexInputs(
         string indexName,
         string objectTypeName,
-        (string PropertyPathString, bool IsNumeric)[] propertyPaths)
+        (string PropertyPathString, bool IsNumeric)[] propertyPaths,
+        string pathParamName)
     {
         QueryPropertyPath.ValidateIdentifier(objectTypeName, nameof(objectTypeName));
         QueryPropertyPath.ValidateIdentifier(indexName, nameof(indexName));
 
-        foreach (var (propertyPathString, _) in propertyPaths)
+        for (int i = 0; i < propertyPaths.Length; i++)
         {
-            QueryPropertyPath.ValidatePath(propertyPathString, nameof(propertyPaths));
+            // Name the offending element so the exception identifies which path failed
+            // rather than only the collection it came from.
+            var paramName = propertyPaths.Length == 1
+                ? pathParamName
+                : $"{pathParamName}[{i.ToString(System.Globalization.CultureInfo.InvariantCulture)}]";
+
+            QueryPropertyPath.ValidatePath(propertyPaths[i].PropertyPathString, paramName);
         }
 
         return propertyPaths;
+    }
+
+    /// <summary>
+    /// Validates an index name loaded from the <c>TychoIndex</c> metadata table before
+    /// it is concatenated into DDL. Tycho only ever writes validated names there, but
+    /// the value is read back out of the database file, so it is re-checked rather than
+    /// trusted.
+    /// </summary>
+    private static string ValidateStoredIndexName(string physicalName)
+    {
+        QueryPropertyPath.ValidateIdentifier(physicalName, nameof(physicalName));
+        return physicalName;
     }
 
     private static void ExecuteNonQuery(SqliteConnection conn, string commandText)
@@ -1886,7 +1905,7 @@ public class Tycho : IDisposable
             // upgraded database does not keep maintaining a stale b-tree forever.
             foreach (var stalePhysicalName in ReadRecordedPhysicalNames(conn, definition))
             {
-                ExecuteNonQuery(conn, Queries.DropIndex(stalePhysicalName));
+                ExecuteNonQuery(conn, Queries.DropIndex(ValidateStoredIndexName(stalePhysicalName)));
             }
 
             if (!string.Equals(definition.LegacyPhysicalName, definition.PhysicalName, StringComparison.Ordinal))
@@ -1987,14 +2006,15 @@ public class Tycho : IDisposable
         string indexName,
         string objectTypeName,
         (string PropertyPathString, bool IsNumeric)[] propertyPaths,
-        string? fullTypeName = null)
+        string? fullTypeName = null,
+        string pathParamName = "propertyPaths")
     {
         ArgumentNullException.ThrowIfNull(_connection);
 
         var definition = BuildIndexDefinition(
             indexName,
             objectTypeName,
-            ValidateIndexInputs(indexName, objectTypeName, propertyPaths),
+            ValidateIndexInputs(indexName, objectTypeName, propertyPaths, pathParamName),
             fullTypeName);
 
         _connection
@@ -2012,14 +2032,15 @@ public class Tycho : IDisposable
         string objectTypeName,
         (string PropertyPathString, bool IsNumeric)[] propertyPaths,
         CancellationToken cancellationToken,
-        string? fullTypeName = null)
+        string? fullTypeName = null,
+        string pathParamName = "propertyPaths")
     {
         ArgumentNullException.ThrowIfNull(_connection);
 
         var definition = BuildIndexDefinition(
             indexName,
             objectTypeName,
-            ValidateIndexInputs(indexName, objectTypeName, propertyPaths),
+            ValidateIndexInputs(indexName, objectTypeName, propertyPaths, pathParamName),
             fullTypeName);
 
         return _connection
@@ -2040,7 +2061,11 @@ public class Tycho : IDisposable
     /// <param name="indexName">The name to give to the index.</param>
     /// <returns>The current Tycho instance for method chaining.</returns>
     public Tycho CreateIndex(string propertyPathString, bool isNumeric, string objectTypeName, string indexName)
-        => CreateIndexCore(indexName, objectTypeName, new[] { (propertyPathString, isNumeric) });
+        => CreateIndexCore(
+            indexName,
+            objectTypeName,
+            new[] { (propertyPathString, isNumeric) },
+            pathParamName: nameof(propertyPathString));
 
     /// <summary>
     /// Asynchronously creates an index for a specific property of a registered type.
@@ -2060,7 +2085,7 @@ public class Tycho : IDisposable
 
         return CreateIndexCoreAsync(
             indexName,
-            GetSafeTypeName<TObj>(),
+            ToSafeIdentifier(GetSafeTypeName<TObj>()),
             new[] { (QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath)) },
             cancellationToken,
             TypeCache<TObj>.FullName);
@@ -2077,7 +2102,12 @@ public class Tycho : IDisposable
     /// <returns>A ValueTask containing a boolean indicating success or failure.</returns>
     public ValueTask<bool> CreateIndexAsync(string propertyPathString, bool isNumeric, string objectTypeName,
         string indexName, CancellationToken cancellationToken = default)
-        => CreateIndexCoreAsync(indexName, objectTypeName, new[] { (propertyPathString, isNumeric) }, cancellationToken);
+        => CreateIndexCoreAsync(
+            indexName,
+            objectTypeName,
+            new[] { (propertyPathString, isNumeric) },
+            cancellationToken,
+            pathParamName: nameof(propertyPathString));
 
     /// <summary>
     /// Creates a composite index on multiple properties of a registered type.
@@ -2093,7 +2123,7 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<TObj>();
         }
 
-        return CreateIndexCore(indexName, GetSafeTypeName<TObj>(), ProcessIndexPaths(propertyPaths), TypeCache<TObj>.FullName);
+        return CreateIndexCore(indexName, ToSafeIdentifier(GetSafeTypeName<TObj>()), ProcessIndexPaths(propertyPaths), TypeCache<TObj>.FullName);
     }
 
     /// <summary>
@@ -2131,7 +2161,7 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<TObj>();
         }
 
-        return CreateIndexCoreAsync(indexName, GetSafeTypeName<TObj>(), ProcessIndexPaths(propertyPaths), cancellationToken, TypeCache<TObj>.FullName);
+        return CreateIndexCoreAsync(indexName, ToSafeIdentifier(GetSafeTypeName<TObj>()), ProcessIndexPaths(propertyPaths), cancellationToken, TypeCache<TObj>.FullName);
     }
 
     /// <summary>
@@ -2202,7 +2232,7 @@ public class Tycho : IDisposable
                 return false;
             }
 
-            ExecuteNonQuery(conn, Queries.DropIndex(physicalName));
+            ExecuteNonQuery(conn, Queries.DropIndex(ValidateStoredIndexName(physicalName)));
 
             using (var delete = conn.CreateCommand())
             {
@@ -2465,6 +2495,35 @@ public class Tycho : IDisposable
         return _registeredTypeInformation.ContainsKey(type)
             ? _registeredTypeInformation[type].SafeTypeName
             : type.GetSafeTypeName();
+    }
+
+    /// <summary>
+    /// Makes a library-derived type name usable as a SQL identifier. Type names for
+    /// closed generics are rendered with separators that are not identifier
+    /// characters (e.g. <c>Dictionary_2__String,Int32__</c>), which the identifier
+    /// validator rejects. These names come from <see cref="Type"/>, not from the
+    /// caller, so the right treatment is to normalize them rather than to reject the
+    /// call; caller-supplied identifiers are still validated strictly.
+    /// </summary>
+    private static string ToSafeIdentifier(string derivedTypeName)
+    {
+        if (derivedTypeName.Length == 0)
+        {
+            return "_";
+        }
+
+        Span<char> buffer = derivedTypeName.Length <= 128
+            ? stackalloc char[derivedTypeName.Length]
+            : new char[derivedTypeName.Length];
+
+        for (int i = 0; i < derivedTypeName.Length; i++)
+        {
+            char c = derivedTypeName[i];
+            buffer[i] = char.IsLetterOrDigit(c) || c == '_' ? c : '_';
+        }
+
+        // Identifiers may not start with a digit.
+        return char.IsDigit(buffer[0]) ? string.Concat("_", buffer.ToString()) : buffer.ToString();
     }
 
     private SqliteConnection BuildConnection()

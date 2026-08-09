@@ -492,6 +492,75 @@ public class IndexDdlTests
         after.ShouldNotContainKey("idx_streamvalue_key_partition");
     }
 
+    [TestMethod]
+    public async Task StringPathSort_CanRequestNumericForm_AndUsesTheNumericIndex()
+    {
+        var (path, dbName) = NewDbPath();
+
+        using (var db = await BuildDb(path, dbName).ConnectAsync())
+        {
+            await db.WriteObjectsAsync(SeedData(), x => x.StringProperty);
+            await db.CreateIndexAsync<IndexTestModel>(x => x.LongProperty, "long_idx");
+        }
+
+        var dbFile = Path.Combine(path, dbName);
+
+        // Without the numeric flag the string-path overload emits the plain
+        // JSON_EXTRACT form, which cannot match a numeric index.
+        var plain = new StringBuilder(Queries.SelectDataFromJsonValueWithFullTypeName);
+        SortBuilder<IndexTestModel>.Create()
+            .OrderBy(SortDirection.Ascending, "$.LongProperty")
+            .Build(plain);
+        Explain(dbFile, plain.ToString(), new FilterParameters())
+            .ShouldContain("USE TEMP B-TREE FOR ORDER BY");
+
+        // With it, the ordering matches the index expression.
+        var numeric = new StringBuilder(Queries.SelectDataFromJsonValueWithFullTypeName);
+        SortBuilder<IndexTestModel>.Create()
+            .OrderBy(SortDirection.Ascending, "$.LongProperty", isPropertyPathNumeric: true)
+            .Build(numeric);
+
+        var plan = Explain(dbFile, numeric.ToString(), new FilterParameters());
+        plan.ShouldNotContain("USE TEMP B-TREE FOR ORDER BY");
+        plan.ShouldContain("idx_long_idx_");
+    }
+
+    [TestMethod]
+    public async Task CreateIndex_InvalidPath_NamesTheOffendingParameter()
+    {
+        var (path, dbName) = NewDbPath();
+
+        using var db = await BuildDb(path, dbName).ConnectAsync();
+
+        // The manual overload reports the path parameter by its own name rather than
+        // the name of the internal collection it is passed through.
+        var single = await Assert.ThrowsExactlyAsync<ArgumentException>(
+            async () => await db.CreateIndexAsync("$.Bad;DROP", isNumeric: false, "IndexTestModel", "bad_idx"));
+
+        single.ParamName.ShouldBe("propertyPathString");
+    }
+
+    [TestMethod]
+    public async Task CreateIndex_OnGenericTypeWithMultipleArguments_IsUsableAndInjectionSafe()
+    {
+        var (path, dbName) = NewDbPath();
+
+        using (var db = await BuildDb(path, dbName).ConnectAsync())
+        {
+            await db.CreateIndexAsync<Dictionary<string, int>>(
+                new Expression<Func<Dictionary<string, int>, object>>[] { x => x.Count },
+                "generic_idx");
+        }
+
+        // The derived name for a closed generic contains characters that are not valid
+        // in an identifier; they are normalized rather than rejected.
+        var ddl = ReadIndexDdl(Path.Combine(path, dbName));
+        var name = ddl.Keys.Single(k => k.StartsWith("idx_generic_idx_", StringComparison.Ordinal));
+
+        name.ShouldNotContain(",");
+        name.ShouldAllBe(c => char.IsLetterOrDigit(c) || c == '_');
+    }
+
     // ---------- index management API ----------
     [TestMethod]
     public async Task DropIndex_RemovesIndexAndMetadata()

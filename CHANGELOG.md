@@ -31,12 +31,61 @@ some query behavior changes (see Breaking changes).
   the SQLCipher bundle — breaking **every** Newtonsoft-serialized write on
   `TychoDB.Encrypted`. Serialization now uses BOM-less UTF-8.
 
+### Indexing overhaul
+
+Indexing was measured end-to-end and rebuilt. Full evidence, before/after benchmarks and
+query plans: [docs/indexing-analysis.md](docs/indexing-analysis.md).
+
+- **Critical: indexes on value-type properties indexed the entire document.**
+  `CreateIndex<T>(x => x.Age, …)` — and every `int`, `long`, `double`, `bool`,
+  `DateTime`, `Guid`, enum, or nullable property — generated
+  `JSON_EXTRACT(Data, '$')`, storing a **complete second copy of every document** in the
+  index. Those indexes could never be used by any query, so they cost storage and write
+  throughput for zero benefit. The boxing `Convert` node introduced by
+  `Expression<Func<T, object>>` is now unwrapped, producing the real property path and
+  the correct numeric form.
+- **Partial expression indexes.** Indexes are now
+  `ON JsonValue(Partition, <expr>…) WHERE FullTypeName = '<type>'`: scoped to one stored
+  type, led by the `Partition` column every query constrains. Index size on the
+  benchmark dataset dropped ~82%.
+- **Sorting can now use an index.** `SortBuilder` emitted `Data ->> '$.x'`, which can
+  never match a `JSON_EXTRACT` expression index, so every sorted read built a temporary
+  b-tree. It now emits the same expression the index is built on.
+- **Redundant built-in indexes removed.** Three of the four `JsonValue` indexes and the
+  `StreamValue` index duplicated the primary-key autoindexes or a prefix of another
+  index. They are dropped (idempotently, so existing databases shed them on connect),
+  cutting maintained b-trees from five to two. Query plans are unchanged, which is
+  covered by a regression test.
+- **Index metadata, dedup and migration.** A `TychoIndex` table records each index, so
+  re-declaring an unchanged index is a cheap metadata lookup, changing an index's
+  definition rebuilds it and drops the stale b-tree, and indexes from older versions are
+  migrated automatically on the next `CreateIndex` call.
+- **Cross-namespace index-name collisions fixed.** Physical index names carry a stable
+  hash of the full type name. Previously two same-named types in different namespaces
+  shared one index name and the second `CREATE INDEX IF NOT EXISTS` silently did nothing.
+- **Planner statistics.** A bounded `ANALYZE` runs after an index is created, and
+  `PRAGMA optimize` now also runs on connect. Previously `sqlite_stat1` was never
+  created at all, so the planner always ran on default heuristics.
+- **New API:** `DropIndex<T>`, `DropIndexAsync<T>`, and `ListIndexes()` (additive), plus
+  `SortBuilder.OrderBy(SortDirection, string propertyPath, bool isPropertyPathNumeric)`
+  so the raw-string sort overload can emit the numeric form its index is built on —
+  matching the existing raw-string `FilterBuilder.Filter` overload.
+- **Closed generic types are indexable.** Derived type names for closed generics contain
+  characters that are not valid in a SQL identifier (e.g. `Dictionary_2__String,Int32__`);
+  they are now normalized instead of rejected. Caller-supplied identifiers are still
+  validated strictly.
+
+Measured on 25,000 rows: numeric equality **6,320 → 18.5 µs**, numeric range
+**6,372 → 85 µs**, sorts **~6,700 → ~53 µs** (all previously gained nothing from an
+index); batch writes **−44%**; database file with three indexes **20.2 → 8.4 MiB**.
+
 ### Performance
 
-- **`PRAGMA optimize` on disconnect.** `Disconnect`/`DisconnectAsync`/`Dispose` now run
-  SQLite's recommended `PRAGMA optimize` (bounded by `analysis_limit = 400`) so the
-  query planner keeps fresh statistics and continues to choose indexes — including
-  expression indexes over `JSON_EXTRACT`.
+- **`PRAGMA optimize` on connect and disconnect.** `Connect`/`ConnectAsync` and
+  `Disconnect`/`DisconnectAsync`/`Dispose` run SQLite's recommended `PRAGMA optimize`
+  (bounded by `analysis_limit = 400`) so the query planner keeps fresh statistics and
+  continues to choose indexes — including expression indexes over `JSON_EXTRACT`. The
+  connect-time call matters for long-lived mobile apps that never cleanly disconnect.
 - **Bounded WAL on mobile.** The `Mobile` profile sets `journal_size_limit = 8 MB` so
   the WAL file truncates after a checkpoint instead of growing unbounded; `Desktop`
   leaves it unlimited.
@@ -75,6 +124,17 @@ some query behavior changes (see Breaking changes).
   match **literally**; previously they acted as wildcards.
 - The raw-string path/index-name overloads now throw `ArgumentException` for inputs
   outside `[A-Za-z0-9_.$\[\]]` (paths) / `[A-Za-z0-9_]` (identifiers).
+- **Index DDL and physical index names changed.** Indexes are rebuilt in the new partial
+  shape the next time `CreateIndex` is called for them, and the old index is dropped;
+  no application change is required, but the first launch after upgrading pays a
+  one-time rebuild. Code that inspected TychoDB's index names directly in `sqlite_master`
+  must account for the hash suffix — use `ListIndexes()` instead.
+- **Sort SQL changed** from `Data ->> '$.x'` to `JSON_EXTRACT(Data, '$.x')` (and
+  `CAST(… as NUMERIC)` for numeric properties). Ordering of scalar values is unchanged;
+  this is what allows sorts to use an index.
+- The three redundant `JsonValue` indexes and `idx_streamvalue_key_partition` are dropped
+  on connect. Applications that created their own indexes with those exact names would
+  lose them.
 
 ### Packaging
 

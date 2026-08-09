@@ -346,7 +346,62 @@ db.CreateIndex<Person>(
 
 // Create an index on a nested property
 db.CreateIndex<Customer>(x => x.HomeAddress.Country, "country_index");
+
+// List the indexes Tycho has created
+foreach (var index in db.ListIndexes())
+{
+    Console.WriteLine($"{index.IndexName} on {index.FullTypeName}");
+}
+
+// Drop an index by its logical name
+await db.DropIndexAsync<Person>("age_index");
 ```
+
+### How indexes are built
+
+Indexes are **partial expression indexes** scoped to a single stored type:
+
+```sql
+CREATE INDEX idx_age_index_Person_1a2b3c4d
+ON JsonValue(Partition, CAST(JSON_EXTRACT(Data, '$.Age') as NUMERIC))
+WHERE FullTypeName = 'MyApp.Models.Person';
+```
+
+This matters for how they behave:
+
+- **They are scoped to one type.** `JsonValue` holds every stored type, so a partial
+  index keeps entries only for rows of the indexed type. Writes of *other* types cost
+  nothing to maintain it.
+- **The indexed expression must match the query.** SQLite matches expression indexes
+  structurally, so TychoDB derives filters, sorts, and index DDL from the same helpers —
+  a numeric property is `CAST(... as NUMERIC)` everywhere, a non-numeric property is
+  plain `JSON_EXTRACT` everywhere.
+- **Calling `CreateIndex` repeatedly is cheap and safe.** Definitions are recorded in a
+  `TychoIndex` metadata table; re-declaring an unchanged index is a metadata lookup with
+  no DDL. Declaring the same index name with a *different* property rebuilds it and drops
+  the old one, and indexes created by older versions are migrated away automatically.
+  Declaring your indexes on every app launch is the intended usage.
+- **Statistics are refreshed** with a bounded `ANALYZE` after an index is created, so a
+  new index is usable by the very next query.
+
+Index names are scoped per type, so the same name can be reused for different types
+(including two types that share a short name in different namespaces).
+
+**What indexes cannot help.** `Contains`, `StartsWith`, and `EndsWith` compile to `LIKE`
+and always scan. Range filters (`>`, `>=`, `<`, `<=`) compile to a numeric comparison, so
+they use an index only on numeric properties.
+
+**Raw-string paths.** The expression overloads infer whether a property is numeric. If you
+use the raw-string overloads, say so explicitly, or the ordering/comparison will not match
+a numeric index:
+
+```csharp
+SortBuilder<Person>.Create()
+    .OrderBy(SortDirection.Ascending, "$.Age", isPropertyPathNumeric: true);
+```
+
+For the measurements behind this design — including why the previous implementation could
+be slower than no index at all — see [docs/indexing-analysis.md](docs/indexing-analysis.md).
 
 ## Connection Management
 
@@ -551,9 +606,10 @@ await db.SaveAllAsync(people, "active_users");
   roughly **10× faster** and **~6× lower allocation** than calling `WriteObjectAsync`
   in a loop (each single write is its own transaction/commit). Keep the default
   `withTransaction: true` for bulk writes; it is faster than `withTransaction: false`.
-- Create indexes for frequently queried properties (`CreateIndex`), and make sure the
-  indexed property path matches the one used in your filters so the query planner can
-  use the index.
+- Create indexes for frequently queried properties (`CreateIndex`) using the
+  expression-based overloads, and index the same property you filter or sort on.
+  Equality filters, numeric range filters, and sorts can all use an index; `Contains`
+  and the other `LIKE`-based filters cannot.
 - Use the appropriate serializer for your needs. System.Text.Json with a
   `JsonSerializerContext` (source generation) is the recommended default; Newtonsoft
   works but allocates more.

@@ -16,6 +16,32 @@ internal static class QueryPropertyPath
     /// </summary>
     private const int MaxPooledSegments = 8;
 
+    /// <summary>
+    /// Strips the boxing conversion the compiler inserts when a value-type
+    /// property is used in an expression typed as <c>Func&lt;T, object&gt;</c>
+    /// (as the CreateIndex overloads are). Without this the body is a
+    /// <see cref="UnaryExpression"/> rather than a <see cref="MemberExpression"/>,
+    /// so the path walk collects nothing and falls back to "$" — which indexes
+    /// the entire document instead of the property.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Expression UnwrapConvert(Expression expression)
+    {
+        while (expression is UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } unary)
+        {
+            expression = unary.Operand;
+        }
+
+        return expression;
+    }
+
+    /// <summary>
+    /// Resolves the property a path expression ultimately reads, ignoring any
+    /// boxing conversion. Returns null when the expression is not a property access.
+    /// </summary>
+    private static PropertyInfo? GetLeafProperty(Expression body)
+        => UnwrapConvert(body) is MemberExpression { Member: PropertyInfo propInfo } ? propInfo : null;
+
     public static string BuildPath<TPathObj, TProp>(Expression<Func<TPathObj, TProp>> expression)
     {
         // Rent a pooled array for typical short paths
@@ -25,7 +51,7 @@ internal static class QueryPropertyPath
         try
         {
             // Walk the expression tree to collect property names
-            var current = expression.Body;
+            var current = UnwrapConvert(expression.Body);
 
             while (current is MemberExpression memberExpr)
             {
@@ -42,7 +68,7 @@ internal static class QueryPropertyPath
                 }
 
                 segments[segmentCount++] = memberExpr.Member.Name;
-                current = memberExpr.Expression;
+                current = memberExpr.Expression is { } inner ? UnwrapConvert(inner) : null!;
             }
 
             if (segmentCount == 0)
@@ -156,7 +182,7 @@ internal static class QueryPropertyPath
 
     public static bool IsNumeric<TPathObj, TProp>(Expression<Func<TPathObj, TProp>> expression)
     {
-        if (expression.Body is MemberExpression memEx && memEx.Member is PropertyInfo propInfo)
+        if (GetLeafProperty(expression.Body) is { } propInfo)
         {
             var propertyType = propInfo.PropertyType;
 
@@ -175,7 +201,7 @@ internal static class QueryPropertyPath
 
     public static bool IsBool<TPathObj, TProp>(Expression<Func<TPathObj, TProp>> expression)
     {
-        if (expression.Body is MemberExpression memEx && memEx.Member is PropertyInfo propInfo)
+        if (GetLeafProperty(expression.Body) is { } propInfo)
         {
             var propertyType = propInfo.PropertyType;
 
@@ -187,7 +213,7 @@ internal static class QueryPropertyPath
 
     public static bool IsDateTime<TPathObj, TProp>(Expression<Func<TPathObj, TProp>> expression)
     {
-        if (expression.Body is MemberExpression memEx && memEx.Member is PropertyInfo propInfo)
+        if (GetLeafProperty(expression.Body) is { } propInfo)
         {
             var propertyType = propInfo.PropertyType;
 

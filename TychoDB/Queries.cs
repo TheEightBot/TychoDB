@@ -40,17 +40,20 @@ internal static class Queries
             PRIMARY KEY (Key, FullTypeName, Partition)
         );
 
-        CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename
-        ON JsonValue (FullTypeName);
-
+        -- The only secondary index JsonValue needs. Every read constrains
+        -- FullTypeName and Partition by equality, and lookups by primary key are
+        -- served by the PRIMARY KEY (Key, FullTypeName, Partition) autoindex.
         CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename_partition
         ON JsonValue (FullTypeName, Partition);
 
-        CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename
-        ON JsonValue (Key, FullTypeName);
-
-        CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename_partition
-        ON JsonValue (Key, FullTypeName, Partition);
+        -- Shed indexes that earlier versions created and that duplicate either the
+        -- primary-key autoindex or a prefix of the index above. Each one cost a
+        -- full b-tree of write maintenance on every insert, update and delete while
+        -- serving no query the remaining indexes cannot. Idempotent and cheap.
+        DROP INDEX IF EXISTS idx_jsonvalue_fulltypename;
+        DROP INDEX IF EXISTS idx_jsonvalue_key_fulltypename;
+        DROP INDEX IF EXISTS idx_jsonvalue_key_fulltypename_partition;
+        DROP INDEX IF EXISTS idx_streamvalue_key_partition;
 
         CREATE TABLE IF NOT EXISTS StreamValue
         (
@@ -60,8 +63,15 @@ internal static class Queries
             PRIMARY KEY (Key, Partition)
         );
 
-        CREATE INDEX IF NOT EXISTS idx_streamvalue_key_partition
-        ON StreamValue (Key, Partition);
+        CREATE TABLE IF NOT EXISTS TychoIndex
+        (
+            IndexName       TEXT NOT NULL,
+            FullTypeName    TEXT NOT NULL,
+            PhysicalName    TEXT NOT NULL,
+            Definition      TEXT NOT NULL,
+            ShapeVersion    INTEGER NOT NULL,
+            PRIMARY KEY (IndexName, FullTypeName)
+        );
         """;
 
     // Profile defaults. cache_size is in KiB (negative = KiB, not pages);
@@ -355,10 +365,42 @@ internal static class Queries
     private const string MultiIndexOnJsonValue = "\nON JsonValue(FullTypeName";
     private const string MultiIndexClose = ");";
 
-    public static string CreateIndexForJsonValue(string fullIndexName, (string PropertyPathString, bool IsNumeric)[] propertyPaths)
+    // Partial-index shape. Leads with Partition (every read constrains
+    // Partition = $partition) and confines the index to a single stored type via
+    // the WHERE clause, so it carries no entries for rows of other types. The
+    // type name moves from per-entry storage into the index definition.
+    private const string PartialIndexOnJsonValue = "\nON JsonValue(Partition";
+    private const string PartialIndexWherePrefix = "\nWHERE FullTypeName = '";
+    private const string PartialIndexWhereSuffix = "';";
+
+    /// <summary>
+    /// Builds a CREATE INDEX statement over JSON expressions.
+    /// <para>
+    /// When <paramref name="fullTypeNameLiteral"/> is supplied the index is
+    /// <b>partial</b> — scoped to that stored type and led by Partition. When it is
+    /// null (the manual string overload, which only receives a short type name) the
+    /// index falls back to a non-partial shape led by FullTypeName and Partition,
+    /// which still matches every generated query because both are equality-constrained.
+    /// </para>
+    /// <para>
+    /// The indexed expressions are emitted in exactly the form
+    /// <see cref="FilterBuilder{TObj}"/> emits for the same property, because SQLite
+    /// matches expression indexes by structural comparison of the expression.
+    /// </para>
+    /// </summary>
+    public static string CreateIndexForJsonValue(
+        string fullIndexName,
+        (string PropertyPathString, bool IsNumeric)[] propertyPaths,
+        string? fullTypeNameLiteral = null)
     {
-        // Pre-calculate capacity: base string + each property path entry
-        int capacity = CreateIndexPrefix.Length + fullIndexName.Length + MultiIndexOnJsonValue.Length + MultiIndexClose.Length;
+        bool partial = fullTypeNameLiteral is not null;
+
+        int capacity = CreateIndexPrefix.Length + fullIndexName.Length + MultiIndexClose.Length +
+                       (partial
+                           ? PartialIndexOnJsonValue.Length + PartialIndexWherePrefix.Length +
+                             fullTypeNameLiteral!.Length + PartialIndexWhereSuffix.Length
+                           : MultiIndexOnJsonValue.Length + PartitionColumnSegment.Length);
+
         foreach (var pp in propertyPaths)
         {
             capacity += pp.IsNumeric
@@ -368,8 +410,16 @@ internal static class Queries
 
         var sb = new System.Text.StringBuilder(capacity);
         sb.Append(CreateIndexPrefix)
-          .Append(fullIndexName)
-          .Append(MultiIndexOnJsonValue);
+          .Append(fullIndexName);
+
+        if (partial)
+        {
+            sb.Append(PartialIndexOnJsonValue);
+        }
+        else
+        {
+            sb.Append(MultiIndexOnJsonValue).Append(PartitionColumnSegment);
+        }
 
         foreach (var pp in propertyPaths)
         {
@@ -388,8 +438,68 @@ internal static class Queries
         }
 
         sb.Append(MultiIndexClose);
+
+        if (partial)
+        {
+            // Replace the trailing ");" with ")\nWHERE ...;" so the WHERE clause
+            // lands outside the column list.
+            sb.Length -= MultiIndexClose.Length;
+            sb.Append(')')
+              .Append(PartialIndexWherePrefix)
+              .Append(EscapeSqlLiteral(fullTypeNameLiteral!))
+              .Append(PartialIndexWhereSuffix);
+        }
+
         return sb.ToString();
     }
+
+    private const string PartitionColumnSegment = ", Partition";
+
+    /// <summary>
+    /// Escapes a value for use inside a single-quoted SQL literal. CLR type names
+    /// cannot contain quotes, but the index WHERE clause cannot be parameterized,
+    /// so the value is escaped defensively rather than trusted.
+    /// </summary>
+    public static string EscapeSqlLiteral(string value)
+        => value.Replace("'", "''", StringComparison.Ordinal);
+
+    public const string DropIndexPrefix = "DROP INDEX IF EXISTS ";
+
+    public static string DropIndex(string fullIndexName)
+        => string.Concat(DropIndexPrefix, fullIndexName, ";");
+
+    // Bounded ANALYZE: refreshes sqlite_stat1 so a newly created index is usable by
+    // the very next query. analysis_limit caps the work so this stays cheap on mobile.
+    public const string AnalyzeBounded = "PRAGMA analysis_limit = 400; ANALYZE;";
+
+    public const string SelectIndexMetadata =
+        """
+        SELECT PhysicalName, Definition, ShapeVersion
+        FROM TychoIndex
+        WHERE IndexName = $indexName AND FullTypeName = $fullTypeName;
+        """;
+
+    public const string UpsertIndexMetadata =
+        """
+        INSERT OR REPLACE INTO TychoIndex(IndexName, FullTypeName, PhysicalName, Definition, ShapeVersion)
+        VALUES ($indexName, $fullTypeName, $physicalName, $definition, $shapeVersion);
+        """;
+
+    public const string DeleteIndexMetadata =
+        """
+        DELETE FROM TychoIndex
+        WHERE IndexName = $indexName AND FullTypeName = $fullTypeName;
+        """;
+
+    public const string SelectAllIndexMetadata =
+        """
+        SELECT IndexName, FullTypeName, PhysicalName, Definition, ShapeVersion
+        FROM TychoIndex
+        ORDER BY FullTypeName, IndexName;
+        """;
+
+    public const string SelectPhysicalIndexExists =
+        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = $physicalName;";
 
     // Cache common LIMIT values using FrozenDictionary for O(1) lookup
     private static readonly FrozenDictionary<int, string> CachedLimits = new Dictionary<int, string>

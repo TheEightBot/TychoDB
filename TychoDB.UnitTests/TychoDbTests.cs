@@ -2265,6 +2265,55 @@ public class TychoDbTests
         recorder.Reports.Last().ShouldBe(1.0);
     }
 
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    public async Task TychoDb_ConcurrentFilteredReads_ShouldNotCorruptCommands(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var testObjs =
+            Enumerable
+                .Range(0, 10)
+                .Select(
+                    i =>
+                        new TestClassA
+                        {
+                            StringProperty = $"Test String {i}",
+                            IntProperty = i,
+                        })
+                .ToList();
+
+        await db.WriteObjectsAsync(testObjs, x => x.StringProperty).ConfigureAwait(false);
+
+        var tasks =
+            Enumerable
+                .Range(0, 8)
+                .Select(
+                    _ =>
+                        Task.Run(
+                            async () =>
+                            {
+                                for (int i = 0; i < 250; i++)
+                                {
+                                    var objs =
+                                        await db
+                                            .ReadObjectsAsync<TestClassA>(
+                                                filter:
+                                                    FilterBuilder<TestClassA>
+                                                        .Create()
+                                                        .Filter(FilterType.Equals, x => x.StringProperty, $"Test String {i % 10}"))
+                                            .ConfigureAwait(false);
+
+                                    objs.Count().ShouldBe(1);
+                                }
+                            }))
+                .ToList();
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+    }
+
     public static Tycho BuildDatabaseConnection(IJsonSerializer jsonSerializer, bool requireTypeRegistration = false)
     {
 #if ENCRYPTED

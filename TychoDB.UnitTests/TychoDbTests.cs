@@ -2265,6 +2265,71 @@ public class TychoDbTests
         recorder.Reports.Last().ShouldBe(1.0);
     }
 
+    /// <summary>
+    /// Overlapping operations issued from the same thread used to share one command
+    /// <see cref="System.Text.StringBuilder"/>, because the builder was taken from a
+    /// <see cref="System.Threading.ThreadLocal{T}"/> (and cleared) on the calling thread, then
+    /// written to after the connection gate was awaited, on a pool thread. A later operation's
+    /// clear could truncate an earlier one's SQL mid-build, which SQLite rejected with errors
+    /// such as near "JSON_EXTRACT", or corrupt the builder's chunk chain badly enough to spin
+    /// forever. The timeout is load-bearing: the original defect hangs rather than throws, and
+    /// without it a regression wedges the run instead of failing it.
+    /// <para>
+    /// The builder is now shared per database and is safe only because every write to it happens
+    /// inside a connection block, which the gate admits one at a time. This test is what enforces
+    /// that invariant: move any command building back outside the gate and it goes red.
+    /// </para>
+    /// </summary>
+    [DataTestMethod]
+    [DynamicData(nameof(JsonSerializers))]
+    [Timeout(60000)]
+    public async Task TychoDb_ConcurrentFilteredReads_ShouldNotCorruptCommands(IJsonSerializer jsonSerializer)
+    {
+        using var db =
+            BuildDatabaseConnection(jsonSerializer)
+                .Connect();
+
+        var testObjs =
+            Enumerable
+                .Range(0, 10)
+                .Select(
+                    i =>
+                        new TestClassA
+                        {
+                            StringProperty = $"Test String {i}",
+                            IntProperty = i,
+                        })
+                .ToList();
+
+        await db.WriteObjectsAsync(testObjs, x => x.StringProperty).ConfigureAwait(false);
+
+        var tasks =
+            Enumerable
+                .Range(0, 8)
+                .Select(
+                    _ =>
+                        Task.Run(
+                            async () =>
+                            {
+                                for (int i = 0; i < 250; i++)
+                                {
+                                    var objs =
+                                        await db
+                                            .ReadObjectsAsync<TestClassA>(
+                                                filter:
+                                                    FilterBuilder<TestClassA>
+                                                        .Create()
+                                                        .Filter(FilterType.Equals, x => x.StringProperty, $"Test String {i % 10}"))
+                                            .ConfigureAwait(false);
+
+                                    objs.Count().ShouldBe(1);
+                                }
+                            }))
+                .ToList();
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+    }
+
     public static Tycho BuildDatabaseConnection(IJsonSerializer jsonSerializer, bool requireTypeRegistration = false)
     {
 #if ENCRYPTED

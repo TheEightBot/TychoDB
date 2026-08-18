@@ -39,9 +39,6 @@ public class Tycho : IDisposable
     private readonly int _commandTimeout;
     private readonly Dictionary<Type, RegisteredTypeInformation> _registeredTypeInformation = new();
 
-    // Using a ThreadLocal StringBuilder for better performance with multi-threading
-    private readonly ThreadLocal<StringBuilder> _commandBuilder = new(() => new StringBuilder(1024));
-
     // RecyclableMemoryStream for efficient memory management - optimized for mobile
     private static readonly RecyclableMemoryStreamManager _memoryStreamManager = new(
         new RecyclableMemoryStreamManager.Options
@@ -66,15 +63,10 @@ public class Tycho : IDisposable
     private SqliteConnection? _connection;
     private bool _isDisposed;
 
-    private StringBuilder ReusableStringBuilder
-    {
-        get
-        {
-            StringBuilder builder = _commandBuilder.Value;
-            builder.Clear();
-            return builder;
-        }
-    }
+    // Must be a fresh instance per operation: the builder is captured into connection-block
+    // state on the calling thread but written to later on a pool thread, so any reuse scheme
+    // (ThreadLocal included) lets overlapping operations corrupt each other's SQL.
+    private static StringBuilder CommandBuilder => new(1024);
 
     /// <summary>
     /// Initializes a new instance of the <see cref="Tycho"/> class.
@@ -444,7 +436,7 @@ public class Tycho : IDisposable
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
-                (partition, filter, withTransaction, commandBuilder: ReusableStringBuilder, _jsonSerializer),
+                (partition, filter, withTransaction, commandBuilder: CommandBuilder, _jsonSerializer),
                 static (conn, state) =>
                 {
                     SqliteTransaction? transaction = null;
@@ -533,7 +525,7 @@ public class Tycho : IDisposable
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
-                (key, partition, withTransaction, commandBuilder: ReusableStringBuilder),
+                (key, partition, withTransaction, commandBuilder: CommandBuilder),
                 static (conn, state) =>
                 {
                     SqliteTransaction? transaction = null;
@@ -619,7 +611,7 @@ public class Tycho : IDisposable
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
-                (key, partition, withTransaction, progress, commandBuilder: ReusableStringBuilder, _jsonSerializer, cancellationToken),
+                (key, partition, withTransaction, progress, commandBuilder: CommandBuilder, _jsonSerializer, cancellationToken),
                 static async (conn, state) =>
                 {
                     SqliteTransaction? transaction = null;
@@ -771,7 +763,7 @@ public class Tycho : IDisposable
         return _connection
             .WithConnectionBlockAsync<IEnumerable<T>, (string? partition, FilterBuilder<T>? filter, SortBuilder<T>? sort, int? top, bool withTransaction, IProgress<double>? progress, StringBuilder commandBuilder, int commandTimeout, IJsonSerializer jsonSerializer, CancellationToken cancellationToken)>(
                 _rateLimiter,
-                (partition, filter, sort, top, withTransaction, progress, ReusableStringBuilder, _commandTimeout, _jsonSerializer, cancellationToken),
+                (partition, filter, sort, top, withTransaction, progress, CommandBuilder, _commandTimeout, _jsonSerializer, cancellationToken),
                 static async (conn, state) =>
                 {
                     SqliteTransaction? transaction = null;
@@ -958,7 +950,7 @@ public class Tycho : IDisposable
         return _connection
             .WithConnectionBlockAsync<IEnumerable<(string Key, TOut InnerObject)>, (string selectionPath, string? partition, FilterBuilder<TIn>? filter, bool withTransaction, StringBuilder commandBuilder, IJsonSerializer jsonSerializer, CancellationToken cancellationToken)>(
                 _rateLimiter,
-                (selectionPath, partition, filter, withTransaction, ReusableStringBuilder, _jsonSerializer, cancellationToken),
+                (selectionPath, partition, filter, withTransaction, CommandBuilder, _jsonSerializer, cancellationToken),
                 static async (conn, state) =>
                 {
                     SqliteTransaction? transaction = null;
@@ -1059,7 +1051,7 @@ public class Tycho : IDisposable
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
-                (key, partition, withTransaction, commandBuilder: ReusableStringBuilder),
+                (key, partition, withTransaction, commandBuilder: CommandBuilder),
                 static (conn, state) =>
                 {
                     SqliteTransaction? transaction = null;
@@ -1126,7 +1118,7 @@ public class Tycho : IDisposable
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
-                (partition, filter, withTransaction, commandBuilder: ReusableStringBuilder, _jsonSerializer),
+                (partition, filter, withTransaction, commandBuilder: CommandBuilder, _jsonSerializer),
                 static (conn, state) =>
                 {
                     SqliteTransaction? transaction = null;
@@ -1190,7 +1182,7 @@ public class Tycho : IDisposable
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
-                (partition, withTransaction, commandBuilder: ReusableStringBuilder),
+                (partition, withTransaction, commandBuilder: CommandBuilder),
                 static (conn, state) =>
                 {
                     SqliteTransaction? transaction = null;
@@ -1246,7 +1238,7 @@ public class Tycho : IDisposable
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
-                (withTransaction, commandBuilder: ReusableStringBuilder),
+                (withTransaction, commandBuilder: CommandBuilder),
                 static (conn, state) =>
                 {
                     SqliteTransaction? transaction = null;
@@ -1371,7 +1363,7 @@ public class Tycho : IDisposable
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
-                (key, partition, commandBuilder: ReusableStringBuilder),
+                (key, partition, commandBuilder: CommandBuilder),
                 static (conn, state) =>
                 {
                     try
@@ -1423,7 +1415,7 @@ public class Tycho : IDisposable
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
-                (key, partition, commandBuilder: ReusableStringBuilder),
+                (key, partition, commandBuilder: CommandBuilder),
                 static (conn, state) =>
                 {
                     try
@@ -1476,7 +1468,7 @@ public class Tycho : IDisposable
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
-                (key, partition, withTransaction, commandBuilder: ReusableStringBuilder),
+                (key, partition, withTransaction, commandBuilder: CommandBuilder),
                 static (conn, state) =>
                 {
                     SqliteTransaction? transaction = null;
@@ -1535,7 +1527,7 @@ public class Tycho : IDisposable
         return _connection
             .WithConnectionBlockAsync(
                 _rateLimiter,
-                (partition, withTransaction, commandBuilder: ReusableStringBuilder),
+                (partition, withTransaction, commandBuilder: CommandBuilder),
                 static (conn, state) =>
                 {
                     SqliteTransaction? transaction = null;
@@ -1981,7 +1973,6 @@ public class Tycho : IDisposable
 
         if (disposing)
         {
-            _commandBuilder.Dispose();
             _rateLimiter?.Dispose();
             _connection?.Close();
             _connection?.Dispose();

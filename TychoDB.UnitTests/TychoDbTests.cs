@@ -2095,8 +2095,14 @@ public class TychoDbTests
         readNullableDateTimeOffset.Value.ShouldBe(nullableDateTimeOffsetValue.Value);
     }
 
+    /// <summary>
+    /// The timeout is load-bearing. The defect this covers -- overlapping operations sharing one
+    /// command StringBuilder -- corrupts the builder's chunk chain often enough to spin forever
+    /// rather than throw, so without a timeout a regression wedges the run instead of failing it.
+    /// </summary>
     [DataTestMethod]
     [DynamicData(nameof(JsonSerializers))]
+    [Timeout(60000)]
     public async Task TychoDb_ConcurrentFilteredReads_ShouldNotCorruptCommands(IJsonSerializer jsonSerializer)
     {
         using var db =

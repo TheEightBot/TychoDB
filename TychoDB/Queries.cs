@@ -299,11 +299,19 @@ internal static class Queries
         Partition = $partition
         """;
 
-    // Pre-computed constant parts for dynamic query building
-    private const string ExtractDataPrefix = "SELECT rowid, JSON_EXTRACT(Data, '";
+    // Pre-computed constant parts for dynamic query building.
+    //
+    // The projection selects one member on its own, so it has to reach the deserializer as
+    // JSON. JSON_EXTRACT is the wrong operator for that: it converts the match to an SQL
+    // value, unwrapping a JSON string to bare text (target, not "target") and collapsing
+    // true/false to the integers 1/0 — neither of which a JSON deserializer accepts. The ->
+    // operator returns the JSON representation instead, so strings, numbers, booleans,
+    // objects and arrays all round-trip. A member that is absent yields SQL NULL, which the
+    // reader turns into the default value rather than a deserialization attempt.
+    private const string ExtractDataPrefix = "SELECT rowid, Data -> '";
     private const string ExtractDataSuffix =
         """
-        ') AS Data
+        ' AS Data
         FROM JsonValue
         Where
         FullTypeName = $fullTypeName
@@ -311,10 +319,10 @@ internal static class Queries
         Partition = $partition
         """;
 
-    private const string ExtractDataAndKeyPrefix = "SELECT rowid, Key, JSON_EXTRACT(Data, '";
+    private const string ExtractDataAndKeyPrefix = "SELECT rowid, Key, Data -> '";
     private const string ExtractDataAndKeySuffix =
         """
-        ') AS Data
+        ' AS Data
         FROM JsonValue
         Where
         FullTypeName = $fullTypeName

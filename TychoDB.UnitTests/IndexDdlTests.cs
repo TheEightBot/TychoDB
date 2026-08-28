@@ -347,7 +347,7 @@ public class IndexDdlTests
 
         var sort = SortBuilder<IndexTestModel>.Create().OrderBy(SortDirection.Ascending, x => x.StringProperty);
         var sb = new StringBuilder(Queries.SelectDataFromJsonValueWithFullTypeName);
-        sort.Build(sb);
+        sort.Build(sb, Serializer);
 
         var plan = Explain(Path.Combine(path, dbName), sb.ToString(), new FilterParameters());
 
@@ -510,7 +510,7 @@ public class IndexDdlTests
         var plain = new StringBuilder(Queries.SelectDataFromJsonValueWithFullTypeName);
         SortBuilder<IndexTestModel>.Create()
             .OrderBy(SortDirection.Ascending, "$.LongProperty")
-            .Build(plain);
+            .Build(plain, Serializer);
         Explain(dbFile, plain.ToString(), new FilterParameters())
             .ShouldContain("USE TEMP B-TREE FOR ORDER BY");
 
@@ -518,7 +518,7 @@ public class IndexDdlTests
         var numeric = new StringBuilder(Queries.SelectDataFromJsonValueWithFullTypeName);
         SortBuilder<IndexTestModel>.Create()
             .OrderBy(SortDirection.Ascending, "$.LongProperty", isPropertyPathNumeric: true)
-            .Build(numeric);
+            .Build(numeric, Serializer);
 
         var plan = Explain(dbFile, numeric.ToString(), new FilterParameters());
         plan.ShouldNotContain("USE TEMP B-TREE FOR ORDER BY");

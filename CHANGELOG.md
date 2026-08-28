@@ -26,6 +26,30 @@ some query behavior changes (see Breaking changes).
 
 ### Fixed
 
+- **Data integrity: property expressions now honour the serializer's member names.**
+  Expressions such as `x => x.Description` built the JSON path from the **CLR** property
+  name (`$.Description`), ignoring `PropertyNamingPolicy`, `[JsonPropertyName]`,
+  `[JsonProperty]`, and Newtonsoft contract resolvers. Any serializer configuration that
+  renames members therefore produced a path matching nothing in the stored document.
+  Because an unmatched JSON path is not an error in SQLite, this failed **silently**:
+  `ReadObjectsAsync` returned zero rows, `SortBuilder.OrderBy` did not sort, and
+  `CreateIndex`/`CreateIndexAsync` built indexes that never matched a row — with no
+  exception and nothing logged. Serializers now report their JSON member names via the
+  new `IJsonPropertyNameResolver`, and expression paths are resolved against them.
+- **The projection overloads now handle every JSON value kind.**
+  `ReadObjectsAsync<TIn, TOut>` / `ReadObjectsWithKeysAsync<TIn, TOut>` selected the member
+  with `JSON_EXTRACT`, which converts the match to an *SQL* value: a JSON string was
+  unwrapped to bare text (`target`, not `"target"`) and `true`/`false` collapsed to the
+  integers `1`/`0`. Handing those to a JSON deserializer failed — projecting a `string`
+  threw "invalid JSON literal", and projecting a `bool` threw "cannot get the value of a
+  token type 'Number' as a boolean" under `System.Text.Json` (Newtonsoft silently coerced
+  `1` to `true`). Projection now uses SQLite's `->` operator, which returns the JSON
+  representation, so strings, numbers, booleans, objects and arrays all round-trip.
+- **Projecting a member that is absent no longer throws.** A member that was never written
+  (or stored as JSON null) produced SQL NULL, and the reader called `GetStream` on it —
+  failing with `InvalidOperationException: The data is NULL at ordinal 2`. An absent member
+  is now reported as `default(TOut)`: `null` for reference and nullable types, zero/`false`
+  for value types.
 - **Data integrity: `NewtonsoftJsonSerializer` no longer emits a UTF-8 BOM.** The BOM
   made stored JSON malformed for SQLite's `json()` on stricter/older builds — notably
   the SQLCipher bundle — breaking **every** Newtonsoft-serialized write on
@@ -115,8 +139,24 @@ index); batch writes **−44%**; database file with three indexes **20.2 → 8.4
   process instead of on every `Connect()` (**−16%** connect time).
 - Single-object writes avoid an extra `List` allocation (`IList<T>` fast path).
 
+### Added
+
+- **`IJsonPropertyNameResolver`.** An optional serializer capability (feature-detected,
+  like `IUtf8JsonDeserializer`) that reports the JSON member name a CLR property is
+  serialized as. Implemented by `SystemTextJsonSerializer` and `NewtonsoftJsonSerializer`.
+  Third-party serializers that do not implement it keep working unchanged, falling back to
+  CLR property names. Resolved names are validated before being emitted into a JSON path,
+  so a name carrying a quote is rejected with `ArgumentException` rather than escaping the
+  SQL literal.
+
 ### Breaking changes
 
+- **Property expressions now resolve to the serializer's JSON member names.** Code using
+  a naming policy or renaming attributes will start matching rows, sorting, and indexing
+  correctly — but the emitted SQL paths change. Indexes created by earlier versions on
+  the CLR-named path (e.g. `$.Description`) are now unused and should be dropped and
+  recreated. Applications that worked around the bug by storing PascalCase JSON while
+  configuring a camelCase policy will see behavior change.
 - Filter values are now **bound**, not concatenated. Values containing `'`, `%`, `_`,
   etc. are treated as literal data — correct behavior, but different from before for
   any code that (accidentally or intentionally) relied on the old concatenation.

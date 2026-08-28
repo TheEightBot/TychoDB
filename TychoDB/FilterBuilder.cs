@@ -48,25 +48,27 @@ public class FilterBuilder<TObj>
 
     public FilterBuilder<TObj> Filter<TProp>(FilterType filterType, Expression<Func<TObj, TProp>> propertyPath, object value)
     {
-        var propertyPathString = QueryPropertyPath.BuildPath(propertyPath);
+        // The path is captured as segments rather than rendered here: the serializer that
+        // decides the JSON member names is not known until Build.
+        var propertyPathSegments = QueryPropertyPath.BuildSegments(propertyPath);
         var isPropertyPathNumeric = QueryPropertyPath.IsNumeric(propertyPath);
         var isPropertyPathBool = QueryPropertyPath.IsBool(propertyPath);
         var isPropertyPathDateTime = QueryPropertyPath.IsDateTime(propertyPath);
 
-        _filters.Add(new Filter(filterType, propertyPathString, isPropertyPathNumeric, isPropertyPathBool, isPropertyPathDateTime, value));
+        _filters.Add(new Filter(filterType, null, propertyPathSegments, isPropertyPathNumeric, isPropertyPathBool, isPropertyPathDateTime, value));
 
         return this;
     }
 
     public FilterBuilder<TObj> Filter<TItem, TItemProp>(FilterType filterType, Expression<Func<TObj, IEnumerable<TItem>>> propertyPath, Expression<Func<TItem, TItemProp>> propertyValuePath, object value)
     {
-        var propertyPathString = QueryPropertyPath.BuildPath(propertyPath);
-        var propertyValuePathString = QueryPropertyPath.BuildPath(propertyValuePath);
+        var propertyPathSegments = QueryPropertyPath.BuildSegments(propertyPath);
+        var propertyValuePathSegments = QueryPropertyPath.BuildSegments(propertyValuePath);
         var isPropertyValuePathNumeric = QueryPropertyPath.IsNumeric(propertyValuePath);
         var isPropertyValuePathBool = QueryPropertyPath.IsBool(propertyValuePath);
         var isPropertyValuePathDateTime = QueryPropertyPath.IsDateTime(propertyValuePath);
 
-        _filters.Add(new Filter(filterType, propertyPathString, propertyValuePathString, isPropertyValuePathNumeric, isPropertyValuePathBool, isPropertyValuePathDateTime, value));
+        _filters.Add(new Filter(filterType, null, propertyPathSegments, null, propertyValuePathSegments, isPropertyValuePathNumeric, isPropertyValuePathBool, isPropertyValuePathDateTime, value));
 
         return this;
     }
@@ -79,7 +81,7 @@ public class FilterBuilder<TObj>
         // prevent it from being used as an injection vector.
         QueryPropertyPath.ValidatePath(propertyPath, nameof(propertyPath));
 
-        _filters.Add(new Filter(filterType, propertyPath, isPropertyPathNumeric, isPropertyPathBool, isPropertyPathDateTime, value));
+        _filters.Add(new Filter(filterType, propertyPath, null, isPropertyPathNumeric, isPropertyPathBool, isPropertyPathDateTime, value));
 
         return this;
     }
@@ -115,8 +117,14 @@ public class FilterBuilder<TObj>
             commandBuilder.AppendLine("\nAND");
         }
 
-        foreach (var filter in _filters)
+        // Expression-supplied paths were captured as segments; the serializer is only known
+        // here, so render them now against the JSON member names it actually writes.
+        var nameResolver = QueryPropertyPath.AsNameResolver(jsonSerializer);
+
+        foreach (var unresolvedFilter in _filters)
         {
+            var filter = Resolve(unresolvedFilter, nameResolver);
+
             if (filter.Join.HasValue)
             {
                 switch (filter.Join.Value)
@@ -148,6 +156,57 @@ public class FilterBuilder<TObj>
                 BuildSimpleFilter(commandBuilder, filter, jsonSerializer, parameters);
             }
         }
+    }
+
+    /// <summary>
+    /// Renders any deferred path segments into literal JSON paths so the emit code below can
+    /// stay unaware of how the path was supplied. Filters built from a literal path string are
+    /// returned unchanged.
+    /// </summary>
+    private static Filter Resolve(in Filter filter, IJsonPropertyNameResolver? nameResolver)
+    {
+        if (filter.Join.HasValue)
+        {
+            return filter;
+        }
+
+        if (filter.PropertyPathSegments is null && filter.PropertyValuePathSegments is null)
+        {
+            return filter;
+        }
+
+        var propertyPath =
+            filter.PropertyPathSegments is null
+                ? filter.PropertyPath
+                : QueryPropertyPath.RenderPath(filter.PropertyPathSegments, nameResolver);
+
+        if (filter.PropertyValuePathSegments is null && filter.PropertyValuePath is null)
+        {
+            return new Filter(
+                filter.FilterType!.Value,
+                propertyPath,
+                null,
+                filter.IsPropertyPathNumeric,
+                filter.IsPropertyPathBool,
+                filter.IsPropertyPathDateTime,
+                filter.Value);
+        }
+
+        var propertyValuePath =
+            filter.PropertyValuePathSegments is null
+                ? filter.PropertyValuePath
+                : QueryPropertyPath.RenderPath(filter.PropertyValuePathSegments, nameResolver);
+
+        return new Filter(
+            filter.FilterType!.Value,
+            propertyPath,
+            null,
+            propertyValuePath,
+            null,
+            filter.IsPropertyValuePathNumeric,
+            filter.IsPropertyValuePathBool,
+            filter.IsPropertyValuePathDateTime,
+            filter.Value);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

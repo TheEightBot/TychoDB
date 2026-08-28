@@ -2,16 +2,18 @@ using System;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Newtonsoft.Json.Serialization;
 
 namespace TychoDB;
 
-public sealed class NewtonsoftJsonSerializer : IJsonSerializer, IUtf8JsonDeserializer, IJsonPropertyNameResolver
+public sealed class NewtonsoftJsonSerializer : IJsonSerializer, IUtf8JsonDeserializer, IJsonPropertyNameResolver, IJsonValueResolver
 {
     private const int DefaultBufferSize = 4096;
     private const int StreamWriterBufferSize = 1024;
@@ -97,6 +99,75 @@ public sealed class NewtonsoftJsonSerializer : IJsonSerializer, IUtf8JsonDeseria
                 this);
 
         return names.TryGetValue(clrPropertyName, out var jsonName) ? jsonName : null;
+    }
+
+    /// <inheritdoc />
+    public bool TryResolveJsonValue(object value, out object jsonValue)
+    {
+        jsonValue = null;
+
+        if (value is null)
+        {
+            return false;
+        }
+
+        JToken token;
+        try
+        {
+            // FromObject runs the configured converters and contract resolver, so the result
+            // is the same form the value takes inside a stored document.
+            token = JToken.FromObject(value, _jsonSerializer);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        if (token is not JValue jValue)
+        {
+            // Objects and arrays have no scalar form to compare against.
+            return false;
+        }
+
+        switch (jValue.Type)
+        {
+            case JTokenType.Integer:
+                jsonValue = Convert.ToInt64(jValue.Value, CultureInfo.InvariantCulture);
+                return true;
+            case JTokenType.Float:
+                jsonValue = Convert.ToDouble(jValue.Value, CultureInfo.InvariantCulture);
+                return true;
+            case JTokenType.Boolean:
+                jsonValue = Convert.ToBoolean(jValue.Value, CultureInfo.InvariantCulture);
+                return true;
+            case JTokenType.Null:
+            case JTokenType.Undefined:
+                jsonValue = null;
+                return true;
+            default:
+                // String, Date, Guid, Uri and TimeSpan are all written as JSON strings. Render
+                // through the writer rather than JValue.Value.ToString(), so the text matches
+                // what was stored -- ToString() on a DateTime or DateOnly is culture-dependent.
+                jsonValue = WriteScalarAsString(jValue);
+                return jsonValue is not null;
+        }
+    }
+
+    private string WriteScalarAsString(JValue jValue)
+    {
+        using var stringWriter = new StringWriter(CultureInfo.InvariantCulture);
+        using (var jsonWriter = new JsonTextWriter(stringWriter) { DateFormatString = DateTimeSerializationFormat })
+        {
+            jValue.WriteTo(jsonWriter);
+        }
+
+        var written = stringWriter.ToString();
+
+        // WriteTo emits a JSON string literal; strip the quotes and unescape to the text that
+        // SQLite's JSON functions yield when reading the same member back.
+        return written.Length >= 2 && written[0] == '"'
+            ? JsonConvert.DeserializeObject<string>(written)
+            : written;
     }
 
     private Dictionary<string, string> BuildPropertyNameMap(Type type)

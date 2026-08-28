@@ -120,10 +120,11 @@ public class FilterBuilder<TObj>
         // Expression-supplied paths were captured as segments; the serializer is only known
         // here, so render them now against the JSON member names it actually writes.
         var nameResolver = QueryPropertyPath.AsNameResolver(jsonSerializer);
+        var valueResolver = jsonSerializer as IJsonValueResolver;
 
         foreach (var unresolvedFilter in _filters)
         {
-            var filter = Resolve(unresolvedFilter, nameResolver);
+            var filter = Resolve(unresolvedFilter, nameResolver, valueResolver);
 
             if (filter.Join.HasValue)
             {
@@ -163,16 +164,20 @@ public class FilterBuilder<TObj>
     /// stay unaware of how the path was supplied. Filters built from a literal path string are
     /// returned unchanged.
     /// </summary>
-    private static Filter Resolve(in Filter filter, IJsonPropertyNameResolver? nameResolver)
+    private static Filter Resolve(in Filter filter, IJsonPropertyNameResolver? nameResolver, IJsonValueResolver? valueResolver)
     {
         if (filter.Join.HasValue)
         {
             return filter;
         }
 
+        var value = ResolveValue(filter.Value, valueResolver);
+
         if (filter.PropertyPathSegments is null && filter.PropertyValuePathSegments is null)
         {
-            return filter;
+            return ReferenceEquals(value, filter.Value)
+                ? filter
+                : Rebuild(filter, filter.PropertyPath, filter.PropertyValuePath, value);
         }
 
         var propertyPath =
@@ -182,14 +187,7 @@ public class FilterBuilder<TObj>
 
         if (filter.PropertyValuePathSegments is null && filter.PropertyValuePath is null)
         {
-            return new Filter(
-                filter.FilterType!.Value,
-                propertyPath,
-                null,
-                filter.IsPropertyPathNumeric,
-                filter.IsPropertyPathBool,
-                filter.IsPropertyPathDateTime,
-                filter.Value);
+            return Rebuild(filter, propertyPath, null, value);
         }
 
         var propertyValuePath =
@@ -197,16 +195,65 @@ public class FilterBuilder<TObj>
                 ? filter.PropertyValuePath
                 : QueryPropertyPath.RenderPath(filter.PropertyValuePathSegments, nameResolver);
 
-        return new Filter(
-            filter.FilterType!.Value,
-            propertyPath,
-            null,
-            propertyValuePath,
-            null,
-            filter.IsPropertyValuePathNumeric,
-            filter.IsPropertyValuePathBool,
-            filter.IsPropertyValuePathDateTime,
-            filter.Value);
+        return Rebuild(filter, propertyPath, propertyValuePath, value);
+    }
+
+    private static Filter Rebuild(in Filter filter, string? propertyPath, string? propertyValuePath, object? value)
+    {
+        return propertyValuePath is null
+            ? new Filter(
+                filter.FilterType!.Value,
+                propertyPath,
+                null,
+                filter.IsPropertyPathNumeric,
+                filter.IsPropertyPathBool,
+                filter.IsPropertyPathDateTime,
+                value)
+            : new Filter(
+                filter.FilterType!.Value,
+                propertyPath,
+                null,
+                propertyValuePath,
+                null,
+                filter.IsPropertyValuePathNumeric,
+                filter.IsPropertyValuePathBool,
+                filter.IsPropertyValuePathDateTime,
+                value);
+    }
+
+    /// <summary>
+    /// Converts a comparison value into the form the serializer writes into the document, so
+    /// the comparison is made against what is actually stored. Only values that would
+    /// otherwise fall through to <see cref="object.ToString"/> are converted: an enum whose
+    /// JSON form is a number (or a name a converter or naming policy rewrote), or a type such
+    /// as <c>DateOnly</c>/<c>TimeOnly</c> whose <c>ToString()</c> is culture-dependent while
+    /// its JSON form is not.
+    /// </summary>
+    private static object? ResolveValue(object? value, IJsonValueResolver? valueResolver)
+    {
+        if (valueResolver is null || value is null)
+        {
+            return value;
+        }
+
+        switch (value)
+        {
+            // Already emitted in a form that matches the stored JSON: strings bind directly,
+            // booleans and genuine numerics become literals below.
+            case string:
+            case bool:
+            case byte or sbyte or short or ushort or int or uint or long or ulong:
+            case float or double or decimal:
+                return value;
+
+            // Handled ahead of this by the date-time branch, which formats using the
+            // serializer's DateTimeSerializationFormat.
+            case DateTime:
+            case DateTimeOffset:
+                return value;
+        }
+
+        return valueResolver.TryResolveJsonValue(value, out var jsonValue) ? jsonValue : value;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

@@ -26,6 +26,20 @@ some query behavior changes (see Breaking changes).
 
 ### Fixed
 
+- **Data integrity: filter values are now compared in the form the serializer wrote.**
+  A filter value was rendered with `ToString()`, which is not how the serializer stores it for
+  every type. The clearest case is an enum: both serializers write it as a **number** by
+  default, so `Filter(Equals, x => x.StoreAllocation, StoreAllocationType.Produce)` compared
+  the stored `0` against the text `"Produce"` and matched **nothing**, while the
+  `(int)`-cast workaround matched. With a string-enum converter the name happened to line up —
+  unless a naming policy renamed it, which broke it again. A full sweep of the scalar type
+  surface found five types affected on both serializers: `enum`, enums renamed by a converter
+  or naming policy, nullable enums, `DateOnly`, and `TimeOnly`. The two date types were
+  additionally **culture-dependent** — `DateOnly.ToString()` yields `8/28/2026` under `en-US`
+  against a stored `2026-08-28` — so the same code matched or failed depending on the
+  machine's locale. Values are now resolved through the new `IJsonValueResolver`.
+  `string`, `bool`, the numeric primitives, `DateTime` and `DateTimeOffset` are unchanged;
+  `Guid`, `TimeSpan`, `Uri` and `char` already agreed with their JSON form and still do.
 - **Data integrity: property expressions now honour the serializer's member names.**
   Expressions such as `x => x.Description` built the JSON path from the **CLR** property
   name (`$.Description`), ignoring `PropertyNamingPolicy`, `[JsonPropertyName]`,
@@ -141,6 +155,10 @@ index); batch writes **−44%**; database file with three indexes **20.2 → 8.4
 
 ### Added
 
+- **`IJsonValueResolver`.** A second optional serializer capability, feature-detected the same
+  way, reporting the scalar form a CLR value takes in JSON so filter comparisons are made
+  against what was stored. Implemented by `SystemTextJsonSerializer` and
+  `NewtonsoftJsonSerializer`; serializers that do not implement it fall back to `ToString()`.
 - **`IJsonPropertyNameResolver`.** An optional serializer capability (feature-detected,
   like `IUtf8JsonDeserializer`) that reports the JSON member name a CLR property is
   serialized as. Implemented by `SystemTextJsonSerializer` and `NewtonsoftJsonSerializer`.
@@ -151,6 +169,10 @@ index); batch writes **−44%**; database file with three indexes **20.2 → 8.4
 
 ### Breaking changes
 
+- **Enum, `DateOnly` and `TimeOnly` filter values now compare against their JSON form.** Code
+  that worked around the enum mismatch by casting to `(int)` keeps working. Code that relied on
+  a string-enum converter's name matching by coincidence also keeps working, and now stays
+  correct when a naming policy renames the member.
 - **Property expressions now resolve to the serializer's JSON member names.** Code using
   a naming policy or renaming attributes will start matching rows, sorting, and indexing
   correctly — but the emitted SQL paths change. Indexes created by earlier versions on

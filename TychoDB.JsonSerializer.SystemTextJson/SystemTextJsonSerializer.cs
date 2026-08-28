@@ -12,7 +12,7 @@ using System.Threading.Tasks;
 
 namespace TychoDB;
 
-public sealed class SystemTextJsonSerializer : IJsonSerializer, IUtf8JsonDeserializer, IJsonPropertyNameResolver
+public sealed class SystemTextJsonSerializer : IJsonSerializer, IUtf8JsonDeserializer, IJsonPropertyNameResolver, IJsonValueResolver
 {
     private readonly JsonSerializerOptions _jsonSerializerOptions;
     private readonly Dictionary<Type, JsonTypeInfo> _jsonTypeSerializers;
@@ -22,11 +22,12 @@ public sealed class SystemTextJsonSerializer : IJsonSerializer, IUtf8JsonDeseria
     // properties repeatedly.
     private readonly ConcurrentDictionary<Type, Dictionary<string, string>> _jsonPropertyNames = new();
 
-    // GetTypeInfo throws when the options carry no TypeInfoResolver, which is the case for
-    // options that have never been used to (de)serialize. Options also become read-only after
-    // first use, so the resolver cannot be assigned onto the caller's instance; resolve against
-    // a copy instead. Built lazily because the common case never needs it.
-    private JsonSerializerOptions _nameResolutionOptions;
+    // GetTypeInfo and reflection-based serialization both throw when the options carry no
+    // TypeInfoResolver, which is the case for options that have never been used to
+    // (de)serialize. Options also become read-only after first use, so the resolver cannot be
+    // assigned onto the caller's instance; work against a copy instead. Built lazily because
+    // the common case never needs it.
+    private JsonSerializerOptions _metadataOptions;
 
     public string DateTimeSerializationFormat { get; }
 
@@ -114,6 +115,69 @@ public sealed class SystemTextJsonSerializer : IJsonSerializer, IUtf8JsonDeseria
         return names.TryGetValue(clrPropertyName, out var jsonName) ? jsonName : null;
     }
 
+    /// <inheritdoc />
+    public bool TryResolveJsonValue(object value, out object jsonValue)
+    {
+        jsonValue = null;
+
+        if (value is null)
+        {
+            return false;
+        }
+
+        byte[] utf8;
+        try
+        {
+            // Serialize against the runtime type so converters registered for it apply -
+            // this is exactly the form the value takes inside a stored document.
+            utf8 = JsonSerializer.SerializeToUtf8Bytes(value, value.GetType(), GetMetadataOptions());
+        }
+        catch (NotSupportedException)
+        {
+            return false;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        var reader = new Utf8JsonReader(utf8);
+        if (!reader.Read())
+        {
+            return false;
+        }
+
+        switch (reader.TokenType)
+        {
+            case JsonTokenType.String:
+                jsonValue = reader.GetString();
+                return true;
+            case JsonTokenType.Number:
+                // Integers bind as INTEGER and reals as REAL; SQLite compares across the two
+                // numeric storage classes, but not between a number and its text form.
+                if (reader.TryGetInt64(out var l))
+                {
+                    jsonValue = l;
+                    return true;
+                }
+
+                jsonValue = reader.GetDouble();
+                return true;
+            case JsonTokenType.True:
+                jsonValue = true;
+                return true;
+            case JsonTokenType.False:
+                jsonValue = false;
+                return true;
+            case JsonTokenType.Null:
+                jsonValue = null;
+                return true;
+            default:
+                // Objects and arrays have no scalar form to compare against.
+                return false;
+        }
+    }
+
     private Dictionary<string, string> BuildPropertyNameMap(Type type)
     {
         var map = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -123,7 +187,7 @@ public sealed class SystemTextJsonSerializer : IJsonSerializer, IUtf8JsonDeseria
             var typeInfo =
                 _jsonTypeSerializers.TryGetValue(type, out var registered)
                     ? registered
-                    : GetNameResolutionOptions().GetTypeInfo(type);
+                    : GetMetadataOptions().GetTypeInfo(type);
 
             foreach (var property in typeInfo.Properties)
             {
@@ -149,14 +213,14 @@ public sealed class SystemTextJsonSerializer : IJsonSerializer, IUtf8JsonDeseria
         return map;
     }
 
-    private JsonSerializerOptions GetNameResolutionOptions()
+    private JsonSerializerOptions GetMetadataOptions()
     {
         if (_jsonSerializerOptions.TypeInfoResolver is not null)
         {
             return _jsonSerializerOptions;
         }
 
-        return _nameResolutionOptions ??=
+        return _metadataOptions ??=
             new JsonSerializerOptions(_jsonSerializerOptions)
             {
                 TypeInfoResolver = new DefaultJsonTypeInfoResolver(),

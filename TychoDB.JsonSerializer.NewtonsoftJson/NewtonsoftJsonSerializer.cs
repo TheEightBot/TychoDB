@@ -1,14 +1,17 @@
 using System;
 using System.Buffers;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Serialization;
 
 namespace TychoDB;
 
-public sealed class NewtonsoftJsonSerializer : IJsonSerializer, IUtf8JsonDeserializer
+public sealed class NewtonsoftJsonSerializer : IJsonSerializer, IUtf8JsonDeserializer, IJsonPropertyNameResolver
 {
     private const int DefaultBufferSize = 4096;
     private const int StreamWriterBufferSize = 1024;
@@ -19,6 +22,10 @@ public sealed class NewtonsoftJsonSerializer : IJsonSerializer, IUtf8JsonDeseria
     // leading BOM is not valid JSON/JSONB and is rejected as "malformed JSON" on
     // stricter SQLite builds. Serialize clean UTF-8 bytes instead.
     private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: false);
+
+    // Maps CLR property name -> JSON member name, per type. ResolveContract walks the
+    // contract resolver, which query building would otherwise repeat per filter clause.
+    private readonly ConcurrentDictionary<Type, Dictionary<string, string>> _jsonPropertyNames = new();
 
     private readonly JsonSerializer _jsonSerializer;
 
@@ -73,6 +80,50 @@ public sealed class NewtonsoftJsonSerializer : IJsonSerializer, IUtf8JsonDeseria
         };
 
         return _jsonSerializer.Deserialize<T>(jsonTextReader);
+    }
+
+    /// <inheritdoc />
+    public string ResolvePropertyName(Type declaringType, string clrPropertyName)
+    {
+        if (declaringType is null || string.IsNullOrEmpty(clrPropertyName))
+        {
+            return null;
+        }
+
+        var names =
+            _jsonPropertyNames.GetOrAdd(
+                declaringType,
+                static (type, serializer) => serializer.BuildPropertyNameMap(type),
+                this);
+
+        return names.TryGetValue(clrPropertyName, out var jsonName) ? jsonName : null;
+    }
+
+    private Dictionary<string, string> BuildPropertyNameMap(Type type)
+    {
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        try
+        {
+            // The contract resolver is the single source of truth for member naming: it applies
+            // the naming strategy and [JsonProperty(PropertyName)] together.
+            if (_jsonSerializer.ContractResolver?.ResolveContract(type) is JsonObjectContract contract)
+            {
+                foreach (var property in contract.Properties)
+                {
+                    if (property.UnderlyingName is { } underlyingName && property.PropertyName is { } propertyName)
+                    {
+                        map[underlyingName] = propertyName;
+                    }
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // Never let name resolution break query building; callers fall back to the CLR name.
+        }
+
+        return map;
     }
 
     public object Serialize<T>(T obj)

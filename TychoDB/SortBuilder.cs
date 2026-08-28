@@ -40,9 +40,11 @@ public class SortBuilder<TObj>
 
     public SortBuilder<TObj> OrderBy<TProp>(SortDirection sortDirection, Expression<Func<TObj, TProp>> propertyPath)
     {
-        var propertyPathString = QueryPropertyPath.BuildPath(propertyPath);
+        // Captured as segments and rendered in Build, where the serializer — and therefore the
+        // JSON member names actually written to the document — is known.
+        var propertyPathSegments = QueryPropertyPath.BuildSegments(propertyPath);
 
-        _sortInfos.Add(new SortInfo(sortDirection, propertyPathString, QueryPropertyPath.IsNumeric(propertyPath)));
+        _sortInfos.Add(new SortInfo(sortDirection, propertyPathSegments, QueryPropertyPath.IsNumeric(propertyPath)));
 
         return this;
     }
@@ -74,8 +76,10 @@ public class SortBuilder<TObj>
         return this;
     }
 
-    internal void Build(StringBuilder commandBuilder)
+    internal void Build(StringBuilder commandBuilder, IJsonSerializer jsonSerializer)
     {
+        var nameResolver = QueryPropertyPath.AsNameResolver(jsonSerializer);
+
         commandBuilder.Append(OrderByPrefix);
 
         for (var i = 0; i < _sortInfos.Count; i++)
@@ -86,8 +90,16 @@ public class SortBuilder<TObj>
             }
 
             var sortInfo = _sortInfos[i];
+            var propertyPath =
+                sortInfo.PropertyPathSegments is null
+                    ? sortInfo.PropertyPath
+                    : QueryPropertyPath.RenderPath(sortInfo.PropertyPathSegments, nameResolver);
+
+            // Must keep upstream's JSON_EXTRACT / CAST-as-NUMERIC forms: SQLite matches
+            // expression indexes structurally, so the ORDER BY expression has to be spelled
+            // exactly as the index was built.
             commandBuilder.Append(sortInfo.IsNumeric ? CastNumericPrefix : DataPrefix)
-                          .Append(sortInfo.PropertyPath)
+                          .Append(propertyPath)
                           .Append(sortInfo.IsNumeric ? CastNumericSuffix : DataSuffix)
                           .Append(sortInfo.SortDirection == SortDirection.Ascending ? Asc : Desc);
         }

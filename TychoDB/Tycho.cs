@@ -78,6 +78,13 @@ public class Tycho : IDisposable
     private bool _isDisposed;
 
     /// <summary>
+    /// Gets the serializer's JSON member-name resolver, or <see langword="null"/> when the
+    /// configured serializer does not implement <see cref="IJsonPropertyNameResolver"/> — in
+    /// which case property paths fall back to CLR property names, as they always did.
+    /// </summary>
+    private IJsonPropertyNameResolver? NameResolver => _jsonSerializer as IJsonPropertyNameResolver;
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="Tycho"/> class.
     /// </summary>
     /// <param name="dbPath">The path to the directory where the database file will be stored.</param>
@@ -874,7 +881,7 @@ public class Tycho : IDisposable
 
                     if (state.sort is not null)
                     {
-                        state.sort.Build(commandBuilder);
+                        state.sort.Build(commandBuilder, state.jsonSerializer);
                     }
 
                     if (state.top is not null)
@@ -1113,7 +1120,7 @@ public class Tycho : IDisposable
 
         ArgumentNullException.ThrowIfNull(_connection);
 
-        string selectionPath = QueryPropertyPath.BuildPath(innerObjectSelection);
+        string selectionPath = QueryPropertyPath.BuildPath(innerObjectSelection, NameResolver);
 
         return _connection
             .WithConnectionBlockAsync<IEnumerable<(string Key, TOut InnerObject)>, (string selectionPath, string? partition, FilterBuilder<TIn>? filter, bool withTransaction, StringBuilder commandBuilder, IJsonSerializer jsonSerializer, CancellationToken cancellationToken)>(
@@ -1155,11 +1162,23 @@ public class Tycho : IDisposable
 
                         await using var reader = await selectCommand.ExecuteReaderAsync(state.cancellationToken).ConfigureAwait(false);
 
+                        int keyOrdinal = reader.GetOrdinal(Queries.KeyColumn);
+                        int dataOrdinal = reader.GetOrdinal(Queries.DataColumn);
+
                         while (reader.Read())
                         {
-                            string key = reader.GetString(reader.GetOrdinal(Queries.KeyColumn));
+                            string key = reader.GetString(keyOrdinal);
 
-                            await using var innerObjectStream = reader.GetStream(reader.GetOrdinal(Queries.DataColumn));
+                            // The member is absent from this document (never written, or
+                            // stored as JSON null). There is nothing to deserialize, and the
+                            // absence is not an error, so yield the default for TOut.
+                            if (reader.IsDBNull(dataOrdinal))
+                            {
+                                objects.Add((key, default!));
+                                continue;
+                            }
+
+                            await using var innerObjectStream = reader.GetStream(dataOrdinal);
                             var innerObject = await state.jsonSerializer
                                 .DeserializeAsync<TOut>(innerObjectStream, state.cancellationToken).ConfigureAwait(false);
 
@@ -1758,7 +1777,7 @@ public class Tycho : IDisposable
         return CreateIndexCore(
             indexName,
             ToSafeIdentifier(GetSafeTypeName<TObj>()),
-            new[] { (QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath)) },
+            new[] { (QueryPropertyPath.BuildPath(propertyPath, NameResolver), QueryPropertyPath.IsNumeric(propertyPath)) },
             TypeCache<TObj>.FullName);
     }
 
@@ -2081,7 +2100,7 @@ public class Tycho : IDisposable
         return CreateIndexCoreAsync(
             indexName,
             ToSafeIdentifier(GetSafeTypeName<TObj>()),
-            new[] { (QueryPropertyPath.BuildPath(propertyPath), QueryPropertyPath.IsNumeric(propertyPath)) },
+            new[] { (QueryPropertyPath.BuildPath(propertyPath, NameResolver), QueryPropertyPath.IsNumeric(propertyPath)) },
             cancellationToken,
             TypeCache<TObj>.FullName);
     }
@@ -2118,23 +2137,26 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<TObj>();
         }
 
-        return CreateIndexCore(indexName, ToSafeIdentifier(GetSafeTypeName<TObj>()), ProcessIndexPaths(propertyPaths), TypeCache<TObj>.FullName);
+        return CreateIndexCore(indexName, ToSafeIdentifier(GetSafeTypeName<TObj>()), ProcessIndexPaths(propertyPaths, NameResolver), TypeCache<TObj>.FullName);
     }
 
     /// <summary>
     /// Resolves each indexed property expression to its JSON path and numeric
     /// classification. The same <see cref="QueryPropertyPath"/> helpers back the
     /// filter builder, so an index and the filters over it agree on the SQL
-    /// expression by construction.
+    /// expression by construction — including the JSON member names, which both
+    /// resolve through <paramref name="nameResolver"/>.
     /// </summary>
-    private static (string PropertyPathString, bool IsNumeric)[] ProcessIndexPaths<TObj>(Expression<Func<TObj, object>>[] propertyPaths)
+    private static (string PropertyPathString, bool IsNumeric)[] ProcessIndexPaths<TObj>(
+        Expression<Func<TObj, object>>[] propertyPaths,
+        IJsonPropertyNameResolver? nameResolver)
     {
         ArgumentNullException.ThrowIfNull(propertyPaths);
 
         var processed = new (string PropertyPathString, bool IsNumeric)[propertyPaths.Length];
         for (int i = 0; i < propertyPaths.Length; i++)
         {
-            processed[i] = (QueryPropertyPath.BuildPath(propertyPaths[i]), QueryPropertyPath.IsNumeric(propertyPaths[i]));
+            processed[i] = (QueryPropertyPath.BuildPath(propertyPaths[i], nameResolver), QueryPropertyPath.IsNumeric(propertyPaths[i]));
         }
 
         return processed;
@@ -2156,7 +2178,7 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<TObj>();
         }
 
-        return CreateIndexCoreAsync(indexName, ToSafeIdentifier(GetSafeTypeName<TObj>()), ProcessIndexPaths(propertyPaths), cancellationToken, TypeCache<TObj>.FullName);
+        return CreateIndexCoreAsync(indexName, ToSafeIdentifier(GetSafeTypeName<TObj>()), ProcessIndexPaths(propertyPaths, NameResolver), cancellationToken, TypeCache<TObj>.FullName);
     }
 
     /// <summary>

@@ -44,9 +44,34 @@ internal static class QueryPropertyPath
 
     public static string BuildPath<TPathObj, TProp>(Expression<Func<TPathObj, TProp>> expression)
     {
+        return BuildPath(expression, resolver: null);
+    }
+
+    /// <summary>
+    /// Builds a JSON path for <paramref name="expression"/>, mapping each CLR property name
+    /// through <paramref name="resolver"/> so the path matches how the document was actually
+    /// serialized. Passing <see langword="null"/> uses the CLR property names verbatim.
+    /// </summary>
+    public static string BuildPath<TPathObj, TProp>(
+        Expression<Func<TPathObj, TProp>> expression,
+        IJsonPropertyNameResolver? resolver)
+    {
+        return RenderPath(BuildSegments(expression), resolver);
+    }
+
+    /// <summary>
+    /// Walks the expression tree into root-to-leaf segments, keeping the declaring type of each
+    /// property so the JSON member name can be resolved later — filters and sorts are built
+    /// before the serializer is known, so the path cannot be rendered at this point.
+    /// </summary>
+    public static PropertyPathSegment[] BuildSegments<TPathObj, TProp>(Expression<Func<TPathObj, TProp>> expression)
+    {
+        ArgumentNullException.ThrowIfNull(expression);
+
         // Rent a pooled array for typical short paths
-        string[] segments = ArrayPool<string>.Shared.Rent(MaxPooledSegments);
+        var segments = ArrayPool<PropertyPathSegment>.Shared.Rent(MaxPooledSegments);
         int segmentCount = 0;
+        bool pooled = true;
 
         try
         {
@@ -55,7 +80,7 @@ internal static class QueryPropertyPath
 
             while (current is MemberExpression memberExpr)
             {
-                if (memberExpr.Member is not PropertyInfo)
+                if (memberExpr.Member is not PropertyInfo propertyInfo)
                 {
                     throw new ArgumentException("The path can only contain properties", nameof(expression));
                 }
@@ -63,56 +88,81 @@ internal static class QueryPropertyPath
                 if (segmentCount >= MaxPooledSegments)
                 {
                     // Fall back to heap allocation for very deep paths
-                    ArrayPool<string>.Shared.Return(segments);
-                    return BuildPathFallback(expression);
+                    ArrayPool<PropertyPathSegment>.Shared.Return(segments, clearArray: true);
+                    pooled = false;
+                    return BuildSegmentsFallback(expression);
                 }
 
-                segments[segmentCount++] = memberExpr.Member.Name;
+                segments[segmentCount++] =
+                    new PropertyPathSegment(propertyInfo.DeclaringType ?? typeof(TPathObj), propertyInfo.Name);
+
                 current = memberExpr.Expression is { } inner ? UnwrapConvert(inner) : null!;
             }
 
             if (segmentCount == 0)
             {
-                return "$";
+                return Array.Empty<PropertyPathSegment>();
             }
 
-            // Build the path string - segments are in reverse order
-            return BuildPathString(segments, segmentCount);
+            // Segments were collected leaf-to-root; hand them back root-to-leaf.
+            var result = new PropertyPathSegment[segmentCount];
+            for (int i = 0; i < segmentCount; i++)
+            {
+                result[i] = segments[segmentCount - 1 - i];
+            }
+
+            return result;
         }
         finally
         {
-            ArrayPool<string>.Shared.Return(segments, clearArray: false);
+            if (pooled)
+            {
+                ArrayPool<PropertyPathSegment>.Shared.Return(segments, clearArray: true);
+            }
         }
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static string BuildPathString(string[] segments, int count)
+    /// <summary>
+    /// Renders segments into a SQLite JSON path, resolving each CLR property name to the JSON
+    /// member name the serializer writes. Falls back to the CLR name when the serializer cannot
+    /// resolve it (or does not implement <see cref="IJsonPropertyNameResolver"/>), which keeps
+    /// the previous behaviour for serializers that do not rename members.
+    /// </summary>
+    public static string RenderPath(PropertyPathSegment[] segments, IJsonPropertyNameResolver? resolver)
     {
-        // Calculate total length needed
-        int totalLength = 2; // "$."
-        for (int i = 0; i < count; i++)
+        if (segments is null || segments.Length == 0)
         {
-            totalLength += segments[i].Length;
-            if (i < count - 1)
+            return "$";
+        }
+
+        if (segments.Length == 1)
+        {
+            return string.Concat("$.", ResolveName(segments[0], resolver));
+        }
+
+        var names = new string[segments.Length];
+        int totalLength = 2; // "$."
+        for (int i = 0; i < segments.Length; i++)
+        {
+            names[i] = ResolveName(segments[i], resolver);
+            totalLength += names[i].Length;
+            if (i < segments.Length - 1)
             {
                 totalLength++; // "."
             }
         }
 
-        // Build the string using string.Create for zero-allocation string building
-        return string.Create(totalLength, (segments, count), static (span, state) =>
+        return string.Create(totalLength, names, static (span, state) =>
         {
-            var (segs, cnt) = state;
             span[0] = '$';
             span[1] = '.';
             int pos = 2;
 
-            // Segments are in reverse order, so iterate backwards
-            for (int i = cnt - 1; i >= 0; i--)
+            for (int i = 0; i < state.Length; i++)
             {
-                segs[i].AsSpan().CopyTo(span[pos..]);
-                pos += segs[i].Length;
-                if (i > 0)
+                state[i].AsSpan().CopyTo(span[pos..]);
+                pos += state[i].Length;
+                if (i < state.Length - 1)
                 {
                     span[pos++] = '.';
                 }
@@ -121,13 +171,66 @@ internal static class QueryPropertyPath
     }
 
     /// <summary>
+    /// Resolves the JSON member name for a single CLR property, used by call sites that already
+    /// hold the serializer and do not need to defer.
+    /// </summary>
+    internal static IJsonPropertyNameResolver? AsNameResolver(IJsonSerializer? jsonSerializer)
+        => jsonSerializer as IJsonPropertyNameResolver;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static string ResolveName(in PropertyPathSegment segment, IJsonPropertyNameResolver? resolver)
+    {
+        if (resolver is null)
+        {
+            return segment.ClrName;
+        }
+
+        var resolved = resolver.ResolvePropertyName(segment.DeclaringType, segment.ClrName);
+
+        // A resolver returning null means "no opinion" (unknown type, non-serialized member);
+        // the CLR name is the same answer the path builder gave before resolution existed.
+        if (string.IsNullOrEmpty(resolved))
+        {
+            return segment.ClrName;
+        }
+
+        ValidateResolvedName(resolved!, segment);
+        return resolved!;
+    }
+
+    /// <summary>
+    /// Guards the injection surface opened by resolving names through the serializer. CLR
+    /// property names are constrained to identifier characters, but a resolved name comes from
+    /// a naming policy or a <c>[JsonPropertyName]</c>/<c>[JsonProperty]</c> attribute and is an
+    /// arbitrary string. It is emitted inside the single-quoted SQL literal that carries the
+    /// JSON path, so a quote would terminate that literal and '.', '[' and ']' would silently
+    /// change which member the path selects.
+    /// </summary>
+    private static void ValidateResolvedName(string resolvedName, in PropertyPathSegment segment)
+    {
+        foreach (var c in resolvedName)
+        {
+            // '-' is permitted because kebab-case is a first-class naming policy and SQLite
+            // resolves '$.my-name' without quoting.
+            if (!(char.IsLetterOrDigit(c) || c is '_' or '-'))
+            {
+                throw new ArgumentException(
+                    $"The serializer maps '{segment.DeclaringType?.Name}.{segment.ClrName}' to JSON member name " +
+                    $"'{resolvedName}', which contains the character '{c}' and cannot be used in a JSON path. " +
+                    "Rename the JSON member, or query this property with the raw-string path overload.",
+                    nameof(resolvedName));
+            }
+        }
+    }
+
+    /// <summary>
     /// Fallback for paths deeper than MaxPooledSegments.
     /// </summary>
-    private static string BuildPathFallback<TPathObj, TProp>(Expression<Func<TPathObj, TProp>> expression)
+    private static PropertyPathSegment[] BuildSegmentsFallback<TPathObj, TProp>(Expression<Func<TPathObj, TProp>> expression)
     {
         var visitor = new PropertyPathVisitor();
         visitor.Visit(expression.Body);
-        return $"$.{string.Join('.', visitor.PathBuilder)}";
+        return visitor.PathBuilder.ToArray();
     }
 
     /// <summary>
@@ -227,16 +330,16 @@ internal static class QueryPropertyPath
 
     private class PropertyPathVisitor : ExpressionVisitor
     {
-        internal readonly List<string> PathBuilder = new();
+        internal readonly List<PropertyPathSegment> PathBuilder = new();
 
         protected override Expression VisitMember(MemberExpression node)
         {
-            if (!(node.Member is PropertyInfo))
+            if (node.Member is not PropertyInfo propertyInfo)
             {
                 throw new ArgumentException("The path can only contain properties", nameof(node));
             }
 
-            PathBuilder.Insert(0, node.Member.Name);
+            PathBuilder.Insert(0, new PropertyPathSegment(propertyInfo.DeclaringType ?? node.Member.ReflectedType!, propertyInfo.Name));
 
             return base.VisitMember(node);
         }

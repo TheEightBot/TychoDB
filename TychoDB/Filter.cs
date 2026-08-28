@@ -36,6 +36,19 @@ internal readonly struct Filter
 
     public string? PropertyPath { get; }
 
+    /// <summary>
+    /// Gets the unresolved segments for an expression-supplied path, or <see langword="null"/>
+    /// when the caller supplied a literal path string. Expression paths are rendered at build
+    /// time, once the serializer is known, so the JSON member names match the stored document.
+    /// </summary>
+    public PropertyPathSegment[]? PropertyPathSegments { get; }
+
+    /// <summary>
+    /// Gets the unresolved segments for the value path of a list filter, or
+    /// <see langword="null"/> when it came from a literal path string.
+    /// </summary>
+    public PropertyPathSegment[]? PropertyValuePathSegments { get; }
+
     public bool IsPropertyPathNumeric { get; }
 
     public bool IsPropertyPathBool { get; }
@@ -56,15 +69,17 @@ internal readonly struct Filter
     /// Initializes a new instance of the <see cref="Filter"/> struct for a simple property comparison.
     /// </summary>
     /// <param name="filterType">The type of filter comparison.</param>
-    /// <param name="propertyPath">The JSON path to the property.</param>
+    /// <param name="propertyPath">The literal JSON path, or <see langword="null"/> when <paramref name="propertyPathSegments"/> is supplied.</param>
+    /// <param name="propertyPathSegments">Unresolved path segments rendered at build time, or <see langword="null"/> for a literal path.</param>
     /// <param name="isPropertyPathNumeric">Whether the property is numeric.</param>
     /// <param name="isPropertyPathBool">Whether the property is boolean.</param>
     /// <param name="isPropertyPathDateTime">Whether the property is a date/time.</param>
     /// <param name="value">The value to compare against.</param>
-    public Filter(FilterType filterType, string propertyPath, bool isPropertyPathNumeric, bool isPropertyPathBool, bool isPropertyPathDateTime, object? value)
+    public Filter(FilterType filterType, string? propertyPath, PropertyPathSegment[]? propertyPathSegments, bool isPropertyPathNumeric, bool isPropertyPathBool, bool isPropertyPathDateTime, object? value)
     {
         FilterType = filterType;
         PropertyPath = propertyPath;
+        PropertyPathSegments = propertyPathSegments;
         IsPropertyPathNumeric = isPropertyPathNumeric;
         IsPropertyPathBool = isPropertyPathBool;
         IsPropertyPathDateTime = isPropertyPathDateTime;
@@ -73,6 +88,7 @@ internal readonly struct Filter
         // Initialize remaining fields
         Join = null;
         PropertyValuePath = null;
+        PropertyValuePathSegments = null;
         IsPropertyValuePathNumeric = false;
         IsPropertyValuePathBool = false;
         IsPropertyValuePathDateTime = false;
@@ -82,17 +98,21 @@ internal readonly struct Filter
     /// Initializes a new instance of the <see cref="Filter"/> struct for a nested/list property comparison.
     /// </summary>
     /// <param name="filterType">The type of filter comparison.</param>
-    /// <param name="listPropertyPath">The JSON path to the list property.</param>
-    /// <param name="propertyValuePath">The JSON path to the value within the list items.</param>
+    /// <param name="listPropertyPath">The literal JSON path to the list property, or <see langword="null"/> when segments are supplied.</param>
+    /// <param name="listPropertyPathSegments">Unresolved segments for the list property, or <see langword="null"/> for a literal path.</param>
+    /// <param name="propertyValuePath">The literal JSON path within the list items, or <see langword="null"/> when segments are supplied.</param>
+    /// <param name="propertyValuePathSegments">Unresolved segments for the value path, or <see langword="null"/> for a literal path.</param>
     /// <param name="isPropertyValuePathNumeric">Whether the value path is numeric.</param>
     /// <param name="isPropertyValuePathBool">Whether the value path is boolean.</param>
     /// <param name="isPropertyValuePathDateTime">Whether the value path is a date/time.</param>
     /// <param name="value">The value to compare against.</param>
-    public Filter(FilterType filterType, string listPropertyPath, string? propertyValuePath, bool isPropertyValuePathNumeric, bool isPropertyValuePathBool, bool isPropertyValuePathDateTime, object? value)
+    public Filter(FilterType filterType, string? listPropertyPath, PropertyPathSegment[]? listPropertyPathSegments, string? propertyValuePath, PropertyPathSegment[]? propertyValuePathSegments, bool isPropertyValuePathNumeric, bool isPropertyValuePathBool, bool isPropertyValuePathDateTime, object? value)
     {
         FilterType = filterType;
         PropertyPath = listPropertyPath;
+        PropertyPathSegments = listPropertyPathSegments;
         PropertyValuePath = propertyValuePath;
+        PropertyValuePathSegments = propertyValuePathSegments;
         IsPropertyValuePathNumeric = isPropertyValuePathNumeric;
         IsPropertyValuePathBool = isPropertyValuePathBool;
         IsPropertyValuePathDateTime = isPropertyValuePathDateTime;
@@ -116,6 +136,8 @@ internal readonly struct Filter
         // Initialize remaining fields
         FilterType = null;
         PropertyPath = null;
+        PropertyPathSegments = null;
+        PropertyValuePathSegments = null;
         IsPropertyPathNumeric = false;
         IsPropertyPathBool = false;
         IsPropertyPathDateTime = false;

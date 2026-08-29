@@ -26,6 +26,28 @@ some query behavior changes (see Breaking changes).
 
 ### Fixed
 
+- **Critical: an ungrouped `Or()` escaped the partition and type predicates.** The caller's
+  filter was appended to the generated `WHERE` clause without being bound as a unit:
+
+  ```sql
+  WHERE FullTypeName = ? AND Partition = ? AND <term1> OR <term2>
+  ```
+
+  `AND` binds tighter than `OR`, so SQL read that as
+  `(FullTypeName = ? AND Partition = ? AND term1) OR (term2)` — every term after the first
+  `Or()` was matched against **the whole table**. A two-term `Or()` returned rows from other
+  partitions, and rows of *other stored types*, which the reader then deserialized as `T` with
+  no error. The same clause is used by `DeleteObjectsAsync`, so an ungrouped `Or()` could
+  **delete rows in other partitions and of other types**, and by `CountObjectsAsync`, which
+  over-counted. The caller's filter is now emitted inside its own parentheses. Losing the
+  `Partition` predicate also cost the partition-prefixed indexes, so this was a large
+  performance regression as well as a correctness one; grouped OR-chains now use the index.
+  Filters already wrapped in `StartGroup()`/`EndGroup()` were unaffected and still are.
+- **LINQ predicates lost their own precedence.** `TychoQueryable` translated `&&` and `||` by
+  emitting their operands flat, so `Where(x => (x.A || x.B) && x.C)` became `A OR B AND C` —
+  read by SQL as `A OR (B AND C)` — and returned rows matching only `A` despite their failing
+  `C`. Each composite boolean node is now emitted in its own group. (`.Where(a).Where(b)`
+  chains were affected the same way when either predicate contained an `||`.)
 - **Data integrity: filter values are now compared in the form the serializer wrote.**
   A filter value was rendered with `ToString()`, which is not how the serializer stores it for
   every type. The clearest case is an enum: both serializers write it as a **number** by
@@ -119,6 +141,15 @@ index); batch writes **−44%**; database file with three indexes **20.2 → 8.4
 
 ### Performance
 
+- **`CountObjectsAsync` no longer counts rows on the client.** It issued
+  `SELECT 1 FROM JsonValue WHERE …` and incremented a counter once per matching row, costing a
+  reader round trip per row. It now issues `SELECT COUNT(*)` and reads the single scalar:
+  **16.0 ms → 6.5 ms** counting a 250,000-row partition (2.5x). The same query backs the
+  pre-count a progress-reporting `ReadObjectsAsync` performs, so progress-enabled reads pay
+  half of what they did. A *filtered* count is still bounded by whether the filtered property
+  is indexed — counting a 1-in-200 selective filter on an unindexed path takes ~79 ms on the
+  same store, essentially all of it the `JSON_EXTRACT` scan.
+
 - **`PRAGMA optimize` on connect and disconnect.** `Connect`/`ConnectAsync` and
   `Disconnect`/`DisconnectAsync`/`Dispose` run SQLite's recommended `PRAGMA optimize`
   (bounded by `analysis_limit = 400`) so the query planner keeps fresh statistics and
@@ -155,6 +186,78 @@ index); batch writes **−44%**; database file with three indexes **20.2 → 8.4
 
 ### Added
 
+- **`AddTypeRegistration<T>()` now detects the id property by convention, as documented.** It
+  previously did nothing of the kind: it recorded no selector, so `WriteObjectAsync(obj)`,
+  `ReadObjectAsync(obj)`, `ObjectExistsAsync(obj)`, `DeleteObjectAsync(obj)` and `GetIdFor(obj)`
+  all threw `TychoException: An id mapping has not been provided`, on a type whose property was
+  literally named `Id`. The property is now found by name — `Id`, then `<TypeName>Id`, matched
+  case-insensitively, and it must be public, readable and non-indexed. When no such property
+  exists the type is still registered but without an id mapping, exactly as before, so
+  registering a key-less type and supplying keys at the call site keeps working.
+- **Strict registration now rejects a key that diverges from the registered id property.**
+  `WriteObjectsAsync(objs, keySelector, …)` takes a key at the call site and overrides the
+  registration. A row written under a key the registration would not produce is unreachable by
+  every by-object overload, and the delete failure is silent — `DeleteObjectAsync(obj)` returns
+  false while the row survives. With `requireTypeRegistration: true` and a type registered by id
+  property, such a write now throws `TychoException` naming both keys. Delegate registrations
+  (`AddTypeRegistrationWithCustomKeySelector`) have no property to compare against and are
+  unaffected, as is everything outside strict mode. The check wraps the selector rather than
+  pre-scanning, so a lazy sequence is still enumerated exactly once.
+- **Filters on the id property are answered from the `Key` column where that is provably
+  correct.** `Filter(Equals, x => x.Id, …)` and `Filter(In, x => x.Id, …)` previously went
+  through `JSON_EXTRACT` and scanned. Under `requireTypeRegistration` with a type registered by
+  id property, they are now emitted against the indexed `Key` column instead:
+
+  | filter on the id property, 250,000 rows | scan | rewritten |
+  |---|---:|---:|
+  | `Equals` | 79.3 ms | **0.0 ms** |
+  | `In`, 100 keys | 101.2 ms | **0.2 ms** |
+
+  Soundness comes from two things together: the write guard above means no row written through
+  this instance can diverge, and rows already in the database are checked once per type with a
+  divergence probe before the rewrite is used (~92 ms on that store, on the first such query
+  only, then cached for the connection). A single divergent row disables the rewrite for that
+  type and the ordinary predicate is emitted, so the worst case is the behaviour that was there
+  before. Negated forms (`NotEquals`, `NotIn`) are deliberately left alone — they cannot use an
+  index either way — as is a null comparison value, since `Key` is `NOT NULL`.
+- **`ReadObjectsByKeysAsync<T>(keys, partition, sort, …)`.** Reads a batch of keys in one round
+  trip. The key set is bound as a **single JSON array** expanded by `JSON_EACH`, not as one
+  parameter per key, so there is no `SQLITE_MAX_VARIABLE_NUMBER` ceiling (999 on older SQLite
+  builds), no chunking for callers to think about, and one prepared statement regardless of
+  batch size. Keys lead the primary key, so each is a primary-key probe. Measured against a
+  loop of `ReadObjectAsync` on a 250,000-row store (best of five, after warm-up):
+
+  | batch | looped `ReadObjectAsync` | `ReadObjectsByKeysAsync` |
+  |------:|------------------------:|-------------------------:|
+  |   200 |                  1.9 ms |                   0.9 ms |
+  |   999 |                 10.6 ms |                   4.5 ms |
+  | 4,949 |                 36.8 ms |                  16.9 ms |
+  |23,784 |                183.2 ms |                  67.3 ms |
+
+  That is 2.1–2.7x end to end. Both figures include deserialization, which is identical between
+  them and dominates what is left — the query alone is 27.5 ms at 23,784 keys. The `JSON_EACH` shape was chosen by
+  measurement: a single `IN (@p0…@pN)` collapses at scale (1,297.7 ms at 23,784 keys, because
+  the statement text and plan grow with the batch), a chunked `IN` is 91.8 ms, and a temp-table
+  join carries ~40 ms of fixed setup. Keys not present are simply absent from the result.
+- **`FilterType.In` and `FilterType.NotIn`.** Set membership as a single atomic term, via new
+  `Filter` overloads taking an `IEnumerable`:
+
+  ```csharp
+  FilterBuilder<Item>.Create().Filter(FilterType.In, x => x.DepartmentId, new[] { 33, 47 });
+  ```
+
+  It renders to `<path> IN (…)` through the same numeric `CAST` the scalar comparisons use, so
+  an expression index over the property still serves the query. Being one term, it cannot be
+  mis-grouped the way an `Or()` chain can. Details:
+  - Duplicate values are removed; the caller's order is preserved.
+  - An empty set matches nothing for `In` and everything for `NotIn` — never `IN ()`, which is
+    a syntax error, and never a silently dropped term, which would widen the result set.
+  - A `null` in the set is matched against a missing or null member with `IS NULL`, which SQL's
+    own `IN` would never do. `NotIn` keeps SQL's semantics for rows whose member is null: they
+    are not returned, exactly as `NotEquals` already behaves.
+  - Longer lists are split across several `IN` terms rather than exceeding
+    `SQLITE_MAX_VARIABLE_NUMBER`, which is only 999 on older SQLite builds, so a large set works
+    regardless of which build the host application ships.
 - **`IJsonValueResolver`.** A second optional serializer capability, feature-detected the same
   way, reporting the scalar form a CLR value takes in JSON so filter comparisons are made
   against what was stored. Implemented by `SystemTextJsonSerializer` and
@@ -169,6 +272,21 @@ index); batch writes **−44%**; database file with three indexes **20.2 → 8.4
 
 ### Breaking changes
 
+- **`AddTypeRegistration<T>()` on a type with a conventional id property now supplies a key.**
+  Previously every by-object operation on such a type threw; they now work. Code that caught
+  that exception, or that relied on `WriteObjectsAsync(objs, keySelector)` disagreeing with a
+  conventionally-named `Id` property, changes behaviour — under `requireTypeRegistration` the
+  disagreement is now an error rather than a silently unreachable row.
+
+- **An ungrouped `Or()` now means what it reads as.** Code that (unknowingly) depended on the
+  leaked rows — most plausibly a query written against a single-partition, single-type database
+  where the bug was invisible — returns fewer rows now. This is the fix, not a regression.
+- **Passing a collection to a scalar `FilterType` now throws `ArgumentException`.** Adding the
+  `IEnumerable` overloads changes overload resolution for a collection argument, which
+  previously bound to `object` and was rendered as `ToString()` (`"System.Int32[]"`), matching
+  nothing silently. Use `FilterType.In`. A literal `null` argument also now binds to the new
+  overload, but keeps its old meaning — `Filter(Equals, x => x.Value, null)` is still the
+  null comparison.
 - **Enum, `DateOnly` and `TimeOnly` filter values now compare against their JSON form.** Code
   that worked around the enum mismatch by casting to `(int)` keeps working. Code that relied on
   a string-enum converter's name matching by coincidence also keeps working, and now stays
@@ -214,6 +332,16 @@ index); batch writes **−44%**; database file with three indexes **20.2 → 8.4
   `TychoDB.Encrypted` are the supported packages.
 
 ### Notes
+
+- **Serializer choice is the largest remaining lever on read throughput.** Reading a whole
+  250,000-row partition measured 254.7 ms with `SystemTextJsonSerializer` against 358.9 ms with
+  `NewtonsoftJsonSerializer` (~1.4x), because the former implements `IUtf8JsonDeserializer` and
+  receives rows as UTF-8 spans. Deserialization dominates any large read: of the 67.3 ms
+  `ReadObjectsByKeysAsync` takes for 23,784 keys, only 27.5 ms is the query.
+- **Outside strict mode, a filter on the id property still scans.** The `Key`-column rewrite
+  needs the write guard to hold, and that guard only applies under `requireTypeRegistration`.
+  Without it, index the id property or reach those rows through `ReadObjectsByKeysAsync`; both
+  measured 0.0 ms against the 71.6 ms scan.
 
 - Performance guidance: prefer `WriteObjectsAsync` for writing many objects — it is
   ~10× faster and ~6× lower-allocation than looping `WriteObjectAsync`, and

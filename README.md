@@ -190,7 +190,19 @@ var exists = await db.ObjectExistsAsync<Person>("123");
 
 // Count objects
 var count = await db.CountObjectsAsync<Person>();
+
+// Read many objects by key in one round trip. Prefer this over a loop of ReadObjectAsync:
+// keys lead the primary key, and there is no limit on how many may be passed.
+var people = await db.ReadObjectsByKeysAsync<Person>(new object[] { "id-1", "id-2", "id-3" });
 ```
+
+> **Filtering on the property that is also the Tycho key** (`x => x.Id`) normally goes through
+> `JSON_EXTRACT` and scans, because a write may supply its own key selector and Tycho cannot
+> assume the property still matches the stored key. Under `requireTypeRegistration: true`, with
+> the type registered by id property, that assumption *is* enforced, and `Equals` / `In` filters
+> on the id property are answered from the indexed `Key` column instead — 79.3 ms to 0.0 ms on a
+> 250,000-row store. Otherwise, reach those rows through `ReadObjectAsync` /
+> `ReadObjectsByKeysAsync`, or index the property like any other.
 
 ### Filtering
 
@@ -209,6 +221,22 @@ var complexFilter = FilterBuilder<Person>
     .Filter(FilterType.GreaterThan, x => x.Age, 25)
     .And()
     .Filter(FilterType.Contains, x => x.Name, "Doe");
+
+// Set membership: one atomic term, so it needs no grouping
+var inDepartments = FilterBuilder<Person>
+    .Create()
+    .Filter(FilterType.In, x => x.DepartmentId, new[] { 33, 47, 51 });
+
+// Mixing OR with other terms: group the alternatives so the intent is explicit
+var grouped = FilterBuilder<Person>
+    .Create()
+    .StartGroup()
+        .Filter(FilterType.Equals, x => x.DepartmentId, 33)
+        .Or()
+        .Filter(FilterType.Equals, x => x.DepartmentId, 47)
+    .EndGroup()
+    .And()
+    .Filter(FilterType.GreaterThan, x => x.Age, 25);
 
 // Get a single object matching the filter
 var johnDoe = await db.ReadObjectAsync<Person>(filter: complexFilter);
@@ -322,6 +350,19 @@ await db.DeleteBlobAsync("doc_123", "documents");
 var result = await db.DeleteBlobsAsync("documents");
 Console.WriteLine($"Deleted {result.Count} blobs");
 ```
+
+## Performance notes
+
+- **Reach rows by key through the key APIs.** A filter on the key property scans; see the note
+  under [Basic Querying](#basic-querying). `ReadObjectsByKeysAsync` fetches a whole batch in one
+  round trip and has no limit on batch size.
+- **`SystemTextJsonSerializer` deserializes faster.** It implements `IUtf8JsonDeserializer`, so
+  rows are handed to it as UTF-8 spans and skip an intermediate stream. Reading a whole
+  250,000-row partition measured **254.7 ms** with `SystemTextJsonSerializer` against
+  **358.9 ms** with `NewtonsoftJsonSerializer` — about 1.4x. Deserialization dominates any large
+  read, so this is usually the largest single lever on read throughput.
+- **Index anything you filter or sort on.** An unindexed `JSON_EXTRACT` predicate scans the
+  partition; see below.
 
 ## Indexing
 

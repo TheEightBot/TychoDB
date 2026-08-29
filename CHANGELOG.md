@@ -177,6 +177,29 @@ index); batch writes **−44%**; database file with three indexes **20.2 → 8.4
 
 ### Added
 
+- **`FilterType.In` and `FilterType.NotIn`.** Set membership as a single atomic term, via new
+  `Filter` overloads taking an `IEnumerable`:
+
+  ```csharp
+  FilterBuilder<Item>.Create().Filter(FilterType.In, x => x.DepartmentId, new[] { 33, 47 });
+  ```
+
+  It renders to `<path> IN (…)` through the same numeric `CAST` the scalar comparisons use, so
+  an expression index over the property still serves the query. Being one term, it cannot be
+  mis-grouped the way an `Or()` chain can. Details:
+  - Duplicate values are removed; the caller's order is preserved.
+  - An empty set matches nothing for `In` and everything for `NotIn` — never `IN ()`, which is
+    a syntax error, and never a silently dropped term, which would widen the result set.
+  - A `null` in the set is matched against a missing or null member with `IS NULL`, which SQL's
+    own `IN` would never do. `NotIn` keeps SQL's semantics for rows whose member is null: they
+    are not returned, exactly as `NotEquals` already behaves.
+  - Longer lists are split across several `IN` terms rather than exceeding
+    `SQLITE_MAX_VARIABLE_NUMBER`, which is only 999 on older SQLite builds, so a large set works
+    regardless of which build the host application ships.
+  - The raw-path overload takes `IEnumerable<object>` rather than a generic parameter on
+    purpose: a generic overload there captures an ordinary `string` comparison value, since
+    `string` is an `IEnumerable<char>`. A value-type collection needs `Cast<object>()`; the
+    expression overload infers the element type from the property and needs no cast.
 - **`IJsonValueResolver`.** A second optional serializer capability, feature-detected the same
   way, reporting the scalar form a CLR value takes in JSON so filter comparisons are made
   against what was stored. Implemented by `SystemTextJsonSerializer` and
@@ -191,6 +214,12 @@ index); batch writes **−44%**; database file with three indexes **20.2 → 8.4
 
 ### Breaking changes
 
+- **Passing a collection to a scalar `FilterType` now throws `ArgumentException`.** Adding the
+  `IEnumerable` overloads changes overload resolution for a collection argument, which
+  previously bound to `object` and was rendered as `ToString()` (`"System.Int32[]"`), matching
+  nothing silently. Use `FilterType.In`. A literal `null` argument also now binds to the new
+  overload, but keeps its old meaning — `Filter(Equals, x => x.Value, null)` is still the
+  null comparison.
 - **An ungrouped `Or()` now means what it reads as.** Code that (unknowingly) depended on the
   leaked rows — most plausibly a query written against a single-partition, single-type database
   where the bug was invisible — returns fewer rows now. This is the fix, not a regression.

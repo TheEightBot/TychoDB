@@ -210,6 +210,11 @@ var complexFilter = FilterBuilder<Person>
     .And()
     .Filter(FilterType.Contains, x => x.Name, "Doe");
 
+// Set membership: one atomic term, so it needs no grouping
+var inDepartments = FilterBuilder<Person>
+    .Create()
+    .Filter(FilterType.In, x => x.DepartmentId, new[] { 33, 47, 51 });
+
 // Mixing OR with other terms: group the alternatives so the intent is explicit
 var grouped = FilterBuilder<Person>
     .Create()

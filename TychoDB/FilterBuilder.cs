@@ -34,6 +34,26 @@ public class FilterBuilder<TObj>
     private const string GreaterThanOrEqual = " >= ";
     private const string LessThan = " < ";
     private const string LessThanOrEqual = " <= ";
+    private const string InOperator = " IN (";
+    private const string NotInOperator = " NOT IN (";
+    private const string ValueSeparator = ", ";
+    private const string OrJoin = " OR ";
+    private const string AndJoin = " AND ";
+
+    // IN () is a syntax error in SQLite, so an empty set has to be rendered as a
+    // constant. Dropping the term instead would widen the result set, which is the
+    // dangerous direction: the caller asked for "none of these" and would get "all".
+    private const string MatchNothing = "0 = 1";
+    private const string MatchEverything = "1 = 1";
+
+    // Values bind as parameters unless they are genuine numerics or booleans (those
+    // become literals). SQLITE_MAX_VARIABLE_NUMBER is 32,766 on modern builds but only
+    // 999 on older ones, and the build in use is the host application's choice, not
+    // this library's. Longer lists are split into several IN terms joined by OR (AND,
+    // when negated) rather than capped or rejected, so a large set still works
+    // everywhere. Lists shorter than this — the overwhelming majority — emit a single
+    // IN term and are unaffected.
+    private const int MaxValuesPerInClause = 900;
 
     private readonly List<Filter> _filters = new();
 
@@ -48,6 +68,8 @@ public class FilterBuilder<TObj>
 
     public FilterBuilder<TObj> Filter<TProp>(FilterType filterType, Expression<Func<TObj, TProp>> propertyPath, object value)
     {
+        EnsureScalarFilterType(filterType);
+
         // The path is captured as segments rather than rendered here: the serializer that
         // decides the JSON member names is not known until Build.
         var propertyPathSegments = QueryPropertyPath.BuildSegments(propertyPath);
@@ -62,6 +84,8 @@ public class FilterBuilder<TObj>
 
     public FilterBuilder<TObj> Filter<TItem, TItemProp>(FilterType filterType, Expression<Func<TObj, IEnumerable<TItem>>> propertyPath, Expression<Func<TItem, TItemProp>> propertyValuePath, object value)
     {
+        EnsureScalarFilterType(filterType);
+
         var propertyPathSegments = QueryPropertyPath.BuildSegments(propertyPath);
         var propertyValuePathSegments = QueryPropertyPath.BuildSegments(propertyValuePath);
         var isPropertyValuePathNumeric = QueryPropertyPath.IsNumeric(propertyValuePath);
@@ -75,6 +99,8 @@ public class FilterBuilder<TObj>
 
     public FilterBuilder<TObj> Filter(FilterType filterType, string propertyPath, bool isPropertyPathNumeric, bool isPropertyPathBool, bool isPropertyPathDateTime, object value)
     {
+        EnsureScalarFilterType(filterType);
+
         // This overload accepts a raw JSON path string from the caller. Because
         // the path is emitted as an identifier inside JSON_EXTRACT(...) and
         // cannot be parameterized, validate it against a strict grammar to
@@ -84,6 +110,172 @@ public class FilterBuilder<TObj>
         _filters.Add(new Filter(filterType, propertyPath, null, isPropertyPathNumeric, isPropertyPathBool, isPropertyPathDateTime, value));
 
         return this;
+    }
+
+    /// <summary>
+    /// Adds a set-membership term: <see cref="FilterType.In"/> or <see cref="FilterType.NotIn"/>.
+    /// <para>
+    /// A single term rather than a chain of <c>Or()</c>s, so it cannot be mis-grouped, and it
+    /// renders through the same numeric <c>CAST</c> the scalar comparisons use — which is what
+    /// lets an expression index over the property serve the query.
+    /// </para>
+    /// <para>
+    /// Duplicate values are removed. An empty set matches nothing for <see cref="FilterType.In"/>
+    /// and everything for <see cref="FilterType.NotIn"/>. A <see langword="null"/> in the set is
+    /// matched against a missing or null member, which SQL's own <c>IN</c> would never do.
+    /// </para>
+    /// </summary>
+    /// <typeparam name="TProp">The property's type.</typeparam>
+    /// <param name="filterType">Must be <see cref="FilterType.In"/> or <see cref="FilterType.NotIn"/>.</param>
+    /// <param name="propertyPath">An expression selecting the property to test.</param>
+    /// <param name="values">The set to test membership against.</param>
+    /// <returns>The current builder for chaining.</returns>
+    public FilterBuilder<TObj> Filter<TProp>(FilterType filterType, Expression<Func<TObj, TProp>> propertyPath, IEnumerable<TProp>? values)
+    {
+        // A literal null argument binds here, not to the object overload: IEnumerable<TProp> is
+        // the more specific parameter type. Filter(Equals, x => x.Value, null) has always meant
+        // "compare against null", so it is routed back to the scalar path rather than being
+        // rejected as a malformed set.
+        if (values is null)
+        {
+            return NullValues(filterType, () => Filter(filterType, propertyPath, (object)null!));
+        }
+
+        EnsureSetFilterType(filterType);
+
+        var propertyPathSegments = QueryPropertyPath.BuildSegments(propertyPath);
+        var isPropertyPathNumeric = QueryPropertyPath.IsNumeric(propertyPath);
+        var isPropertyPathBool = QueryPropertyPath.IsBool(propertyPath);
+        var isPropertyPathDateTime = QueryPropertyPath.IsDateTime(propertyPath);
+
+        _filters.Add(
+            new Filter(
+                filterType,
+                null,
+                propertyPathSegments,
+                isPropertyPathNumeric,
+                isPropertyPathBool,
+                isPropertyPathDateTime,
+                Distinct(values)));
+
+        return this;
+    }
+
+    /// <summary>
+    /// Adds a set-membership term against a raw JSON path. See the expression overload for the
+    /// empty-set, duplicate and null semantics.
+    /// </summary>
+    /// <param name="filterType">Must be <see cref="FilterType.In"/> or <see cref="FilterType.NotIn"/>.</param>
+    /// <param name="propertyPath">The JSON path to test.</param>
+    /// <param name="isPropertyPathNumeric">Whether the property is numeric.</param>
+    /// <param name="isPropertyPathBool">Whether the property is boolean.</param>
+    /// <param name="isPropertyPathDateTime">Whether the property is a date/time.</param>
+    /// <param name="values">
+    /// The set to test membership against. Typed as <see cref="IEnumerable{T}"/> of
+    /// <see cref="object"/> rather than a generic parameter on purpose: a generic overload here
+    /// would capture an ordinary <see cref="string"/> comparison value, since
+    /// <see cref="string"/> is an <see cref="IEnumerable{T}"/> of <see cref="char"/>, and route
+    /// it to set membership. A value-type collection such as <c>int[]</c> therefore needs
+    /// <c>Cast&lt;object&gt;()</c>; the expression overload infers the element type from the
+    /// property and needs no cast.
+    /// </param>
+    /// <returns>The current builder for chaining.</returns>
+    public FilterBuilder<TObj> Filter(FilterType filterType, string propertyPath, bool isPropertyPathNumeric, bool isPropertyPathBool, bool isPropertyPathDateTime, IEnumerable<object>? values)
+    {
+        // See the expression overload: a literal null means the scalar null comparison.
+        if (values is null)
+        {
+            return NullValues(
+                filterType,
+                () => Filter(filterType, propertyPath, isPropertyPathNumeric, isPropertyPathBool, isPropertyPathDateTime, (object)null!));
+        }
+
+        EnsureSetFilterType(filterType);
+        QueryPropertyPath.ValidatePath(propertyPath, nameof(propertyPath));
+
+        _filters.Add(
+            new Filter(
+                filterType,
+                propertyPath,
+                null,
+                isPropertyPathNumeric,
+                isPropertyPathBool,
+                isPropertyPathDateTime,
+                Distinct(values)));
+
+        return this;
+    }
+
+    /// <summary>
+    /// Handles a null passed where a value set was expected: a scalar comparison against null
+    /// for the ordinary filter types, and an error for In/NotIn, where "no set at all" is not
+    /// the same thing as the empty set and is far more likely to be an accident.
+    /// </summary>
+    private FilterBuilder<TObj> NullValues(FilterType filterType, Func<FilterBuilder<TObj>> asScalarNull)
+    {
+        if (filterType is FilterType.In or FilterType.NotIn)
+        {
+            var empty = filterType == FilterType.In ? "nothing" : "everything";
+            var message = $"{filterType} needs a collection; pass an empty one to match {empty}.";
+
+            throw new ArgumentNullException("values", message);
+        }
+
+        return asScalarNull();
+    }
+
+    private static void EnsureSetFilterType(FilterType filterType)
+    {
+        if (filterType is not (FilterType.In or FilterType.NotIn))
+        {
+            throw new ArgumentException(
+                $"{filterType} compares against a single value; pass that value rather than a collection. Only In and NotIn take a collection.",
+                nameof(filterType));
+        }
+    }
+
+    private static void EnsureScalarFilterType(FilterType filterType)
+    {
+        if (filterType is FilterType.In or FilterType.NotIn)
+        {
+            throw new ArgumentException(
+                $"{filterType} tests set membership; use the overload that takes an IEnumerable of values. " +
+                "The raw-path overload takes IEnumerable<object>, which a value-type collection such as int[] " +
+                "does not implicitly convert to — call Cast<object>() on it.",
+                nameof(filterType));
+        }
+    }
+
+    /// <summary>
+    /// Materializes the value set once, dropping duplicates while preserving the caller's
+    /// order. At most one null survives; the renderer turns it into an IS NULL test.
+    /// </summary>
+    private static object?[] Distinct<TValue>(IEnumerable<TValue> values)
+    {
+        var seen = new HashSet<object>();
+        var distinct = new List<object?>();
+        var sawNull = false;
+
+        foreach (var value in values)
+        {
+            if (value is null)
+            {
+                if (!sawNull)
+                {
+                    sawNull = true;
+                    distinct.Add(null);
+                }
+
+                continue;
+            }
+
+            if (seen.Add(value))
+            {
+                distinct.Add(value);
+            }
+        }
+
+        return distinct.ToArray();
     }
 
     public FilterBuilder<TObj> And()
@@ -186,7 +378,7 @@ public class FilterBuilder<TObj>
             return filter;
         }
 
-        var value = ResolveValue(filter.Value, valueResolver);
+        var value = ResolveSetOrScalarValue(filter, valueResolver);
 
         if (filter.PropertyPathSegments is null && filter.PropertyValuePathSegments is null)
         {
@@ -234,6 +426,36 @@ public class FilterBuilder<TObj>
                 filter.IsPropertyValuePathBool,
                 filter.IsPropertyValuePathDateTime,
                 value);
+    }
+
+    /// <summary>
+    /// Resolves a set-membership term's values element by element, so an enum or DateOnly in an
+    /// IN list is compared in the same JSON form the serializer wrote — exactly as the scalar
+    /// comparisons already are. Any other term resolves its single value.
+    /// </summary>
+    private static object? ResolveSetOrScalarValue(in Filter filter, IJsonValueResolver? valueResolver)
+    {
+        if (filter.FilterType is not (FilterType.In or FilterType.NotIn) || filter.Value is not object?[] values)
+        {
+            return ResolveValue(filter.Value, valueResolver);
+        }
+
+        object?[]? resolved = null;
+
+        for (var i = 0; i < values.Length; i++)
+        {
+            var value = ResolveValue(values[i], valueResolver);
+
+            if (resolved is null && ReferenceEquals(value, values[i]))
+            {
+                continue;
+            }
+
+            resolved ??= (object?[])values.Clone();
+            resolved[i] = value;
+        }
+
+        return resolved ?? values;
     }
 
     /// <summary>
@@ -601,6 +823,135 @@ public class FilterBuilder<TObj>
                 AppendLike(commandBuilder, parameters, filter.Value, leadingWildcard: false, trailingWildcard: true);
                 commandBuilder.AppendLine();
                 break;
+
+            case FilterType.In:
+            case FilterType.NotIn:
+                BuildSetFilter(commandBuilder, filter, jsonSerializer, parameters);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Renders <c>path IN (…)</c> / <c>path NOT IN (…)</c>. The path is emitted through the same
+    /// helpers the scalar comparisons use, so a numeric property keeps its
+    /// <c>CAST(… as NUMERIC)</c> form and stays matchable by an expression index over it.
+    /// </summary>
+    private static void BuildSetFilter(StringBuilder commandBuilder, in Filter filter, IJsonSerializer jsonSerializer, FilterParameters parameters)
+    {
+        var negated = filter.FilterType!.Value == FilterType.NotIn;
+        var values = filter.Value as object?[] ?? Array.Empty<object?>();
+
+        // SQL's IN never matches NULL against a NULL in the list, so a null the caller put in
+        // the set is pulled out and tested separately. Without this it would silently be a
+        // value that can never match.
+        var hasNull = false;
+        var present = new List<object?>(values.Length);
+
+        foreach (var value in values)
+        {
+            if (value is null)
+            {
+                hasNull = true;
+            }
+            else
+            {
+                present.Add(value);
+            }
+        }
+
+        var join = negated ? AndJoin : OrJoin;
+
+        if (present.Count == 0)
+        {
+            if (hasNull)
+            {
+                AppendSetPath(commandBuilder, filter);
+                commandBuilder.Append(negated ? IsNotNull : IsNull).AppendLine();
+            }
+            else
+            {
+                commandBuilder.AppendLine(negated ? MatchEverything : MatchNothing);
+            }
+
+            return;
+        }
+
+        var chunks = ((present.Count - 1) / MaxValuesPerInClause) + 1;
+        var wrap = hasNull || chunks > 1;
+
+        if (wrap)
+        {
+            commandBuilder.Append(OpenParen);
+        }
+
+        for (var chunk = 0; chunk < chunks; chunk++)
+        {
+            if (chunk > 0)
+            {
+                commandBuilder.Append(join);
+            }
+
+            var start = chunk * MaxValuesPerInClause;
+            var end = Math.Min(start + MaxValuesPerInClause, present.Count);
+
+            AppendSetPath(commandBuilder, filter);
+            commandBuilder.Append(negated ? NotInOperator : InOperator);
+
+            for (var i = start; i < end; i++)
+            {
+                if (i > start)
+                {
+                    commandBuilder.Append(ValueSeparator);
+                }
+
+                AppendSetValue(commandBuilder, filter, parameters, present[i], jsonSerializer);
+            }
+
+            commandBuilder.Append(CloseParen);
+        }
+
+        if (hasNull)
+        {
+            commandBuilder.Append(join);
+            AppendSetPath(commandBuilder, filter);
+            commandBuilder.Append(negated ? IsNotNull : IsNull);
+        }
+
+        if (wrap)
+        {
+            commandBuilder.Append(CloseParen);
+        }
+
+        commandBuilder.AppendLine();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AppendSetPath(StringBuilder commandBuilder, in Filter filter)
+    {
+        if (filter.IsPropertyPathNumeric)
+        {
+            AppendCastNumeric(commandBuilder, filter.PropertyPath!);
+        }
+        else
+        {
+            AppendJsonExtract(commandBuilder, filter.PropertyPath!);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AppendSetValue(StringBuilder commandBuilder, in Filter filter, FilterParameters parameters, object? value, IJsonSerializer jsonSerializer)
+    {
+        if (filter.IsPropertyPathNumeric)
+        {
+            AppendNumericValue(commandBuilder, parameters, value);
+        }
+        else if (filter.IsPropertyPathDateTime)
+        {
+            commandBuilder.Append(parameters.Add(GetDateTimeString(value, jsonSerializer)));
+        }
+        else
+        {
+            AppendValue(commandBuilder, parameters, value);
         }
     }
 

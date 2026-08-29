@@ -251,6 +251,68 @@ public class ZzBatchKeyBench
         }
     }
 
+    [TestMethod]
+    [Ignore("Scratch performance harness: seeds 250k rows. Run it by removing this attribute.")]
+    public async Task KeyColumnRewrite()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "tycho_rewrite", Guid.NewGuid().ToString());
+        Directory.CreateDirectory(dir);
+        var name = "bench.db";
+
+        using (var db = new Tycho(dir, Serializer, dbName: name, rebuildCache: true, requireTypeRegistration: false).Connect())
+        {
+            const int batch = 10_000;
+            for (var offset = 0; offset < RowCount; offset += batch)
+            {
+                await db.WriteObjectsAsync(
+                    Enumerable.Range(offset, Math.Min(batch, RowCount - offset))
+                        .Select(i => new Item
+                        {
+                            Key = "K" + i.ToString(CultureInfo.InvariantCulture),
+                            DepartmentId = i % 200,
+                            Description = "Item number " + i.ToString(CultureInfo.InvariantCulture),
+                            Filler = new string('x', 200),
+                        }),
+                    x => x.Key,
+                    Partition);
+            }
+        }
+
+        SqliteConnection.ClearAllPools();
+
+        foreach (var strict in new[] { false, true })
+        {
+            using var db = new Tycho(dir, Serializer, dbName: name, rebuildCache: false, requireTypeRegistration: strict)
+                .AddTypeRegistration<Item, string>(x => x.Key)
+                .Connect();
+
+            Console.WriteLine($"\n=== requireTypeRegistration: {strict} ===");
+
+            // First call pays the one-time divergence probe (a scan of this type's rows).
+            var sw = Stopwatch.StartNew();
+            _ = (await db.ReadObjectsAsync<Item>(
+                Partition, FilterBuilder<Item>.Create().Filter(FilterType.Equals, x => x.Key, "K123456"))).Count();
+            sw.Stop();
+            Console.WriteLine($"  {"first call (incl. probe)",-28} {sw.Elapsed.TotalMilliseconds,9:F1} ms   (1 rows)");
+
+            await Timed("steady state", async () =>
+                (await db.ReadObjectsAsync<Item>(
+                    Partition, FilterBuilder<Item>.Create().Filter(FilterType.Equals, x => x.Key, "K123456"))).Count());
+
+            await Timed("In (100 keys)", async () =>
+                (await db.ReadObjectsAsync<Item>(
+                    Partition,
+                    FilterBuilder<Item>.Create().Filter(
+                        FilterType.In,
+                        x => x.Key,
+                        Enumerable.Range(0, 100).Select(i => "K" + i.ToString(CultureInfo.InvariantCulture))))).Count());
+
+            SqliteConnection.ClearAllPools();
+        }
+
+        Directory.Delete(dir, true);
+    }
+
     private static int CountVia(SqliteConnection conn, string projection)
     {
         using var cmd = conn.CreateCommand();

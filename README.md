@@ -196,12 +196,13 @@ var count = await db.CountObjectsAsync<Person>();
 var people = await db.ReadObjectsByKeysAsync<Person>(new object[] { "id-1", "id-2", "id-3" });
 ```
 
-> **Filtering on the property that is also the Tycho key** (`x => x.Id`) goes through
-> `JSON_EXTRACT` and scans — it does not use the primary key, because Tycho stores the key in
-> its own `Key` column and cannot assume the property still matches it (a write may supply its
-> own key selector). Reach those rows through `ReadObjectAsync` / `ReadObjectsByKeysAsync`, or
-> index the property like any other. On a 250,000-row store, one equality lookup measured
-> 71.6 ms as an unindexed filter and 0.0 ms all three other ways.
+> **Filtering on the property that is also the Tycho key** (`x => x.Id`) normally goes through
+> `JSON_EXTRACT` and scans, because a write may supply its own key selector and Tycho cannot
+> assume the property still matches the stored key. Under `requireTypeRegistration: true`, with
+> the type registered by id property, that assumption *is* enforced, and `Equals` / `In` filters
+> on the id property are answered from the indexed `Key` column instead — 79.3 ms to 0.0 ms on a
+> 250,000-row store. Otherwise, reach those rows through `ReadObjectAsync` /
+> `ReadObjectsByKeysAsync`, or index the property like any other.
 
 ### Filtering
 

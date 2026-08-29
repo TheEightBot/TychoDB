@@ -271,15 +271,11 @@ public class TychoQueryable<T>
             {
                 case ExpressionType.AndAlso:
                     // x => x.A && x.B
-                    filterBuilder = BuildFilterFromExpressionInternal(binaryExpression.Left, filterBuilder);
-                    filterBuilder = filterBuilder.And();
-                    return BuildFilterFromExpressionInternal(binaryExpression.Right, filterBuilder);
+                    return BuildBooleanExpression(binaryExpression, filterBuilder, or: false);
 
                 case ExpressionType.OrElse:
                     // x => x.A || x.B
-                    filterBuilder = BuildFilterFromExpressionInternal(binaryExpression.Left, filterBuilder);
-                    filterBuilder = filterBuilder.Or();
-                    return BuildFilterFromExpressionInternal(binaryExpression.Right, filterBuilder);
+                    return BuildBooleanExpression(binaryExpression, filterBuilder, or: true);
 
                 case ExpressionType.Equal:
                     // x => x.Property == value
@@ -373,6 +369,29 @@ public class TychoQueryable<T>
         }
 
         throw new NotSupportedException($"The expression type {expression.NodeType} is not supported.");
+    }
+
+    /// <summary>
+    /// Emits an <c>&amp;&amp;</c> / <c>||</c> node inside its own parentheses.
+    /// <para>
+    /// C# expression trees carry precedence in their shape, but the emitted SQL is a flat token
+    /// stream where AND binds tighter than OR. Without the parentheses,
+    /// <c>(a || b) &amp;&amp; c</c> would flatten to <c>a OR b AND c</c> — read by SQL as
+    /// <c>a OR (b AND c)</c> — and rows matching only <c>a</c> would come back despite failing
+    /// <c>c</c>. Grouping each composite node restores the shape the caller wrote.
+    /// </para>
+    /// </summary>
+    private FilterBuilder<T> BuildBooleanExpression(
+        BinaryExpression binaryExpression,
+        FilterBuilder<T>? filterBuilder,
+        bool or)
+    {
+        filterBuilder = (filterBuilder ?? FilterBuilder<T>.Create()).StartGroup();
+        filterBuilder = BuildFilterFromExpressionInternal(binaryExpression.Left, filterBuilder);
+        filterBuilder = or ? filterBuilder.Or() : filterBuilder.And();
+        filterBuilder = BuildFilterFromExpressionInternal(binaryExpression.Right, filterBuilder);
+
+        return filterBuilder.EndGroup();
     }
 
     private FilterBuilder<T> HandleComparisonExpression(

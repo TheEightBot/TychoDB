@@ -26,6 +26,28 @@ some query behavior changes (see Breaking changes).
 
 ### Fixed
 
+- **Critical: an ungrouped `Or()` escaped the partition and type predicates.** The caller's
+  filter was appended to the generated `WHERE` clause without being bound as a unit:
+
+  ```sql
+  WHERE FullTypeName = ? AND Partition = ? AND <term1> OR <term2>
+  ```
+
+  `AND` binds tighter than `OR`, so SQL read that as
+  `(FullTypeName = ? AND Partition = ? AND term1) OR (term2)` — every term after the first
+  `Or()` was matched against **the whole table**. A two-term `Or()` returned rows from other
+  partitions, and rows of *other stored types*, which the reader then deserialized as `T` with
+  no error. The same clause is used by `DeleteObjectsAsync`, so an ungrouped `Or()` could
+  **delete rows in other partitions and of other types**, and by `CountObjectsAsync`, which
+  over-counted. The caller's filter is now emitted inside its own parentheses. Losing the
+  `Partition` predicate also cost the partition-prefixed indexes, so this was a large
+  performance regression as well as a correctness one; grouped OR-chains now use the index.
+  Filters already wrapped in `StartGroup()`/`EndGroup()` were unaffected and still are.
+- **LINQ predicates lost their own precedence.** `TychoQueryable` translated `&&` and `||` by
+  emitting their operands flat, so `Where(x => (x.A || x.B) && x.C)` became `A OR B AND C` —
+  read by SQL as `A OR (B AND C)` — and returned rows matching only `A` despite their failing
+  `C`. Each composite boolean node is now emitted in its own group. (`.Where(a).Where(b)`
+  chains were affected the same way when either predicate contained an `||`.)
 - **Data integrity: filter values are now compared in the form the serializer wrote.**
   A filter value was rendered with `ToString()`, which is not how the serializer stores it for
   every type. The clearest case is an enum: both serializers write it as a **number** by
@@ -169,6 +191,9 @@ index); batch writes **−44%**; database file with three indexes **20.2 → 8.4
 
 ### Breaking changes
 
+- **An ungrouped `Or()` now means what it reads as.** Code that (unknowingly) depended on the
+  leaked rows — most plausibly a query written against a single-partition, single-type database
+  where the bug was invisible — returns fewer rows now. This is the fix, not a regression.
 - **Enum, `DateOnly` and `TimeOnly` filter values now compare against their JSON form.** Code
   that worked around the enum mismatch by casting to `(int)` keeps working. Code that relied on
   a string-enum converter's name matching by coincidence also keeps working, and now stays

@@ -112,10 +112,23 @@ public class FilterBuilder<TObj>
 
     internal void Build(StringBuilder commandBuilder, IJsonSerializer jsonSerializer, FilterParameters parameters)
     {
-        if (_filters.Count > 0)
+        if (_filters.Count == 0)
         {
-            commandBuilder.AppendLine("\nAND");
+            return;
         }
+
+        // The caller's filter is only the last conjunct of the generated clause: every query
+        // this is appended to already reads "WHERE FullTypeName = $fullTypeName AND Partition =
+        // $partition". SQL binds AND tighter than OR, so emitting the terms bare would let an
+        // ungrouped Or() split the clause —
+        //
+        //     (FullTypeName = $t AND Partition = $p AND term1) OR (term2)
+        //
+        // — and every term after the first Or() would then be matched against the whole table,
+        // returning (or, through DeleteObjectsAsync, destroying) rows of other partitions and
+        // other stored types, which the reader would go on to deserialize as T. The enclosing
+        // parentheses bind the caller's terms into a single conjunct.
+        commandBuilder.AppendLine("\nAND").AppendLine(OpenParen);
 
         // Expression-supplied paths were captured as segments; the serializer is only known
         // here, so render them now against the JSON member names it actually writes.
@@ -157,6 +170,8 @@ public class FilterBuilder<TObj>
                 BuildSimpleFilter(commandBuilder, filter, jsonSerializer, parameters);
             }
         }
+
+        commandBuilder.AppendLine(CloseParen);
     }
 
     /// <summary>

@@ -210,6 +210,17 @@ var complexFilter = FilterBuilder<Person>
     .And()
     .Filter(FilterType.Contains, x => x.Name, "Doe");
 
+// Mixing OR with other terms: group the alternatives so the intent is explicit
+var grouped = FilterBuilder<Person>
+    .Create()
+    .StartGroup()
+        .Filter(FilterType.Equals, x => x.DepartmentId, 33)
+        .Or()
+        .Filter(FilterType.Equals, x => x.DepartmentId, 47)
+    .EndGroup()
+    .And()
+    .Filter(FilterType.GreaterThan, x => x.Age, 25);
+
 // Get a single object matching the filter
 var johnDoe = await db.ReadObjectAsync<Person>(filter: complexFilter);
 

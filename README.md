@@ -190,7 +190,18 @@ var exists = await db.ObjectExistsAsync<Person>("123");
 
 // Count objects
 var count = await db.CountObjectsAsync<Person>();
+
+// Read many objects by key in one round trip. Prefer this over a loop of ReadObjectAsync:
+// keys lead the primary key, and there is no limit on how many may be passed.
+var people = await db.ReadObjectsByKeysAsync<Person>(new object[] { "id-1", "id-2", "id-3" });
 ```
+
+> **Filtering on the property that is also the Tycho key** (`x => x.Id`) goes through
+> `JSON_EXTRACT` and scans — it does not use the primary key, because Tycho stores the key in
+> its own `Key` column and cannot assume the property still matches it (a write may supply its
+> own key selector). Reach those rows through `ReadObjectAsync` / `ReadObjectsByKeysAsync`, or
+> index the property like any other. On a 250,000-row store, one equality lookup measured
+> 71.6 ms as an unindexed filter and 0.0 ms all three other ways.
 
 ### Filtering
 
@@ -338,6 +349,19 @@ await db.DeleteBlobAsync("doc_123", "documents");
 var result = await db.DeleteBlobsAsync("documents");
 Console.WriteLine($"Deleted {result.Count} blobs");
 ```
+
+## Performance notes
+
+- **Reach rows by key through the key APIs.** A filter on the key property scans; see the note
+  under [Basic Querying](#basic-querying). `ReadObjectsByKeysAsync` fetches a whole batch in one
+  round trip and has no limit on batch size.
+- **`SystemTextJsonSerializer` deserializes faster.** It implements `IUtf8JsonDeserializer`, so
+  rows are handed to it as UTF-8 spans and skip an intermediate stream. Reading a whole
+  250,000-row partition measured **254.7 ms** with `SystemTextJsonSerializer` against
+  **358.9 ms** with `NewtonsoftJsonSerializer` — about 1.4x. Deserialization dominates any large
+  read, so this is usually the largest single lever on read throughput.
+- **Index anything you filter or sort on.** An unindexed `JSON_EXTRACT` predicate scans the
+  partition; see below.
 
 ## Indexing
 

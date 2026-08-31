@@ -194,6 +194,68 @@ public class KeyRegistrationTests
     }
 
     [TestMethod]
+    public async Task KeyPropertyFilter_WithMoreValuesThanOneChunk_StaysBoundToItsOwnTerm()
+    {
+        // A set larger than one chunk emits several "Key IN (...)" terms joined by OR. AND binds
+        // tighter than OR, so if that chain is not wrapped, a following AND term captures only
+        // the last chunk and every id in the earlier chunks comes back regardless of it — the
+        // same precedence bug the enclosing parentheses exist to prevent, one level in.
+        using var db = Connect(t => t.AddTypeRegistration<Doc, string>(x => x.Id), strict: true);
+
+        const int count = 1_500;
+        await db.WriteObjectsAsync(
+            Enumerable.Range(0, count).Select(i => new Doc
+            {
+                Id = "id-" + i.ToString("D5", CultureInfo.InvariantCulture),
+                Value = i % 2 == 0 ? "keep" : "drop",
+            }),
+            x => x.Id,
+            Partition);
+
+        var everyId =
+            Enumerable.Range(0, count).Select(i => "id-" + i.ToString("D5", CultureInfo.InvariantCulture));
+
+        var results =
+            await db.ReadObjectsAsync<Doc>(
+                Partition,
+                FilterBuilder<Doc>.Create()
+                    .Filter(FilterType.In, x => x.Id, everyId).And()
+                    .Filter(FilterType.Equals, x => x.Value, "keep"));
+
+        results.Count().ShouldBe(count / 2);
+        results.ShouldAllBe(x => x.Value == "keep");
+    }
+
+    [TestMethod]
+    public async Task Reregistration_DoesNotLeaveAStaleRewritePathCached()
+    {
+        // The rewrite caches the resolved id path per type. Re-registering with a different id
+        // property must not leave filters pointing at the old one.
+        var dir = Path.GetTempPath();
+        var name = $"{Guid.NewGuid()}.db";
+
+        var tycho = new Tycho(dir, new NewtonsoftJsonSerializer(), dbName: name, rebuildCache: true, requireTypeRegistration: true)
+            .AddTypeRegistration<Doc, string>(x => x.Id);
+
+        using var db = tycho.Connect();
+        await SeedAsync(db);
+
+        // Warm the cache against $.Id.
+        await db.ReadObjectsAsync<Doc>(
+            Partition, FilterBuilder<Doc>.Create().Filter(FilterType.Equals, x => x.Id, "id-2"));
+
+        // Re-register against a different property; rows are still keyed by Id.
+        db.AddTypeRegistration<Doc, string>(x => x.Value);
+
+        // A filter on Value must not be answered from the Key column, which holds Ids.
+        var results =
+            await db.ReadObjectsAsync<Doc>(
+                Partition, FilterBuilder<Doc>.Create().Filter(FilterType.Equals, x => x.Value, "v2"));
+
+        results.Select(x => x.Id).ShouldBe(new[] { "id-2" });
+    }
+
+    [TestMethod]
     public async Task KeyPropertyFilter_OutsideStrictMode_IsNotRewritten()
     {
         // Without the write guard the invariant is unenforced, so the ordinary predicate stands.
@@ -305,7 +367,7 @@ public class KeyRegistrationTests
         var sb = new StringBuilder(Queries.SelectDataFromJsonValueWithFullTypeName);
         var parameters = new FilterParameters();
         var filter = FilterBuilder<Doc>.Create().Filter(FilterType.Equals, x => x.Id, "id-2");
-        filter.Build(sb, new NewtonsoftJsonSerializer(), parameters, new KeyColumnRewrite("$.Id"));
+        filter.Build(sb, new NewtonsoftJsonSerializer(), parameters, new KeyColumnRewrite("$.Id", 30));
 
         using var conn = new SqliteConnection($"Data Source={path}");
         conn.Open();

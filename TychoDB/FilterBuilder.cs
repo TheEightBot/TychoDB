@@ -761,7 +761,21 @@ public class FilterBuilder<TObj>
                     return true;
                 }
 
-                for (var chunk = 0; chunk * MaxValuesPerInClause < values.Length; chunk++)
+                // A chunked chain is several IN terms joined by OR, and AND binds tighter than
+                // OR: left unwrapped, a following AND term would capture only the last chunk —
+                // "Key IN (a) OR Key IN (b) AND other" reads as "Key IN (a) OR (Key IN (b) AND
+                // other)". That is the same precedence bug the enclosing parentheses in Build
+                // exist to prevent, one level further in, so this chain is bound together too.
+                // BuildSetFilter does the same for the JSON-path form.
+                var chunks = ((values.Length - 1) / MaxValuesPerInClause) + 1;
+                var wrap = chunks > 1;
+
+                if (wrap)
+                {
+                    commandBuilder.Append(OpenParen);
+                }
+
+                for (var chunk = 0; chunk < chunks; chunk++)
                 {
                     if (chunk > 0)
                     {
@@ -783,6 +797,11 @@ public class FilterBuilder<TObj>
                         commandBuilder.Append(parameters.Add(values[i]!.ToString()));
                     }
 
+                    commandBuilder.Append(CloseParen);
+                }
+
+                if (wrap)
+                {
                     commandBuilder.Append(CloseParen);
                 }
 

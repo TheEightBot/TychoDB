@@ -173,6 +173,12 @@ public class Tycho : IDisposable
 
         _registeredTypeInformation[rti.ObjectType] = rti;
 
+        // The rewrite caches the id path resolved from the previous registration. Re-registering
+        // a type can change that path — or remove the id property altogether — so the cached
+        // entry has to go, or filters would be rewritten against a path the stored keys no
+        // longer come from.
+        _keyColumnRewrites.TryRemove(rti.ObjectType, out _);
+
         return this;
     }
 
@@ -188,6 +194,12 @@ public class Tycho : IDisposable
         var rti = RegisteredTypeInformation.Create<T>();
 
         _registeredTypeInformation[rti.ObjectType] = rti;
+
+        // The rewrite caches the id path resolved from the previous registration. Re-registering
+        // a type can change that path — or remove the id property altogether — so the cached
+        // entry has to go, or filters would be rewritten against a path the stored keys no
+        // longer come from.
+        _keyColumnRewrites.TryRemove(rti.ObjectType, out _);
 
         return this;
     }
@@ -207,6 +219,12 @@ public class Tycho : IDisposable
         var rti = RegisteredTypeInformation.CreateFromFunc(keySelector, idComparer);
 
         _registeredTypeInformation[rti.ObjectType] = rti;
+
+        // The rewrite caches the id path resolved from the previous registration. Re-registering
+        // a type can change that path — or remove the id property altogether — so the cached
+        // entry has to go, or filters would be rewritten against a path the stored keys no
+        // longer come from.
+        _keyColumnRewrites.TryRemove(rti.ObjectType, out _);
 
         return this;
     }
@@ -2576,8 +2594,9 @@ public class Tycho : IDisposable
                 new KeyColumnRewrite(
                     QueryPropertyPath.RenderPath(
                         state.Segments,
-                        QueryPropertyPath.AsNameResolver(state.Serializer))),
-            (Segments: rti.IdPropertyPathSegments, Serializer: _jsonSerializer));
+                        QueryPropertyPath.AsNameResolver(state.Serializer)),
+                    state.CommandTimeout),
+            (Segments: rti.IdPropertyPathSegments, Serializer: _jsonSerializer, CommandTimeout: _commandTimeout));
     }
 
     /// <summary>

@@ -22,16 +22,20 @@ namespace TychoDB;
 /// </para>
 /// <para>
 /// The probe is a scan, so it is run lazily — only when a query that could benefit actually
-/// arrives — and its verdict is cached for the lifetime of the connection.
+/// arrives — it runs under the connection's configured command timeout, and its verdict is
+/// cached for the lifetime of the connection.
 /// </para>
 /// </remarks>
 internal sealed class KeyColumnRewrite
 {
     private readonly ConcurrentDictionary<string, bool> _usableByTypeName = new(StringComparer.Ordinal);
 
-    public KeyColumnRewrite(string resolvedIdPath)
+    private readonly int _commandTimeout;
+
+    public KeyColumnRewrite(string resolvedIdPath, int commandTimeout)
     {
         ResolvedIdPath = resolvedIdPath;
+        _commandTimeout = commandTimeout;
     }
 
     /// <summary>
@@ -63,6 +67,10 @@ internal sealed class KeyColumnRewrite
 #pragma warning disable CA2100 // The path is rendered from a property expression and validated by QueryPropertyPath.
         command.CommandText = Queries.SelectKeyDivergesFromIdProperty(ResolvedIdPath);
 #pragma warning restore CA2100
+
+        // The probe is a scan, which makes it the command most likely to need the caller's
+        // raised timeout rather than the provider default.
+        command.CommandTimeout = _commandTimeout;
         command.Parameters.Add("$fullTypeName", SqliteType.Text).Value = fullTypeName;
 
         using var reader = command.ExecuteReader();

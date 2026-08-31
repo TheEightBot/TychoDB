@@ -22,6 +22,15 @@ namespace TychoDB.UnitTests;
 [TestClass]
 public class IndexDdlTests
 {
+#if ENCRYPTED
+    /// <summary>
+    /// The key the test databases are created with. Under the Encrypted configuration the
+    /// file is SQLCipher-encrypted, so the inspection connections in this class have to
+    /// present the same key or every read fails with "file is not a database".
+    /// </summary>
+    private const string DbPassword = "Password";
+#endif
+
     private static readonly IJsonSerializer Serializer = new NewtonsoftJsonSerializer();
 
     public class IndexTestModel
@@ -416,6 +425,15 @@ public class IndexDdlTests
         // plans directly proves "no regression" independently of table size, which a
         // bare SCAN/SEARCH assertion cannot (on a small single-type table a scan is
         // genuinely the cheaper plan).
+        //
+        // Both sides of the comparison have to run on freshly gathered statistics, so
+        // gather them here rather than inheriting whatever the connection's advisory
+        // PRAGMA optimize happened to do: that pragma's heuristics are version
+        // dependent, and SQLCipher's older SQLite leaves sqlite_stat1 unpopulated
+        // where the plain build fills it in. Without this the baseline would be a
+        // no-statistics plan and the comparison would not be like for like.
+        Analyze(dbFile);
+
         var planBefore = CorePlans(dbFile);
 
         using (var conn = OpenInspection(dbFile))
@@ -689,7 +707,7 @@ public class IndexDdlTests
     private static Tycho BuildDb(string path, string dbName)
     {
 #if ENCRYPTED
-        return new Tycho(path, Serializer, dbName, "Password", rebuildCache: true, requireTypeRegistration: false);
+        return new Tycho(path, Serializer, dbName, DbPassword, rebuildCache: true, requireTypeRegistration: false);
 #else
         return new Tycho(path, Serializer, dbName, rebuildCache: true, requireTypeRegistration: false);
 #endif
@@ -700,23 +718,46 @@ public class IndexDdlTests
     {
         SqliteConnection.ClearAllPools();
 #if ENCRYPTED
-        return new Tycho(path, Serializer, dbName, "Password", rebuildCache: false, requireTypeRegistration: false);
+        return new Tycho(path, Serializer, dbName, DbPassword, rebuildCache: false, requireTypeRegistration: false);
 #else
         return new Tycho(path, Serializer, dbName, rebuildCache: false, requireTypeRegistration: false);
 #endif
     }
 
     /// <summary>
-    /// Opens a plain inspection connection. Tycho holds locking_mode = EXCLUSIVE and
-    /// pooling keeps a disposed connection's lock alive, so the pool must be cleared
-    /// after the Tycho instance is disposed and before the file is reopened.
+    /// Opens an inspection connection carrying the same key the database was created with.
+    /// Tycho holds locking_mode = EXCLUSIVE and pooling keeps a disposed connection's lock
+    /// alive, so the pool must be cleared after the Tycho instance is disposed and before
+    /// the file is reopened.
     /// </summary>
     private static SqliteConnection OpenInspection(string dbFile)
     {
         SqliteConnection.ClearAllPools();
-        var conn = new SqliteConnection($"Data Source={dbFile}");
+
+        var connectionStringBuilder =
+            new SqliteConnectionStringBuilder
+            {
+                ConnectionString = $"Filename={dbFile}",
+                Cache = SqliteCacheMode.Private,
+                Mode = SqliteOpenMode.ReadWriteCreate,
+            };
+
+#if ENCRYPTED
+        connectionStringBuilder.Password = DbPassword;
+#endif
+
+        var conn = new SqliteConnection(connectionStringBuilder.ToString());
         conn.Open();
         return conn;
+    }
+
+    /// <summary>Refreshes sqlite_stat1 so query plans are compared on equal statistics.</summary>
+    private static void Analyze(string dbFile)
+    {
+        using var conn = OpenInspection(dbFile);
+        using var command = conn.CreateCommand();
+        command.CommandText = "ANALYZE;";
+        command.ExecuteNonQuery();
     }
 
     private static Dictionary<string, string> ReadIndexDdl(string dbFile)

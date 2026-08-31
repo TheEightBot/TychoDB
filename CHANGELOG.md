@@ -193,9 +193,9 @@ index); batch writes **−44%**; database file with three indexes **20.2 → 8.4
   - A `null` in the set is matched against a missing or null member with `IS NULL`, which SQL's
     own `IN` would never do. `NotIn` keeps SQL's semantics for rows whose member is null: they
     are not returned, exactly as `NotEquals` already behaves.
-  - Longer lists are split across several `IN` terms rather than exceeding
-    `SQLITE_MAX_VARIABLE_NUMBER`, which is only 999 on older SQLite builds, so a large set works
-    regardless of which build the host application ships.
+  - Longer lists are split across several `IN` terms to keep each `IN (...)` list reasonably sized.
+    (Note: SQLite's `SQLITE_MAX_VARIABLE_NUMBER` limit is statement-wide; very large parameterized
+    value sets (e.g., strings) can still exceed it on older builds.)
   - The raw-path overload takes `IEnumerable<object>` rather than a generic parameter on
     purpose: a generic overload there captures an ordinary `string` comparison value, since
     `string` is an `IEnumerable<char>`. A value-type collection needs `Cast<object>()`; the

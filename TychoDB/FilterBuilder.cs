@@ -118,9 +118,9 @@ public class FilterBuilder<TObj>
     /// </para>
     /// <para>
     /// Duplicate values are removed. An empty set matches nothing for <see cref="FilterType.In"/>
-    /// and everything for <see cref="FilterType.NotIn"/>. A <see langword="null"/> in the set is
-    /// matched against a missing or null member, which SQL's own <c>IN</c> would never do.
-    /// </para>
+    /// and everything for <see cref="FilterType.NotIn"/>. If the set contains <see langword="null"/>,
+    /// <see cref="FilterType.In"/> adds an <c>IS NULL</c> disjunct; <see cref="FilterType.NotIn"/> excludes
+    /// missing/null members (like <see cref="FilterType.NotEquals"/>).
     /// </summary>
     /// <typeparam name="TProp">The property's type.</typeparam>
     /// <param name="filterType">Must be <see cref="FilterType.In"/> or <see cref="FilterType.NotIn"/>.</param>

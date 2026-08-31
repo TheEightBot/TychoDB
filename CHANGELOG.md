@@ -141,6 +141,15 @@ index); batch writes **−44%**; database file with three indexes **20.2 → 8.4
 
 ### Performance
 
+- **`CountObjectsAsync` no longer counts rows on the client.** It issued
+  `SELECT 1 FROM JsonValue WHERE …` and incremented a counter once per matching row, costing a
+  reader round trip per row. It now issues `SELECT COUNT(*)` and reads the single scalar:
+  **16.0 ms → 6.5 ms** counting a 250,000-row partition (2.5x). The same query backs the
+  pre-count a progress-reporting `ReadObjectsAsync` performs, so progress-enabled reads pay
+  half of what they did. A *filtered* count is still bounded by whether the filtered property
+  is indexed — counting a 1-in-200 selective filter on an unindexed path takes ~79 ms on the
+  same store, essentially all of it the `JSON_EXTRACT` scan.
+
 - **`PRAGMA optimize` on connect and disconnect.** `Connect`/`ConnectAsync` and
   `Disconnect`/`DisconnectAsync`/`Dispose` run SQLite's recommended `PRAGMA optimize`
   (bounded by `analysis_limit = 400`) so the query planner keeps fresh statistics and
@@ -177,6 +186,26 @@ index); batch writes **−44%**; database file with three indexes **20.2 → 8.4
 
 ### Added
 
+- **`ReadObjectsByKeysAsync<T>(keys, partition, sort, …)`.** Reads a batch of keys in one round
+  trip. The key set is bound as a **single JSON array** expanded by `JSON_EACH`, not as one
+  parameter per key, so there is no `SQLITE_MAX_VARIABLE_NUMBER` ceiling (999 on older SQLite
+  builds), no chunking for callers to think about, and one prepared statement regardless of
+  batch size. Keys lead the primary key, so each is a primary-key probe. Measured against a
+  loop of `ReadObjectAsync` on a 250,000-row store (best of five, after warm-up):
+
+  | batch | looped `ReadObjectAsync` | `ReadObjectsByKeysAsync` |
+  |------:|------------------------:|-------------------------:|
+  |   200 |                  1.9 ms |                   0.9 ms |
+  |   999 |                 10.6 ms |                   4.5 ms |
+  | 4,949 |                 36.8 ms |                  16.9 ms |
+  |23,784 |                183.2 ms |                  67.3 ms |
+
+  That is 2.1–2.7x end to end. Both figures include deserialization, which is identical between
+  them and dominates what is left — the query alone is 27.5 ms at 23,784 keys. The `JSON_EACH`
+  shape was chosen by measurement: a single `IN (@p0…@pN)` collapses at scale (1,297.7 ms at
+  23,784 keys, because the statement text and plan grow with the batch), a chunked `IN` is
+  91.8 ms, and a temp-table join carries ~40 ms of fixed setup. Keys not present are simply
+  absent from the result.
 - **`FilterType.In` and `FilterType.NotIn`.** Set membership as a single atomic term, via new
   `Filter` overloads taking an `IEnumerable`:
 
@@ -268,6 +297,12 @@ index); batch writes **−44%**; database file with three indexes **20.2 → 8.4
   `TychoDB.Encrypted` are the supported packages.
 
 ### Notes
+
+- **Serializer choice is the largest remaining lever on read throughput.** Reading a whole
+  250,000-row partition measured 254.7 ms with `SystemTextJsonSerializer` against 358.9 ms with
+  `NewtonsoftJsonSerializer` (~1.4x), because the former implements `IUtf8JsonDeserializer` and
+  receives rows as UTF-8 spans. Deserialization dominates any large read: of the 67.3 ms
+  `ReadObjectsByKeysAsync` takes for 23,784 keys, only 27.5 ms is the query.
 
 - Performance guidance: prefer `WriteObjectsAsync` for writing many objects — it is
   ~10× faster and ~6× lower-allocation than looping `WriteObjectAsync`, and

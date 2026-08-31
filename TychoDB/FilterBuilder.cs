@@ -237,8 +237,7 @@ public class FilterBuilder<TObj>
         {
             throw new ArgumentException(
                 $"{filterType} tests set membership; use the overload that takes an IEnumerable of values. " +
-                "The raw-path overload takes IEnumerable<object>, which a value-type collection such as int[] " +
-                "does not implicitly convert to — call Cast<object>() on it.",
+                "For raw JSON paths, the collection overload takes IEnumerable<object>; value-type collections (e.g., int[]) need Cast<object>().",
                 nameof(filterType));
         }
     }

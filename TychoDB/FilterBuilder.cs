@@ -38,6 +38,7 @@ public class FilterBuilder<TObj>
     private const string NotInOperator = " NOT IN (";
     private const string ValueSeparator = ", ";
     private const string OrJoin = " OR ";
+    private const string KeyColumn = "Key";
     private const string AndJoin = " AND ";
 
     // IN () is a syntax error in SQLite, so an empty set has to be rendered as a
@@ -299,7 +300,7 @@ public class FilterBuilder<TObj>
         return this;
     }
 
-    internal void Build(StringBuilder commandBuilder, IJsonSerializer jsonSerializer, FilterParameters parameters)
+    internal void Build(StringBuilder commandBuilder, IJsonSerializer jsonSerializer, FilterParameters parameters, KeyColumnRewrite? keyRewrite = null)
     {
         if (_filters.Count == 0)
         {
@@ -356,6 +357,11 @@ public class FilterBuilder<TObj>
             }
             else if (filter.FilterType.HasValue)
             {
+                if (keyRewrite is not null && TryBuildKeyColumnFilter(commandBuilder, filter, parameters, keyRewrite))
+                {
+                    continue;
+                }
+
                 BuildSimpleFilter(commandBuilder, filter, jsonSerializer, parameters);
             }
         }
@@ -714,6 +720,96 @@ public class FilterBuilder<TObj>
                 AppendLike(commandBuilder, parameters, filter.Value, leadingWildcard: false, trailingWildcard: true);
                 commandBuilder.Append(ExistsEnd).AppendLine();
                 break;
+        }
+    }
+
+    /// <summary>
+    /// Emits an equality or set-membership test against the <c>Key</c> column when the filter
+    /// targets the type's id property, and reports whether it did.
+    /// <para>
+    /// Only <see cref="FilterType.Equals"/> and <see cref="FilterType.In"/> are rewritten. Their
+    /// negations would still scan — a negated predicate cannot use the index either way — so
+    /// rewriting them would trade a clear predicate for no gain. A null comparison value is left
+    /// alone too: <c>Key</c> is <c>NOT NULL</c>, so "the id is null" is a question about the
+    /// document, not about the key.
+    /// </para>
+    /// <para>
+    /// Values bind as text because that is the form the key was stored in — both the write path
+    /// and the by-key reads put the key through <c>ToString()</c>.
+    /// </para>
+    /// </summary>
+    private static bool TryBuildKeyColumnFilter(StringBuilder commandBuilder, in Filter filter, FilterParameters parameters, KeyColumnRewrite keyRewrite)
+    {
+        if (!string.Equals(filter.PropertyPath, keyRewrite.ResolvedIdPath, StringComparison.Ordinal)
+            || !string.IsNullOrEmpty(filter.PropertyValuePath))
+        {
+            return false;
+        }
+
+        switch (filter.FilterType!.Value)
+        {
+            case FilterType.Equals when filter.Value is not null:
+                commandBuilder.Append(KeyColumn).Append(Equals)
+                    .Append(parameters.Add(filter.Value.ToString()))
+                    .AppendLine();
+                return true;
+
+            case FilterType.In when filter.Value is object?[] values && Array.IndexOf(values, null) < 0:
+                if (values.Length == 0)
+                {
+                    commandBuilder.AppendLine(MatchNothing);
+                    return true;
+                }
+
+                // A chunked chain is several IN terms joined by OR, and AND binds tighter than
+                // OR: left unwrapped, a following AND term would capture only the last chunk —
+                // "Key IN (a) OR Key IN (b) AND other" reads as "Key IN (a) OR (Key IN (b) AND
+                // other)". That is the same precedence bug the enclosing parentheses in Build
+                // exist to prevent, one level further in, so this chain is bound together too.
+                // BuildSetFilter does the same for the JSON-path form.
+                var chunks = ((values.Length - 1) / MaxValuesPerInClause) + 1;
+                var wrap = chunks > 1;
+
+                if (wrap)
+                {
+                    commandBuilder.Append(OpenParen);
+                }
+
+                for (var chunk = 0; chunk < chunks; chunk++)
+                {
+                    if (chunk > 0)
+                    {
+                        commandBuilder.Append(OrJoin);
+                    }
+
+                    var start = chunk * MaxValuesPerInClause;
+                    var end = Math.Min(start + MaxValuesPerInClause, values.Length);
+
+                    commandBuilder.Append(KeyColumn).Append(InOperator);
+
+                    for (var i = start; i < end; i++)
+                    {
+                        if (i > start)
+                        {
+                            commandBuilder.Append(ValueSeparator);
+                        }
+
+                        commandBuilder.Append(parameters.Add(values[i]!.ToString()));
+                    }
+
+                    commandBuilder.Append(CloseParen);
+                }
+
+                if (wrap)
+                {
+                    commandBuilder.Append(CloseParen);
+                }
+
+                commandBuilder.AppendLine();
+                return true;
+
+            default:
+                return false;
         }
     }
 

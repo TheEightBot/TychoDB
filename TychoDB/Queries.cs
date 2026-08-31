@@ -219,6 +219,29 @@ internal static class Queries
         LIMIT 1
         """;
 
+    // Divergence probe for the key-column rewrite. Answers "is every row of this type keyed by
+    // its id property?" — the invariant that lets a filter on the id property be answered from
+    // the indexed Key column instead of a JSON_EXTRACT scan. A row whose id member is missing
+    // counts as divergent: its key cannot have come from a value that is not there. Returns at
+    // most one row, and only rows written before the strict-mode write guard existed (or
+    // outside strict mode) can produce it.
+    public static string SelectKeyDivergesFromIdProperty(string resolvedIdPath)
+    {
+        return string.Concat(
+            """
+            SELECT 1
+            FROM JsonValue
+            Where
+            FullTypeName = $fullTypeName
+            AND
+            (JSON_EXTRACT(Data, '
+            """.TrimEnd(),
+            resolvedIdPath,
+            "') IS NULL OR Key <> CAST(JSON_EXTRACT(Data, '",
+            resolvedIdPath,
+            "') AS TEXT))\nLIMIT 1");
+    }
+
     public const string SelectPartitions =
         """
         SELECT DISTINCT Partition

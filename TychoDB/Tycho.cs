@@ -561,7 +561,7 @@ public class Tycho : IDisposable
                         using var reader = selectCommand.ExecuteReader();
 
                         // One row holding the count, rather than one row per match.
-                        int count = reader.Read() ? reader.GetInt32(0) : 0;
+                        int count = reader.Read() ? checked((int)reader.GetInt64(0)) : 0;
 
                         transaction?.Commit();
 

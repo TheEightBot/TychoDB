@@ -184,7 +184,7 @@ still registers, but without an id mapping — it can then only be reached by ke
 the call site.
 
 > **Supplying a key that disagrees with the registration.** `WriteObjectsAsync(objs, keySelector, …)`
-> takes a key at the call site and overrides the registration. A row written under a key the
+> takes a key selector at the call site and overrides the registration. A row written under a key the
 > registration would not produce is unreachable by every by-object overload —
 > `ReadObjectAsync(obj)` returns null and `DeleteObjectAsync(obj)` returns **false while the row
 > survives**. Under `requireTypeRegistration` (the default), a type registered by id property

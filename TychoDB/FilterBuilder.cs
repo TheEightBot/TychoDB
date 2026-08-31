@@ -46,13 +46,10 @@ public class FilterBuilder<TObj>
     private const string MatchNothing = "0 = 1";
     private const string MatchEverything = "1 = 1";
 
-    // Values bind as parameters unless they are genuine numerics or booleans (those
-    // become literals). SQLITE_MAX_VARIABLE_NUMBER is 32,766 on modern builds but only
-    // 999 on older ones, and the build in use is the host application's choice, not
-    // this library's. Longer lists are split into several IN terms joined by OR (AND,
-    // when negated) rather than capped or rejected, so a large set still works
-    // everywhere. Lists shorter than this — the overwhelming majority — emit a single
-    // IN term and are unaffected.
+    // Values bind as parameters unless they are genuine numerics or booleans (those become literals).
+    // SQLite's SQLITE_MAX_VARIABLE_NUMBER limit is statement-wide (total bound variables in the SQL).
+    // Chunking a large set across multiple IN (...) terms does not reduce the parameter count for
+    // parameterized values (e.g., strings / enums / DateTime), but it keeps each IN list reasonably sized.
     private const int MaxValuesPerInClause = 900;
 
     private readonly List<Filter> _filters = new();

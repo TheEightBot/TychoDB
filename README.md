@@ -287,7 +287,7 @@ var firstPerson = await db.ReadFirstObjectAsync<Person>(filter: complexFilter);
 - A **`null` in the set** is matched against a missing or null member with `IS NULL`, which
   SQL's own `IN` would never do.
 - `NotIn` **excludes rows whose member is null**, exactly as `NotEquals` already does. Add an
-  explicit `Or(Equals(path, null))` term if you want them.
+  explicit `.Or().Filter(FilterType.Equals, x => x.DepartmentId, null)` term if you want them.
 - The **raw-string overload** takes `IEnumerable<object>`, so a value-type collection needs
   `.Cast<object>()`. The expression overload infers the element type and needs no cast.
 

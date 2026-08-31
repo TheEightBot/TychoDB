@@ -1164,10 +1164,9 @@ public class TychoDbTests
                     })
                 .ToList();
 
-        // Keyed by a value that is actually distinct. Object.GetHashCode() is the runtime
-        // identity hash, and 1000 instances collide about 0.8% of the time (measured over 2000
-        // trials); a collision makes INSERT OR REPLACE overwrite, leaving 999 rows and failing
-        // the count below at random.
+        // Keyed by a value that is actually distinct. Object.GetHashCode() is a runtime identity hash,
+        // and 1000 instances can collide (~0.8% of the time measured over 2000 trials); a collision
+        // makes INSERT OR REPLACE overwrite, leaving fewer than 1000 rows and failing the count below.
         await db.WriteObjectsAsync(testObjs, x => x.IntProperty).ConfigureAwait(false);
 
         var stopWatch = System.Diagnostics.Stopwatch.StartNew();

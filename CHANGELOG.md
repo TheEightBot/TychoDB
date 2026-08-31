@@ -235,10 +235,11 @@ index); batch writes **−44%**; database file with three indexes **20.2 → 8.4
   |23,784 |                183.2 ms |                  67.3 ms |
 
   That is 2.1–2.7x end to end. Both figures include deserialization, which is identical between
-  them and dominates what is left — the query alone is 27.5 ms at 23,784 keys. The `JSON_EACH` shape was chosen by
-  measurement: a single `IN (@p0…@pN)` collapses at scale (1,297.7 ms at 23,784 keys, because
-  the statement text and plan grow with the batch), a chunked `IN` is 91.8 ms, and a temp-table
-  join carries ~40 ms of fixed setup. Keys not present are simply absent from the result.
+  them and dominates what is left — the query alone is 27.5 ms at 23,784 keys. The `JSON_EACH`
+  shape was chosen by measurement: a single `IN (@p0…@pN)` collapses at scale (1,297.7 ms at
+  23,784 keys, because the statement text and plan grow with the batch), a chunked `IN` is
+  91.8 ms, and a temp-table join carries ~40 ms of fixed setup. Keys not present are simply
+  absent from the result.
 - **`FilterType.In` and `FilterType.NotIn`.** Set membership as a single atomic term, via new
   `Filter` overloads taking an `IEnumerable`:
 
@@ -255,9 +256,13 @@ index); batch writes **−44%**; database file with three indexes **20.2 → 8.4
   - A `null` in the set is matched against a missing or null member with `IS NULL`, which SQL's
     own `IN` would never do. `NotIn` keeps SQL's semantics for rows whose member is null: they
     are not returned, exactly as `NotEquals` already behaves.
-  - Longer lists are split across several `IN` terms rather than exceeding
-    `SQLITE_MAX_VARIABLE_NUMBER`, which is only 999 on older SQLite builds, so a large set works
-    regardless of which build the host application ships.
+  - Longer lists are split across several `IN` terms to keep each `IN (...)` list reasonably sized.
+    (Note: SQLite's `SQLITE_MAX_VARIABLE_NUMBER` limit is statement-wide; very large parameterized
+    value sets (e.g., strings) can still exceed it on older builds.)
+  - The raw-path overload takes `IEnumerable<object>` rather than a generic parameter on
+    purpose: a generic overload there captures an ordinary `string` comparison value, since
+    `string` is an `IEnumerable<char>`. A value-type collection needs `Cast<object>()`; the
+    expression overload infers the element type from the property and needs no cast.
 - **`IJsonValueResolver`.** A second optional serializer capability, feature-detected the same
   way, reporting the scalar form a CLR value takes in JSON so filter comparisons are made
   against what was stored. Implemented by `SystemTextJsonSerializer` and
@@ -338,10 +343,7 @@ index); batch writes **−44%**; database file with three indexes **20.2 → 8.4
   `NewtonsoftJsonSerializer` (~1.4x), because the former implements `IUtf8JsonDeserializer` and
   receives rows as UTF-8 spans. Deserialization dominates any large read: of the 67.3 ms
   `ReadObjectsByKeysAsync` takes for 23,784 keys, only 27.5 ms is the query.
-- **Outside strict mode, a filter on the id property still scans.** The `Key`-column rewrite
-  needs the write guard to hold, and that guard only applies under `requireTypeRegistration`.
-  Without it, index the id property or reach those rows through `ReadObjectsByKeysAsync`; both
-  measured 0.0 ms against the 71.6 ms scan.
+
 
 - Performance guidance: prefer `WriteObjectsAsync` for writing many objects — it is
   ~10× faster and ~6× lower-allocation than looping `WriteObjectAsync`, and

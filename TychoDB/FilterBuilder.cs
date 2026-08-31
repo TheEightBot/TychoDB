@@ -47,13 +47,10 @@ public class FilterBuilder<TObj>
     private const string MatchNothing = "0 = 1";
     private const string MatchEverything = "1 = 1";
 
-    // Values bind as parameters unless they are genuine numerics or booleans (those
-    // become literals). SQLITE_MAX_VARIABLE_NUMBER is 32,766 on modern builds but only
-    // 999 on older ones, and the build in use is the host application's choice, not
-    // this library's. Longer lists are split into several IN terms joined by OR (AND,
-    // when negated) rather than capped or rejected, so a large set still works
-    // everywhere. Lists shorter than this — the overwhelming majority — emit a single
-    // IN term and are unaffected.
+    // Values bind as parameters unless they are genuine numerics or booleans (those become literals).
+    // SQLite's SQLITE_MAX_VARIABLE_NUMBER limit is statement-wide (total bound variables in the SQL).
+    // Chunking a large set across multiple IN (...) terms does not reduce the parameter count for
+    // parameterized values (e.g., strings / enums / DateTime), but it keeps each IN list reasonably sized.
     private const int MaxValuesPerInClause = 900;
 
     private readonly List<Filter> _filters = new();
@@ -122,8 +119,9 @@ public class FilterBuilder<TObj>
     /// </para>
     /// <para>
     /// Duplicate values are removed. An empty set matches nothing for <see cref="FilterType.In"/>
-    /// and everything for <see cref="FilterType.NotIn"/>. A <see langword="null"/> in the set is
-    /// matched against a missing or null member, which SQL's own <c>IN</c> would never do.
+    /// and everything for <see cref="FilterType.NotIn"/>. If the set contains <see langword="null"/>,
+    /// <see cref="FilterType.In"/> adds an <c>IS NULL</c> disjunct; <see cref="FilterType.NotIn"/> excludes
+    /// missing/null members (like <see cref="FilterType.NotEquals"/>).
     /// </para>
     /// </summary>
     /// <typeparam name="TProp">The property's type.</typeparam>
@@ -241,8 +239,7 @@ public class FilterBuilder<TObj>
         {
             throw new ArgumentException(
                 $"{filterType} tests set membership; use the overload that takes an IEnumerable of values. " +
-                "The raw-path overload takes IEnumerable<object>, which a value-type collection such as int[] " +
-                "does not implicitly convert to — call Cast<object>() on it.",
+                "For raw JSON paths, the collection overload takes IEnumerable<object>; value-type collections (e.g., int[]) need Cast<object>().",
                 nameof(filterType));
         }
     }

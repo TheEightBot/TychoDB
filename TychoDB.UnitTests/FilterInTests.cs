@@ -232,10 +232,10 @@ public class FilterInTests
     }
 
     [TestMethod]
-    public async Task In_WithMoreValuesThanTheParameterCeiling_StillMatches()
+    public async Task In_WithManyValues_StillMatches()
     {
-        // Long lists are split across several IN terms rather than exceeding
-        // SQLITE_MAX_VARIABLE_NUMBER, which is 999 on older builds.
+        // Long lists are split across several IN terms so each IN list stays reasonably sized.
+        // (Note: this does not reduce the total number of bound parameters for parameterized values.)
         using var db = Connect(out _);
         await SeedAsync(db);
 

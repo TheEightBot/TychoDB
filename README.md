@@ -18,7 +18,7 @@ TychoDB is a high-performance .NET library that provides a simple and efficient 
 - **Binary Data Support**: Store and retrieve binary large objects (BLOBs)
 - **Indexing**: Create indexes on properties for faster query performance
 - **Encryption**: Optional AES-256 full-database encryption via SQLCipher (`TychoDB.Encrypted`)
-- **Multiple Serialization Options**: Support for System.Text.Json, Newtonsoft.Json, and MessagePack
+- **Multiple Serialization Options**: Support for System.Text.Json and Newtonsoft.Json
 - **Asynchronous Operations**: Full async/await support for all database operations
 - **LINQ-like Syntax**: Familiar querying patterns for .NET developers
 - **Nested Object Support**: Query and filter on nested object properties
@@ -123,8 +123,14 @@ public class Program
         // Create a JSON serializer (System.Text.Json implementation)
         var jsonSerializer = new SystemTextJsonSerializer();
         
-        // Initialize Tycho and connect to a database
+        // Initialize Tycho and connect to a database.
+        //
+        // requireTypeRegistration defaults to true, so register each type you store.
+        // Registration tells Tycho how to find an object's key, and the query methods
+        // (ReadObjectsAsync, CountObjectsAsync, the LINQ surface) throw without it.
+        // Pass requireTypeRegistration: false to opt out and supply keys at every call.
         using var db = new Tycho("./data", jsonSerializer)
+            .AddTypeRegistration<Person, string>(x => x.Id)
             .Connect();
             
         // Create a person object
@@ -172,9 +178,27 @@ await db.WriteObjectAsync(person);
 await db.ReadObjectAsync<Person>(person);
 ```
 
+`AddTypeRegistration<T>()` finds the id property by convention: `Id`, then `<TypeName>Id`
+(matched case-insensitively, and it must have a public getter). A type with no such property
+still registers, but without an id mapping — it can then only be reached by keys you supply at
+the call site.
+
+> **Supplying a key that disagrees with the registration.** `WriteObjectsAsync(objs, keySelector, …)`
+> takes a key selector at the call site and overrides the registration. A row written under a key the
+> registration would not produce is unreachable by every by-object overload —
+> `ReadObjectAsync(obj)` returns null and `DeleteObjectAsync(obj)` returns **false while the row
+> survives**. Under `requireTypeRegistration` (the default), a type registered by id property
+> rejects such a write with a `TychoException` naming both keys rather than storing a row you
+> cannot reach. Types registered with `AddTypeRegistrationWithCustomKeySelector` have no id
+> property to compare against and are unaffected.
+
 ## Querying Objects
 
-TychoDB offers rich querying capabilities:
+TychoDB offers rich querying capabilities.
+
+> The examples below use a fuller `Person` than the Quick Start one — assume it also carries
+> `DepartmentId`, `IsActive`, `Email`, `Points`, `RegistrationDate`, `FirstName` and `LastName`.
+> They also assume the type has been registered, as the Quick Start shows.
 
 ### Basic Querying
 
@@ -196,13 +220,19 @@ var count = await db.CountObjectsAsync<Person>();
 var people = await db.ReadObjectsByKeysAsync<Person>(new object[] { "id-1", "id-2", "id-3" });
 ```
 
-> **Filtering on the property that is also the Tycho key** (`x => x.Id`) normally goes through
-> `JSON_EXTRACT` and scans, because a write may supply its own key selector and Tycho cannot
-> assume the property still matches the stored key. Under `requireTypeRegistration: true`, with
-> the type registered by id property, that assumption *is* enforced, and `Equals` / `In` filters
-> on the id property are answered from the indexed `Key` column instead — 79.3 ms to 0.0 ms on a
-> 250,000-row store. Otherwise, reach those rows through `ReadObjectAsync` /
-> `ReadObjectsByKeysAsync`, or index the property like any other.
+> **Filtering on the property that is also the Tycho key** (`x => x.Id`) would normally go
+> through `JSON_EXTRACT` and scan, because a write may supply its own key selector and Tycho
+> cannot otherwise assume the property still matches the stored key.
+>
+> Under `requireTypeRegistration` — **the default** — with the type registered by id property,
+> that assumption is enforced (see [Type Registration](#type-registration)), so `Equals` and
+> `In` filters on the id property are answered from the indexed `Key` column instead:
+> **79.3 ms → 0.0 ms** for `Equals`, **101.2 ms → 0.2 ms** for `In` over 100 keys, on a
+> 250,000-row store. Negated forms and a null comparison value are not rewritten.
+>
+> If you turn registration off, or register with a custom key selector delegate, reach those
+> rows through `ReadObjectAsync` / `ReadObjectsByKeysAsync`, or index the property like any
+> other — both measured 0.0 ms against the 71.6 ms scan.
 
 ### Filtering
 
@@ -227,6 +257,11 @@ var inDepartments = FilterBuilder<Person>
     .Create()
     .Filter(FilterType.In, x => x.DepartmentId, new[] { 33, 47, 51 });
 
+// ...and its negation
+var outsideDepartments = FilterBuilder<Person>
+    .Create()
+    .Filter(FilterType.NotIn, x => x.DepartmentId, new[] { 33, 47 });
+
 // Mixing OR with other terms: group the alternatives so the intent is explicit
 var grouped = FilterBuilder<Person>
     .Create()
@@ -244,6 +279,17 @@ var johnDoe = await db.ReadObjectAsync<Person>(filter: complexFilter);
 // Get the first object matching the filter
 var firstPerson = await db.ReadFirstObjectAsync<Person>(filter: complexFilter);
 ```
+
+`In` / `NotIn` are worth knowing the edges of:
+
+- An **empty set** matches nothing for `In` and everything for `NotIn`. The term is never
+  dropped, which would silently widen the result.
+- A **`null` in the set** is matched against a missing or null member with `IS NULL`, which
+  SQL's own `IN` would never do.
+- `NotIn` **excludes rows whose member is null**, exactly as `NotEquals` already does. Add an
+  explicit `.Or().Filter(FilterType.Equals, x => x.DepartmentId, null)` term if you want them.
+- The **raw-string overload** takes `IEnumerable<object>`, so a value-type collection needs
+  `.Cast<object>()`. The expression overload infers the element type and needs no cast.
 
 ### Sorting
 
@@ -654,10 +700,18 @@ await db.SaveAllAsync(people, "active_users");
 - Use the appropriate serializer for your needs. System.Text.Json with a
   `JsonSerializerContext` (source generation) is the recommended default; Newtonsoft
   works but allocates more.
+- **Counting is done in the engine.** `CountObjectsAsync` issues `SELECT COUNT(*)` rather than
+  counting rows client-side (16.0 ms → 6.5 ms over a 250,000-row partition). A *filtered* count
+  is still bounded by whether the filtered property is indexed.
 - Consider partitioning for large datasets.
-- Use connection pooling for multi-threaded applications. Note that all database access
-  is serialized onto a single connection, so heavy concurrent workloads are executed
-  one operation at a time.
+- **Batch your reads by key.** `ReadObjectsByKeysAsync` fetches a whole set in one round trip
+  and takes the connection gate once instead of once per key — 2.1–2.7x faster end to end than
+  a loop of `ReadObjectAsync`, and the gap widens under contention.
+- **Concurrency is serialized.** All database access runs on a single connection behind a gate,
+  so concurrent callers are executed one operation at a time. Prefer fewer, larger operations
+  (`WriteObjectsAsync`, `ReadObjectsByKeysAsync`) over many small concurrent ones; the
+  `useConnectionPooling` constructor parameter controls the underlying driver pool, not this
+  serialization.
 
 ## Security Considerations (Querying)
 

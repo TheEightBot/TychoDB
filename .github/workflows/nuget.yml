@@ -9,7 +9,14 @@ on:
             - "v**"
 
 jobs:
+    # Nothing is published until the suite passes in BOTH configurations. The
+    # Encrypted package ships from this workflow, so it must not be built from a
+    # commit whose Encrypted tests were never run.
+    test:
+        uses: ./.github/workflows/tests.yml
+
     build:
+        needs: test
         runs-on: macos-latest
 
         steps:

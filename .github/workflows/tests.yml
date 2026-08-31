@@ -1,0 +1,45 @@
+# The unit suite, defined once and called from both CI and the release workflow so
+# the two can never drift on what "tested" means.
+#
+# Debug and Encrypted are genuinely different engines, not just different defines:
+# Encrypted swaps in SQLCipher (SQLite 3.39.2) where the standard build uses
+# e_sqlite3 (SQLite 3.50.3). A suite that only runs Debug cannot see Encrypted-only
+# breakage, which is how 18 broken IndexDdlTests reached main.
+name: Tests
+
+on:
+    workflow_call:
+    workflow_dispatch:
+
+jobs:
+    test:
+        name: Test (${{ matrix.configuration }})
+        runs-on: macos-latest
+
+        strategy:
+            # Both configurations always report. Without this, a Debug failure would
+            # cancel the Encrypted leg — exactly the coverage this workflow exists for.
+            fail-fast: false
+            matrix:
+                configuration: [Debug, Encrypted]
+
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-dotnet@v4
+              with:
+                  dotnet-version: "9.x"
+
+            - name: Test (${{ matrix.configuration }})
+              run: >-
+                  dotnet test TychoDB.UnitTests/TychoDB.UnitTests.csproj
+                  --configuration ${{ matrix.configuration }}
+                  --logger "trx;LogFileName=${{ matrix.configuration }}.trx"
+                  --results-directory TestResults
+
+            - name: Upload test results (${{ matrix.configuration }})
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: test-results-${{ matrix.configuration }}
+                  path: TestResults/*.trx
+                  if-no-files-found: warn

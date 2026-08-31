@@ -216,7 +216,7 @@ internal static class Diagnostics
         configure(sort);
 
         var sb = new StringBuilder(BuildBaseQuery());
-        sort.Build(sb);
+        sort.Build(sb, BuildSerializer());
         sb.AppendLine().AppendLine(Queries.Limit(top));
         return (sb.ToString(), new FilterParameters());
     }

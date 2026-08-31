@@ -910,7 +910,7 @@ public class Tycho : IDisposable
             var any = false;
             foreach (var key in keys)
             {
-                ArgumentNullException.ThrowIfNull(key, nameof(keys));
+                ArgumentNullException.ThrowIfNull(key, nameof(key));
 
                 writer.WriteStringValue(key.ToString());
                 any = true;

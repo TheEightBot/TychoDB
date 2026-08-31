@@ -22,6 +22,18 @@ public enum FilterType
     GreaterThanOrEqualTo = 6,
     LessThan = 7,
     LessThanOrEqualTo = 8,
+
+    /// <summary>
+    /// Matches when the property's value is one of a supplied set. Requires the
+    /// collection overloads of <c>FilterBuilder&lt;T&gt;.Filter</c>.
+    /// </summary>
+    In = 9,
+
+    /// <summary>
+    /// Matches when the property's value is none of a supplied set. Requires the
+    /// collection overloads of <c>FilterBuilder&lt;T&gt;.Filter</c>.
+    /// </summary>
+    NotIn = 10,
 }
 
 /// <summary>

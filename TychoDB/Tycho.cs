@@ -557,6 +557,168 @@ public class Tycho : IDisposable
     }
 
     /// <summary>
+    /// Writes a single object and reports whether the write created the row or replaced an
+    /// existing one, using registered type information to determine the ID.
+    /// </summary>
+    /// <typeparam name="T">The type of the object to write.</typeparam>
+    /// <param name="obj">The object to write.</param>
+    /// <param name="partition">Optional partition key to organize objects.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>
+    /// <see cref="UpsertResult.Inserted"/> when no row existed for the key in that partition,
+    /// <see cref="UpsertResult.Updated"/> when one did and its data was replaced.
+    /// </returns>
+    /// <remarks>
+    /// Stored contents are identical to <see cref="WriteObjectAsync{T}(T, string?, bool, CancellationToken)"/>;
+    /// the difference is only the answer. The insert/update decision is made inside the
+    /// connection gate (and, when <paramref name="withTransaction"/> is true, the
+    /// transaction), so a caller keeping an incremental view of the store (a queue count, an
+    /// added/removed signal) can rely on it without a read-then-write pair and an outer lock
+    /// of its own.
+    /// <para>
+    /// There is no failure value: the result is only ever one of the two outcomes, and a call
+    /// that returns has written the object. Every failure throws <see cref="TychoException"/>
+    /// and leaves the row exactly as it was - only one of the two statements ever modifies
+    /// data, so with a transaction it is rolled back and without one the failed statement is
+    /// atomic on its own. That covers the insert being ignored for a reason other than an
+    /// existing row (the follow-up update then affects nothing), the update affecting anything
+    /// other than one row, and any serializer or SQLite error on either statement.
+    /// </para>
+    /// </remarks>
+    public ValueTask<UpsertResult> UpsertObjectAsync<T>(T obj, string? partition = null, bool withTransaction = true,
+        CancellationToken cancellationToken = default)
+    {
+        return UpsertObjectAsync(obj, GetIdSelectorFor<T>(), partition, withTransaction, cancellationToken);
+    }
+
+    /// <summary>
+    /// Writes a single object using a custom key selector and reports whether the write created
+    /// the row or replaced an existing one.
+    /// </summary>
+    /// <typeparam name="T">The type of the object to write.</typeparam>
+    /// <param name="obj">The object to write.</param>
+    /// <param name="keySelector">A function that extracts the key from the object.</param>
+    /// <param name="partition">Optional partition key to organize objects.</param>
+    /// <param name="withTransaction">Whether to use a transaction for the operation.</param>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>
+    /// <see cref="UpsertResult.Inserted"/> when no row existed for the key in that partition,
+    /// <see cref="UpsertResult.Updated"/> when one did and its data was replaced.
+    /// </returns>
+    /// <remarks>
+    /// The key selector follows the same rules as
+    /// <see cref="WriteObjectAsync{T}(T, Func{T, object}, string?, bool, CancellationToken)"/>,
+    /// including the strict-mode divergence guard. Failure semantics are those of
+    /// <see cref="UpsertObjectAsync{T}(T, string?, bool, CancellationToken)"/>: never a third
+    /// result value, always a <see cref="TychoException"/> with the row left as it was.
+    /// </remarks>
+    public ValueTask<UpsertResult> UpsertObjectAsync<T>(T obj, Func<T, object> keySelector, string? partition = null,
+        bool withTransaction = true, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(obj);
+        ArgumentNullException.ThrowIfNull(keySelector);
+        ArgumentNullException.ThrowIfNull(_connection);
+
+        keySelector = GuardAgainstKeyDivergence(keySelector);
+
+        return _connection
+            .WithConnectionBlockAsync(
+                _connectionGate,
+                (obj, keySelector, partition, withTransaction, _commandTimeout, _jsonSerializer),
+                static (conn, state) =>
+                {
+                    SqliteTransaction? transaction = null;
+
+                    if (state.withTransaction)
+                    {
+                        transaction = conn.BeginTransaction(IsolationLevel.Serializable);
+                    }
+
+                    try
+                    {
+                        var keyValue = state.keySelector(state.obj);
+                        var fullTypeNameValue = TypeCache<T>.FullName;
+                        var partitionValue = state.partition.AsValueOrEmptyString();
+
+                        using var serializationStream = _memoryStreamManager.GetStream("TychoDB.UpsertObject");
+                        state._jsonSerializer.Serialize(state.obj, serializationStream);
+                        var json = serializationStream.ToArray();
+
+                        // INSERT OR IGNORE affects one row only when the key was absent, which is
+                        // exactly the answer; if it affected nothing the row exists and the data
+                        // is replaced in place. Both statements run under the same gate and
+                        // transaction, so no other writer can slip between them.
+                        using var insertCommand = conn.CreateCommand();
+                        if (transaction is not null)
+                        {
+                            insertCommand.Transaction = transaction;
+                        }
+
+                        insertCommand.CommandTimeout = state._commandTimeout;
+                        insertCommand.CommandText = Queries.InsertOrIgnore;
+                        insertCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = keyValue;
+                        insertCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = fullTypeNameValue;
+                        insertCommand.Parameters.Add(ParameterJson, SqliteType.Blob).Value = json;
+                        insertCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partitionValue;
+
+                        var result = UpsertResult.Inserted;
+                        var affected = insertCommand.ExecuteNonQuery();
+
+                        if (affected == 0)
+                        {
+                            using var updateCommand = conn.CreateCommand();
+                            if (transaction is not null)
+                            {
+                                updateCommand.Transaction = transaction;
+                            }
+
+                            updateCommand.CommandTimeout = state._commandTimeout;
+                            updateCommand.CommandText = Queries.UpdateDataWithKeyAndFullTypeName;
+                            updateCommand.Parameters.Add(ParameterKey, SqliteType.Text).Value = keyValue;
+                            updateCommand.Parameters.Add(ParameterFullTypeName, SqliteType.Text).Value = fullTypeNameValue;
+                            updateCommand.Parameters.Add(ParameterJson, SqliteType.Blob).Value = json;
+                            updateCommand.Parameters.Add(ParameterPartition, SqliteType.Text).Value = partitionValue;
+
+                            affected = updateCommand.ExecuteNonQuery();
+                            result = UpsertResult.Updated;
+                        }
+
+                        // Two outcomes only. INSERT OR IGNORE can be ignored for a constraint
+                        // other than the existing-row case, and then the UPDATE finds nothing;
+                        // either way anything but exactly one affected row is a failure, and a
+                        // failure is an exception plus rollback - never a quiet "Updated".
+                        // (SQLite's change count is the number of rows the UPDATE matched, so a
+                        // rewrite with identical JSON still reports 1 - see the idempotent test.)
+                        if (affected != 1)
+                        {
+                            throw new TychoException($"Upsert affected {affected} rows; expected exactly one ({result})");
+                        }
+
+                        transaction?.Commit();
+
+                        return result;
+                    }
+                    catch (TychoException)
+                    {
+                        transaction?.Rollback();
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        transaction?.Rollback();
+                        throw new TychoException("Failed Upserting Object", ex);
+                    }
+                    finally
+                    {
+                        transaction?.Dispose();
+                    }
+                },
+                _persistConnection,
+                cancellationToken);
+    }
+
+    /// <summary>
     /// Counts objects matching the optional filter criteria.
     /// </summary>
     /// <typeparam name="T">The type of objects to count.</typeparam>

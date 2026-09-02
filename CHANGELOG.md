@@ -13,10 +13,11 @@
   read-then-write pair guarded by a lock of their own. Registered-id and explicit key-selector
   overloads, same strict-mode divergence guard. There is deliberately no failure value: any
   failure (insert ignored for another constraint, update not affecting exactly one row, a
-  serializer or SQLite error) throws `TychoException` after rolling back, leaving the row as it
-  was. (#32)
+  serializer or SQLite error) throws `TychoException` and leaves the row as it was — with a
+  transaction it is rolled back, without one the single failing statement is atomic on its own.
+  (#32)
 
-## 5.0.0 (unreleased) — Security & performance hardening
+## 5.0.0 — 2026-07-21 — Security & performance hardening
 
 This release closes a critical SQL-injection vector and a data-integrity bug, and
 adds proven write/startup performance improvements. It is a **major** version because

@@ -572,16 +572,18 @@ public class Tycho : IDisposable
     /// <remarks>
     /// Stored contents are identical to <see cref="WriteObjectAsync{T}(T, string?, bool, CancellationToken)"/>;
     /// the difference is only the answer. The insert/update decision is made inside the
-    /// connection gate and the transaction, so a caller keeping an incremental view of the
-    /// store (a queue count, an added/removed signal) can rely on it without a
-    /// read-then-write pair and an outer lock of its own.
+    /// connection gate (and, when <paramref name="withTransaction"/> is true, the
+    /// transaction), so a caller keeping an incremental view of the store (a queue count, an
+    /// added/removed signal) can rely on it without a read-then-write pair and an outer lock
+    /// of its own.
     /// <para>
     /// There is no failure value: the result is only ever one of the two outcomes, and a call
     /// that returns has written the object. Every failure throws <see cref="TychoException"/>
-    /// after rolling the transaction back, so the row is left exactly as it was - that covers
-    /// the insert being ignored for a reason other than an existing row (the follow-up update
-    /// then affects nothing), the update affecting anything other than one row, and any
-    /// serializer or SQLite error on either statement.
+    /// and leaves the row exactly as it was - only one of the two statements ever modifies
+    /// data, so with a transaction it is rolled back and without one the failed statement is
+    /// atomic on its own. That covers the insert being ignored for a reason other than an
+    /// existing row (the follow-up update then affects nothing), the update affecting anything
+    /// other than one row, and any serializer or SQLite error on either statement.
     /// </para>
     /// </remarks>
     public ValueTask<UpsertResult> UpsertObjectAsync<T>(T obj, string? partition = null, bool withTransaction = true,
@@ -609,7 +611,7 @@ public class Tycho : IDisposable
     /// <see cref="WriteObjectAsync{T}(T, Func{T, object}, string?, bool, CancellationToken)"/>,
     /// including the strict-mode divergence guard. Failure semantics are those of
     /// <see cref="UpsertObjectAsync{T}(T, string?, bool, CancellationToken)"/>: never a third
-    /// result value, always a <see cref="TychoException"/> with the transaction rolled back.
+    /// result value, always a <see cref="TychoException"/> with the row left as it was.
     /// </remarks>
     public ValueTask<UpsertResult> UpsertObjectAsync<T>(T obj, Func<T, object> keySelector, string? partition = null,
         bool withTransaction = true, CancellationToken cancellationToken = default)
@@ -686,6 +688,8 @@ public class Tycho : IDisposable
                         // other than the existing-row case, and then the UPDATE finds nothing;
                         // either way anything but exactly one affected row is a failure, and a
                         // failure is an exception plus rollback - never a quiet "Updated".
+                        // (SQLite's change count is the number of rows the UPDATE matched, so a
+                        // rewrite with identical JSON still reports 1 - see the idempotent test.)
                         if (affected != 1)
                         {
                             throw new TychoException($"Upsert affected {affected} rows; expected exactly one ({result})");

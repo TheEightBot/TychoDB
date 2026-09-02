@@ -45,6 +45,22 @@ public class UpsertObjectTests
     }
 
     [TestMethod]
+    public async Task RewritingIdenticalData_IsUpdated_NotAFailure()
+    {
+        // SQLite's change count is the number of rows the UPDATE matched, not the number whose
+        // bytes differed, so an idempotent rewrite reports one affected row and must come back
+        // Updated rather than tripping the exactly-one-row check.
+        using var db = Connect();
+        var doc = new Doc { Key = "k1", Description = "same" };
+        await db.UpsertObjectAsync(doc, x => x.Key, PartitionA);
+
+        var result = await db.UpsertObjectAsync(doc, x => x.Key, PartitionA);
+
+        result.ShouldBe(UpsertResult.Updated);
+        (await db.ReadObjectAsync<Doc>("k1", PartitionA))!.Description.ShouldBe("same");
+    }
+
+    [TestMethod]
     public async Task ARowWrittenByWriteObjectAsync_CountsAsExisting()
     {
         using var db = Connect();

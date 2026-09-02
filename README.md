@@ -215,9 +215,10 @@ key-divergence guard behave exactly as they do for `WriteObjectAsync`.
 
 There is no third result. A call that returns has written the object; anything else — the
 insert ignored for a reason other than an existing row, the update touching anything but one
-row, a serializer or SQLite error on either statement — throws `TychoException` with the
-transaction rolled back, so the stored row is exactly what it was before the call. Callers that
-count on the result should let that exception surface rather than treat it as "updated".
+row, a serializer or SQLite error on either statement — throws `TychoException` and leaves the
+stored row exactly what it was before the call (only one of the two statements ever modifies
+data, so this holds with `withTransaction: false` too). Callers that count on the result should
+let that exception surface rather than treat it as "updated".
 
 ## Querying Objects
 

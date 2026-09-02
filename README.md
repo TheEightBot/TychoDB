@@ -192,6 +192,33 @@ the call site.
 > cannot reach. Types registered with `AddTypeRegistrationWithCustomKeySelector` have no id
 > property to compare against and are unaffected.
 
+## Knowing Whether a Write Inserted or Updated
+
+`WriteObjectAsync` reports only success. When you keep something derived from the store — a
+queue count, an added/removed signal — you need to know whether the write **created** the row
+or **replaced** one, and a read-then-write pair of your own is not atomic against other
+writers. `UpsertObjectAsync` answers that from inside the connection gate and transaction:
+
+```csharp
+var result = await db.UpsertObjectAsync(queuedItem, x => x.Key, "queue");
+
+if (result == UpsertResult.Inserted)
+{
+    queueCount++;   // exact: an edit of an already-queued item returns Updated
+}
+```
+
+Stored contents are identical to `WriteObjectAsync`; the row is keyed by
+`(Key, FullTypeName, Partition)`, so the same key in another partition or for another type is
+`Inserted`. The registered-id overload `UpsertObjectAsync(obj, partition)` and the strict-mode
+key-divergence guard behave exactly as they do for `WriteObjectAsync`.
+
+There is no third result. A call that returns has written the object; anything else — the
+insert ignored for a reason other than an existing row, the update touching anything but one
+row, a serializer or SQLite error on either statement — throws `TychoException` with the
+transaction rolled back, so the stored row is exactly what it was before the call. Callers that
+count on the result should let that exception surface rather than treat it as "updated".
+
 ## Querying Objects
 
 TychoDB offers rich querying capabilities.

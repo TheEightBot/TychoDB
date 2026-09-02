@@ -132,6 +132,33 @@ internal static class Queries
         SELECT last_insert_rowid();
         """;
 
+    /// <summary>
+    /// First half of the outcome-reporting upsert: inserts only when the
+    /// (Key, FullTypeName, Partition) row is absent. One affected row means the object was
+    /// inserted; zero means it already existed and <see cref="UpdateDataWithKeyAndFullTypeName"/>
+    /// runs next.
+    /// </summary>
+    public const string InsertOrIgnore =
+        """
+        INSERT OR IGNORE INTO JsonValue(Key, FullTypeName, Data, Partition)
+        VALUES ($key, $fullTypeName, json($json), $partition);
+        """;
+
+    /// <summary>
+    /// Second half of the outcome-reporting upsert: replaces the stored JSON of an existing row.
+    /// </summary>
+    public const string UpdateDataWithKeyAndFullTypeName =
+        """
+        UPDATE JsonValue
+        SET Data = json($json)
+        WHERE
+        Key = $key
+        AND
+        FullTypeName = $fullTypeName
+        AND
+        Partition = $partition;
+        """;
+
     private const string BatchInsertPrefix =
         "INSERT OR REPLACE INTO JsonValue(Key, FullTypeName, Data, Partition) VALUES ";
 

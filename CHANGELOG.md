@@ -1,5 +1,21 @@
 # Changelog
 
+## 5.3.0 (unreleased)
+
+### Added
+
+- **`UpsertObjectAsync` reports whether the write inserted or updated.** Returns
+  `UpsertResult.Inserted` when no row existed for the key in that partition and
+  `UpsertResult.Updated` when one did and its data was replaced; stored contents are identical
+  to `WriteObjectAsync`. Implemented as `INSERT OR IGNORE` plus, only when nothing was inserted,
+  an in-place `UPDATE`, both under the connection gate and the transaction — so callers that keep
+  an incremental view of the store (a queue count, an added/removed signal) no longer need a
+  read-then-write pair guarded by a lock of their own. Registered-id and explicit key-selector
+  overloads, same strict-mode divergence guard. There is deliberately no failure value: any
+  failure (insert ignored for another constraint, update not affecting exactly one row, a
+  serializer or SQLite error) throws `TychoException` after rolling back, leaving the row as it
+  was. (#32)
+
 ## 5.0.0 (unreleased) — Security & performance hardening
 
 This release closes a critical SQL-injection vector and a data-integrity bug, and

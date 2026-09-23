@@ -1,5 +1,16 @@
 # Changelog
 
+## 5.3.1 (unreleased)
+
+### Fixed
+
+- **`Filter(NotEquals, x => x.Member, null)` matched nothing.** The scalar path bound the null as a
+  parameter and emitted `JSON_EXTRACT(...) <> NULL`, which is never true in SQL, so the "member is
+  present" test silently returned no rows on every 5.x release. 4.x concatenated `<> ''`, which
+  behaved as `IS NOT NULL` by accident. The scalar path now emits `IS NOT NULL`, exactly as
+  `Equals` with null emits `IS NULL` and as the list-member path already did. An empty string is
+  present, so it still matches; `NotEquals` with a non-null value still excludes absent members.
+
 ## 5.3.0 (unreleased)
 
 ### Added

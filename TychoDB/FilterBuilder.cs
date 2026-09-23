@@ -894,12 +894,10 @@ public class FilterBuilder<TObj>
                 break;
 
             case FilterType.NotEquals:
-                if (filter.IsPropertyPathBool)
+                if (filter.Value is null)
                 {
                     AppendJsonExtract(commandBuilder, filter.PropertyPath!);
-                    commandBuilder.Append(NotEquals);
-                    AppendValue(commandBuilder, parameters, filter.Value);
-                    commandBuilder.AppendLine();
+                    commandBuilder.Append(IsNotNull).AppendLine();
                 }
                 else
                 {

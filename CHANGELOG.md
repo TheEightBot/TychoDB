@@ -17,6 +17,25 @@
   transaction it is rolled back, without one the single failing statement is atomic on its own.
   (#32)
 
+### Fixed
+
+- **List-member filters raised `malformed JSON` on documents with string-valued elements.**
+  The `Filter(FilterType, x => x.Items, x => x.Member, value)` overload walks the list with
+  `JSON_TREE` and handed every node it yielded to `JSON_EACH`. `JSON_TREE` yields the scalar
+  leaves as well as the element objects, and a string leaf — any `string` member, or a
+  `DateTime`, which both serializers write as text — is not JSON, so `JSON_EACH` failed with
+  SQLite error 1 `malformed JSON`. `EXISTS` stops at the first element that satisfies the
+  predicate, so the error surfaced only for documents whose elements never match: a filter
+  appeared to work until the store held a row it had to reject. Only object nodes are now
+  handed to `JSON_EACH`; scalar and array nodes contribute nothing, and nested lists of objects
+  are still searched. Present since the overload was introduced.
+- **`NotEquals` on a `DateTime` list member compared against the culture-dependent
+  `ToString()` form.** `Filter(FilterType.NotEquals, x => x.Items, x => x.When, value)` rendered
+  the value as `DateTime.ToString()` (`1/1/2026 8:00:00 AM` under `en-US`) while the document
+  stores the serializer's format (`2026-01-01T08:00:00Z`), so no element ever compared equal and
+  every document with a non-empty list matched. The value is now formatted with the
+  serializer's `DateTimeSerializationFormat`, as `Equals` already was.
+
 ## 5.0.0 — 2026-07-21 — Security & performance hardening
 
 This release closes a critical SQL-injection vector and a data-integrity bug, and

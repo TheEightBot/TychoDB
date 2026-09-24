@@ -646,29 +646,7 @@ public class FilterBuilder<TObj>
                 break;
 
             case FilterType.Equals:
-                AppendExistsPrefix(commandBuilder, filter);
-                if (filter.Value is null)
-                {
-                    commandBuilder.Append(ValValue).Append(IsNull).Append(ExistsEnd).AppendLine();
-                }
-                else if (filter.IsPropertyValuePathNumeric)
-                {
-                    commandBuilder.Append(CastValNumeric).Append(Equals);
-                    AppendNumericValue(commandBuilder, parameters, filter.Value);
-                    commandBuilder.Append(ExistsEnd).AppendLine();
-                }
-                else if (filter.IsPropertyValuePathDateTime)
-                {
-                    var dateTimeString = GetDateTimeString(filter.Value, jsonSerializer);
-                    commandBuilder.Append(ValValue).Append(Equals).Append(parameters.Add(dateTimeString)).Append(ExistsEnd).AppendLine();
-                }
-                else
-                {
-                    commandBuilder.Append(ValValue).Append(Equals);
-                    AppendValue(commandBuilder, parameters, filter.Value);
-                    commandBuilder.Append(ExistsEnd).AppendLine();
-                }
-
+                AppendListMemberEquality(commandBuilder, filter, jsonSerializer, parameters, negated: false);
                 break;
 
             case FilterType.GreaterThan:
@@ -700,18 +678,7 @@ public class FilterBuilder<TObj>
                 break;
 
             case FilterType.NotEquals:
-                AppendExistsPrefix(commandBuilder, filter);
-                if (filter.Value is null)
-                {
-                    commandBuilder.Append(ValValue).Append(IsNotNull).Append(ExistsEnd).AppendLine();
-                }
-                else
-                {
-                    commandBuilder.Append(ValValue).Append(NotEquals);
-                    AppendValue(commandBuilder, parameters, filter.Value);
-                    commandBuilder.Append(ExistsEnd).AppendLine();
-                }
-
+                AppendListMemberEquality(commandBuilder, filter, jsonSerializer, parameters, negated: true);
                 break;
 
             case FilterType.StartsWith:
@@ -830,39 +797,7 @@ public class FilterBuilder<TObj>
                 break;
 
             case FilterType.Equals:
-                if (filter.Value is null)
-                {
-                    AppendJsonExtract(commandBuilder, filter.PropertyPath!);
-                    commandBuilder.Append(IsNull).AppendLine();
-                }
-                else if (filter.IsPropertyPathBool)
-                {
-                    AppendJsonExtract(commandBuilder, filter.PropertyPath!);
-                    commandBuilder.Append(Equals);
-                    AppendValue(commandBuilder, parameters, filter.Value);
-                    commandBuilder.AppendLine();
-                }
-                else if (filter.IsPropertyPathNumeric)
-                {
-                    AppendCastNumeric(commandBuilder, filter.PropertyPath!);
-                    commandBuilder.Append(Equals);
-                    AppendNumericValue(commandBuilder, parameters, filter.Value);
-                    commandBuilder.AppendLine();
-                }
-                else if (filter.IsPropertyPathDateTime)
-                {
-                    var dateTimeString = GetDateTimeString(filter.Value, jsonSerializer);
-                    AppendJsonExtract(commandBuilder, filter.PropertyPath!);
-                    commandBuilder.Append(Equals).Append(parameters.Add(dateTimeString)).AppendLine();
-                }
-                else
-                {
-                    AppendJsonExtract(commandBuilder, filter.PropertyPath!);
-                    commandBuilder.Append(Equals);
-                    AppendValue(commandBuilder, parameters, filter.Value);
-                    commandBuilder.AppendLine();
-                }
-
+                AppendScalarEquality(commandBuilder, filter, jsonSerializer, parameters, negated: false);
                 break;
 
             case FilterType.GreaterThan:
@@ -894,19 +829,7 @@ public class FilterBuilder<TObj>
                 break;
 
             case FilterType.NotEquals:
-                if (filter.Value is null)
-                {
-                    AppendJsonExtract(commandBuilder, filter.PropertyPath!);
-                    commandBuilder.Append(IsNotNull).AppendLine();
-                }
-                else
-                {
-                    AppendJsonExtract(commandBuilder, filter.PropertyPath!);
-                    commandBuilder.Append(NotEquals);
-                    AppendValue(commandBuilder, parameters, filter.Value);
-                    commandBuilder.AppendLine();
-                }
-
+                AppendScalarEquality(commandBuilder, filter, jsonSerializer, parameters, negated: true);
                 break;
 
             case FilterType.StartsWith:
@@ -920,6 +843,80 @@ public class FilterBuilder<TObj>
                 BuildSetFilter(commandBuilder, filter, jsonSerializer, parameters);
                 break;
         }
+    }
+
+    /// <summary>
+    /// Renders <c>path = value</c> or <c>path &lt;&gt; value</c>. Both operators share one type
+    /// dispatch so the negation compares against exactly the form the equality does: a null
+    /// value becomes <c>IS NULL</c> / <c>IS NOT NULL</c>, a numeric property keeps its
+    /// <c>CAST(… as NUMERIC)</c>, and a date-time value is formatted the way the serializer
+    /// wrote it.
+    /// </summary>
+    private static void AppendScalarEquality(StringBuilder commandBuilder, in Filter filter, IJsonSerializer jsonSerializer, FilterParameters parameters, bool negated)
+    {
+        if (filter.Value is null)
+        {
+            AppendJsonExtract(commandBuilder, filter.PropertyPath!);
+            commandBuilder.Append(negated ? IsNotNull : IsNull).AppendLine();
+            return;
+        }
+
+        var comparison = negated ? NotEquals : Equals;
+
+        if (filter.IsPropertyPathNumeric)
+        {
+            AppendCastNumeric(commandBuilder, filter.PropertyPath!);
+            commandBuilder.Append(comparison);
+            AppendNumericValue(commandBuilder, parameters, filter.Value);
+        }
+        else if (filter.IsPropertyPathDateTime)
+        {
+            AppendJsonExtract(commandBuilder, filter.PropertyPath!);
+            commandBuilder.Append(comparison).Append(parameters.Add(GetDateTimeString(filter.Value, jsonSerializer)));
+        }
+        else
+        {
+            AppendJsonExtract(commandBuilder, filter.PropertyPath!);
+            commandBuilder.Append(comparison);
+            AppendValue(commandBuilder, parameters, filter.Value);
+        }
+
+        commandBuilder.AppendLine();
+    }
+
+    /// <summary>
+    /// The list-member form of <see cref="AppendScalarEquality"/>: an <c>EXISTS</c> over the
+    /// array's elements with the same shared type dispatch for both operators.
+    /// </summary>
+    private void AppendListMemberEquality(StringBuilder commandBuilder, in Filter filter, IJsonSerializer jsonSerializer, FilterParameters parameters, bool negated)
+    {
+        AppendExistsPrefix(commandBuilder, filter);
+
+        if (filter.Value is null)
+        {
+            commandBuilder.Append(ValValue).Append(negated ? IsNotNull : IsNull);
+        }
+        else
+        {
+            var comparison = negated ? NotEquals : Equals;
+
+            if (filter.IsPropertyValuePathNumeric)
+            {
+                commandBuilder.Append(CastValNumeric).Append(comparison);
+                AppendNumericValue(commandBuilder, parameters, filter.Value);
+            }
+            else if (filter.IsPropertyValuePathDateTime)
+            {
+                commandBuilder.Append(ValValue).Append(comparison).Append(parameters.Add(GetDateTimeString(filter.Value, jsonSerializer)));
+            }
+            else
+            {
+                commandBuilder.Append(ValValue).Append(comparison);
+                AppendValue(commandBuilder, parameters, filter.Value);
+            }
+        }
+
+        commandBuilder.Append(ExistsEnd).AppendLine();
     }
 
     /// <summary>

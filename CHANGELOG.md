@@ -10,6 +10,13 @@
   behaved as `IS NOT NULL` by accident. The scalar path now emits `IS NOT NULL`, exactly as
   `Equals` with null emits `IS NULL` and as the list-member path already did. An empty string is
   present, so it still matches; `NotEquals` with a non-null value still excludes absent members.
+- **`NotEquals` with a date-time or numeric value could return the row it should exclude.** The
+  negation bound a `DateTime`/`DateTimeOffset` as culture-formatted text rather than in the
+  serializer's date format, so no stored value ever compared equal and every present row came
+  back; and it compared a numeric member without the `CAST(… as NUMERIC)` that `Equals` uses,
+  so a text value such as `"2"` on a numeric path excluded nothing. `Equals` and `NotEquals` now
+  share one type dispatch with only the operator swapped, on the scalar and list-member paths
+  alike.
 
 ## 5.3.0 (unreleased)
 

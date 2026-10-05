@@ -19,7 +19,7 @@ public class FilterBuilder<TObj>
     private const string CastNumericPrefix = "CAST(JSON_EXTRACT(Data, '";
     private const string CastNumericSuffix = "') as NUMERIC)";
     private const string ExistsPrefix = "EXISTS(SELECT 1 FROM JSON_TREE(Data, '";
-    private const string ExistsMiddle = "') AS JT, JSON_EACH(CASE JT.type WHEN 'object' THEN JT.Value END, '";
+    private const string ExistsMiddle = "') AS JT, JSON_EACH(CASE WHEN JT.type IN ('object', 'array') THEN JT.Value END, '";
     private const string ExistsSuffix = "') AS VAL WHERE ";
     private const string ExistsEnd = ")";
     private const string ValValue = "VAL.value";

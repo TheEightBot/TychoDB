@@ -136,6 +136,20 @@ public class NotEqualsValueTests
 
     [TestMethod]
     [DynamicData(nameof(Serializers))]
+    public async Task NotEquals_DateTimePath_WithTextValue_ComparesAgainstTheTextAsGiven(IJsonSerializer jsonSerializer, string label)
+    {
+        using var db = await SeedAsync(jsonSerializer);
+        var first = First.ToString(jsonSerializer.DateTimeSerializationFormat);
+
+        var equal = await IdsAsync(db, FilterBuilder<Doc>.Create().Filter(FilterType.Equals, x => x.When, first));
+        var notEqual = await IdsAsync(db, FilterBuilder<Doc>.Create().Filter(FilterType.NotEquals, x => x.When, first));
+
+        equal.ShouldBe(new[] { 1 }, label);
+        notEqual.ShouldBe(new[] { 2 }, label);
+    }
+
+    [TestMethod]
+    [DynamicData(nameof(Serializers))]
     public async Task NotEquals_NumericPath_WithTextValue_MirrorsEquals(IJsonSerializer jsonSerializer, string label)
     {
         using var db = await SeedAsync(jsonSerializer);
@@ -172,6 +186,21 @@ public class NotEqualsValueTests
         equal.ShouldContain("VAL.value = " + FilterParameters.ParameterPrefix);
         notEqual.ShouldContain("VAL.value <> " + FilterParameters.ParameterPrefix);
         equalParameters.Values.ShouldBe(new object[] { First.ToString(jsonSerializer.DateTimeSerializationFormat) }, label);
+        notEqualParameters.Values.ShouldBe(equalParameters.Values, label);
+    }
+
+    [TestMethod]
+    [DynamicData(nameof(Serializers))]
+    public void NotEquals_ListMemberDateTime_WithTextValue_BindsTheTextAsGiven(IJsonSerializer jsonSerializer, string label)
+    {
+        var first = First.ToString(jsonSerializer.DateTimeSerializationFormat);
+
+        var equal = Render(jsonSerializer, FilterBuilder<Doc>.Create().Filter(FilterType.Equals, x => x.Items, x => x.When, first), out var equalParameters);
+        var notEqual = Render(jsonSerializer, FilterBuilder<Doc>.Create().Filter(FilterType.NotEquals, x => x.Items, x => x.When, first), out var notEqualParameters);
+
+        equal.ShouldContain("VAL.value = " + FilterParameters.ParameterPrefix);
+        notEqual.ShouldContain("VAL.value <> " + FilterParameters.ParameterPrefix);
+        equalParameters.Values.ShouldBe(new object[] { first }, label);
         notEqualParameters.Values.ShouldBe(equalParameters.Values, label);
     }
 

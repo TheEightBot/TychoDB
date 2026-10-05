@@ -869,7 +869,7 @@ public class FilterBuilder<TObj>
             commandBuilder.Append(comparison);
             AppendNumericValue(commandBuilder, parameters, filter.Value);
         }
-        else if (filter.IsPropertyPathDateTime)
+        else if (filter.IsPropertyPathDateTime && filter.Value is DateTime or DateTimeOffset)
         {
             AppendJsonExtract(commandBuilder, filter.PropertyPath!);
             commandBuilder.Append(comparison).Append(parameters.Add(GetDateTimeString(filter.Value, jsonSerializer)));
@@ -905,7 +905,7 @@ public class FilterBuilder<TObj>
                 commandBuilder.Append(CastValNumeric).Append(comparison);
                 AppendNumericValue(commandBuilder, parameters, filter.Value);
             }
-            else if (filter.IsPropertyValuePathDateTime)
+            else if (filter.IsPropertyValuePathDateTime && filter.Value is DateTime or DateTimeOffset)
             {
                 commandBuilder.Append(ValValue).Append(comparison).Append(parameters.Add(GetDateTimeString(filter.Value, jsonSerializer)));
             }

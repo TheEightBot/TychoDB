@@ -17,8 +17,17 @@
   so a text value such as `"2"` on a numeric path excluded nothing. `Equals` and `NotEquals` now
   share one type dispatch with only the operator swapped, on the scalar and list-member paths
   alike.
+  - **A text value on a date-time path is compared as given.** Passing an already formatted
+    string — `Filter(FilterType.NotEquals, x => x.When, "2026-01-01T08:00:00Z")`, until now the
+    only way to make `NotEquals` on a date work — keeps returning the same rows. The same value
+    with `Equals` was compared against an empty string and matched nothing; it now matches the
+    rows storing that text.
+  - **`NotEquals` on a numeric member now treats non-numeric text as `0`,** as `Equals` already
+    did: both serializers write `double.NaN` as the string `"NaN"`, which `CAST(… as NUMERIC)`
+    reads as `0`, so `Filter(FilterType.NotEquals, x => x.Score, 0d)` no longer returns a row
+    storing `NaN`.
 
-## 5.3.0 (unreleased)
+## 5.3.0 — 2026-09-02
 
 ### Added
 

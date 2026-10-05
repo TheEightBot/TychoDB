@@ -19,7 +19,7 @@ public class FilterBuilder<TObj>
     private const string CastNumericPrefix = "CAST(JSON_EXTRACT(Data, '";
     private const string CastNumericSuffix = "') as NUMERIC)";
     private const string ExistsPrefix = "EXISTS(SELECT 1 FROM JSON_TREE(Data, '";
-    private const string ExistsMiddle = "') AS JT, JSON_EACH(JT.Value, '";
+    private const string ExistsMiddle = "') AS JT, JSON_EACH(CASE WHEN JT.type IN ('object', 'array') THEN JT.Value END, '";
     private const string ExistsSuffix = "') AS VAL WHERE ";
     private const string ExistsEnd = ")";
     private const string ValValue = "VAL.value";
@@ -704,6 +704,11 @@ public class FilterBuilder<TObj>
                 if (filter.Value is null)
                 {
                     commandBuilder.Append(ValValue).Append(IsNotNull).Append(ExistsEnd).AppendLine();
+                }
+                else if (filter.IsPropertyValuePathDateTime)
+                {
+                    var dateTimeString = GetDateTimeString(filter.Value, jsonSerializer);
+                    commandBuilder.Append(ValValue).Append(NotEquals).Append(parameters.Add(dateTimeString)).Append(ExistsEnd).AppendLine();
                 }
                 else
                 {

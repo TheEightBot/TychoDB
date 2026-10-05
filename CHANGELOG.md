@@ -1,6 +1,39 @@
 # Changelog
 
-## 5.3.0 (unreleased)
+## 5.3.1 (unreleased)
+
+### Fixed
+
+- **List-member filters raised `malformed JSON` on documents with string-valued elements.**
+  The `Filter(FilterType, x => x.Items, x => x.Member, value)` overload walks the list with
+  `JSON_TREE` and handed every node it yielded to `JSON_EACH`. `JSON_TREE` yields the scalar
+  leaves as well as the element objects, and a string leaf — any `string` member, or a
+  `DateTime`, which both serializers write as text — is not JSON, so `JSON_EACH` failed with
+  SQLite error 1 `malformed JSON`. `EXISTS` stops at the first element that satisfies the
+  predicate, so the error surfaced only for documents whose elements never match: a filter
+  appeared to work until the store held a row it had to reject. Only object and array nodes
+  are now handed to `JSON_EACH`; scalar leaves contribute nothing, and nested lists of objects
+  are still searched. Present since the overload was introduced.
+  - **A string member whose text is JSON no longer matches as if it were an element.** A
+    string leaf that happened to parse — `Note = "{\"Amount\":99}"` — was searched like a list
+    element, so `Filter(FilterType.Equals, x => x.Items, x => x.Amount, 99)` returned a document
+    with no such element. Stored text can no longer decide which documents a list-member
+    filter matches, or which `DeleteObjectsAsync` removes.
+  - **Lists of strings can be filtered on their own values.**
+    `Filter(FilterType.Equals, x => x.Tags, x => x, "red")` raised the same `malformed JSON`
+    for any document it had to reject. It now returns the documents holding the value, as the
+    same call over a list of numbers or booleans already did.
+- **`NotEquals` on a `DateTime` list member compared against the culture-dependent
+  `ToString()` form.** `Filter(FilterType.NotEquals, x => x.Items, x => x.When, value)` rendered
+  the value as `DateTime.ToString()` (`1/1/2026 8:00:00 AM` under `en-US`) while the document
+  stores the serializer's format (`2026-01-01T08:00:00Z`), so no element ever compared equal and
+  every document with a non-empty list matched. The value is now formatted with the
+  serializer's `DateTimeSerializationFormat`, as `Equals` already was. `NotEquals` on a list
+  member matches a document when *some* element differs from the value, not when no element
+  equals it; that meaning is unchanged, but it is now observable on lists whose elements hold
+  strings or dates.
+
+## 5.3.0 — 2026-09-02
 
 ### Added
 

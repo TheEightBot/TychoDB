@@ -178,6 +178,26 @@ public class NotEqualsValueTests
 
     [TestMethod]
     [DynamicData(nameof(Serializers))]
+    public async Task NotEquals_ListMember_ExcludesDocumentsWhoseOnlyElementIsEqual(IJsonSerializer jsonSerializer, string label)
+    {
+        using var db = await SeedAsync(jsonSerializer);
+        var first = First.ToString(jsonSerializer.DateTimeSerializationFormat);
+
+        var equalWhen = await IdsAsync(db, FilterBuilder<Doc>.Create().Filter(FilterType.Equals, x => x.Items, x => x.When, First));
+        var notEqualWhen = await IdsAsync(db, FilterBuilder<Doc>.Create().Filter(FilterType.NotEquals, x => x.Items, x => x.When, First));
+        var notEqualWhenText = await IdsAsync(db, FilterBuilder<Doc>.Create().Filter(FilterType.NotEquals, x => x.Items, x => x.When, first));
+        var equalAmountText = await IdsAsync(db, FilterBuilder<Doc>.Create().Filter(FilterType.Equals, x => x.Items, x => x.Amount, "1.5"));
+        var notEqualAmountText = await IdsAsync(db, FilterBuilder<Doc>.Create().Filter(FilterType.NotEquals, x => x.Items, x => x.Amount, "1.5"));
+
+        equalWhen.ShouldBe(new[] { 1 }, label);
+        notEqualWhen.ShouldBe(new[] { 2 }, label);
+        notEqualWhenText.ShouldBe(new[] { 2 }, label);
+        equalAmountText.ShouldBe(new[] { 1 }, label);
+        notEqualAmountText.ShouldBe(new[] { 2 }, label);
+    }
+
+    [TestMethod]
+    [DynamicData(nameof(Serializers))]
     public void NotEquals_ListMemberDateTime_BindsTheSerializerDateForm(IJsonSerializer jsonSerializer, string label)
     {
         var equal = Render(jsonSerializer, FilterBuilder<Doc>.Create().Filter(FilterType.Equals, x => x.Items, x => x.When, First), out var equalParameters);

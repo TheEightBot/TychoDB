@@ -10,13 +10,14 @@
   behaved as `IS NOT NULL` by accident. The scalar path now emits `IS NOT NULL`, exactly as
   `Equals` with null emits `IS NULL` and as the list-member path already did. An empty string is
   present, so it still matches; `NotEquals` with a non-null value still excludes absent members.
+  (#34)
 - **`NotEquals` with a date-time or numeric value could return the row it should exclude.** The
   negation bound a `DateTime`/`DateTimeOffset` as culture-formatted text rather than in the
   serializer's date format, so no stored value ever compared equal and every present row came
   back; and it compared a numeric member without the `CAST(… as NUMERIC)` that `Equals` uses,
   so a text value such as `"2"` on a numeric path excluded nothing. `Equals` and `NotEquals` now
   share one type dispatch with only the operator swapped, on the scalar and list-member paths
-  alike.
+  alike. (#34)
   - **A text value on a date-time path is compared as given.** Passing an already formatted
     string — `Filter(FilterType.NotEquals, x => x.When, "2026-01-01T08:00:00Z")`, until now the
     only way to make `NotEquals` on a date work — keeps returning the same rows. The same value
@@ -26,6 +27,28 @@
     did: both serializers write `double.NaN` as the string `"NaN"`, which `CAST(… as NUMERIC)`
     reads as `0`, so `Filter(FilterType.NotEquals, x => x.Score, 0d)` no longer returns a row
     storing `NaN`.
+  - **On a list member, `NotEquals` matches a document when *some* element differs from the
+    value,** not when no element equals it. That meaning is unchanged, but it is now observable
+    on lists whose elements hold strings or dates.
+- **List-member filters raised `malformed JSON` on documents with string-valued elements.**
+  The `Filter(FilterType, x => x.Items, x => x.Member, value)` overload walks the list with
+  `JSON_TREE` and handed every node it yielded to `JSON_EACH`. `JSON_TREE` yields the scalar
+  leaves as well as the element objects, and a string leaf — any `string` member, or a
+  `DateTime`, which both serializers write as text — is not JSON, so `JSON_EACH` failed with
+  SQLite error 1 `malformed JSON`. `EXISTS` stops at the first element that satisfies the
+  predicate, so the error surfaced only for documents whose elements never match: a filter
+  appeared to work until the store held a row it had to reject. Only object and array nodes
+  are now handed to `JSON_EACH`; scalar leaves contribute nothing, and nested lists of objects
+  are still searched. Present since the overload was introduced. (#35)
+  - **A string member whose text is JSON no longer matches as if it were an element.** A
+    string leaf that happened to parse — `Note = "{\"Amount\":99}"` — was searched like a list
+    element, so `Filter(FilterType.Equals, x => x.Items, x => x.Amount, 99)` returned a document
+    with no such element. Stored text can no longer decide which documents a list-member
+    filter matches, or which `DeleteObjectsAsync` removes.
+  - **Lists of strings can be filtered on their own values.**
+    `Filter(FilterType.Equals, x => x.Tags, x => x, "red")` raised the same `malformed JSON`
+    for any document it had to reject. It now returns the documents holding the value, as the
+    same call over a list of numbers or booleans already did.
 
 ## 5.3.0 — 2026-09-02
 

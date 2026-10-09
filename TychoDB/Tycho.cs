@@ -298,11 +298,11 @@ public class Tycho : IDisposable
     }
 
     /// <summary>
-    /// Runs <c>PRAGMA optimize(0x10002)</c>, the form SQLite recommends for a
-    /// long-lived connection at open: it checks every table, not just those already
-    /// queried, and re-analyzes any whose indexes lack statistics or whose row count
-    /// moved by an order of magnitude, so expression indexes over JSON_EXTRACT keep
-    /// being chosen. Otherwise a no-op.
+    /// Runs <c>PRAGMA optimize(0x10002)</c> when a connection closes: it checks every
+    /// table, not just those already queried, and re-analyzes any whose indexes lack
+    /// statistics or whose row count moved by an order of magnitude, so expression
+    /// indexes over JSON_EXTRACT keep being chosen. Otherwise a no-op. The open-time
+    /// counterpart is <see cref="RefreshStatistics"/>.
     /// <para>
     /// The mask leaves out the temporary <c>analysis_limit</c> the default form
     /// applies. Statistics must be read from the whole of each index: the general
@@ -312,11 +312,7 @@ public class Tycho : IDisposable
     /// inside one key and credits every key with hundreds. The planner then prefers
     /// the general index and reads every row of the type on each lookup.
     /// </para>
-    /// <para>
-    /// Called both when opening and when closing a connection. The open-time call
-    /// covers a mobile app that connects once and never cleanly disconnects.
-    /// </para>
-    /// Best-effort: failures never block connect or teardown.
+    /// Best-effort: failures never block teardown.
     /// </summary>
     private static void RunOptimize(SqliteConnection connection)
     {
@@ -329,6 +325,43 @@ public class Tycho : IDisposable
         catch
         {
             // Advisory only — ignore failures during teardown.
+        }
+    }
+
+    /// <summary>
+    /// Gathers planner statistics for a freshly opened connection, which covers a
+    /// mobile app that connects once and never cleanly disconnects. A store stamped
+    /// with <see cref="Queries.FullStatisticsUserVersion"/> gets the same
+    /// <c>PRAGMA optimize(0x10002)</c> as <see cref="RunOptimize"/>; a store written by
+    /// an earlier release gets one full <c>ANALYZE</c>, because the sampled rows those
+    /// releases wrote are neither missing nor stale by SQLite's rules and would
+    /// otherwise persist. Best-effort: failures never block connect.
+    /// </summary>
+    private static void RefreshStatistics(SqliteConnection connection)
+    {
+        try
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = Queries.UserVersion;
+            long userVersion = command.ExecuteScalar() is long version ? version : 0L;
+
+            if (userVersion < Queries.FullStatisticsUserVersion)
+            {
+                command.CommandText = Queries.Analyze;
+                command.ExecuteNonQuery();
+
+                command.CommandText = Queries.StampFullStatistics;
+                command.ExecuteNonQuery();
+            }
+            else
+            {
+                command.CommandText = Queries.PragmaOptimize;
+                command.ExecuteNonQuery();
+            }
+        }
+        catch
+        {
+            // Statistics are an optimization, not a correctness requirement.
         }
     }
 
@@ -2993,7 +3026,7 @@ public class Tycho : IDisposable
 
                     command.ExecuteNonQuery();
 
-                    RunOptimize(conn);
+                    RefreshStatistics(conn);
                 },
                 _persistConnection);
 
@@ -3024,7 +3057,7 @@ public class Tycho : IDisposable
 
             command.ExecuteNonQuery();
 
-            RunOptimize(connection);
+            RefreshStatistics(connection);
 
             return connection;
         }

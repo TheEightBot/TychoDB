@@ -499,8 +499,10 @@ This matters for how they behave:
 - **Statistics are refreshed** with a full `ANALYZE` after an index is created, so a
   new index is usable by the very next query, and `PRAGMA optimize(0x10002)` runs on
   connect and disconnect to re-analyze tables whose statistics are missing or stale.
-  Statistics are never sampled: a sample of the type-ordered general index sees only
-  the smallest types and would make the planner prefer it over a partial index.
+  A store written by 5.3.1 or earlier gets one full `ANALYZE` on its first connect, to
+  replace the sampled statistics those versions wrote. Statistics are never sampled: a
+  sample of the type-ordered general index sees only the smallest types and would make
+  the planner prefer it over a partial index.
 
 Index names are scoped per type, so the same name can be reused for different types
 (including two types that share a short name in different namespaces).

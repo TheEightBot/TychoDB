@@ -133,6 +133,42 @@ public class PlannerStatisticsTests
         AssertPartialIndexChosen(dbFile);
     }
 
+    [TestMethod]
+    public async Task Connect_RepairsSampledStatisticsLeftByAnEarlierRelease()
+    {
+        var (path, dbName) = NewDbPath();
+        var dbFile = Path.Combine(path, dbName);
+
+        await SeedIndexedStore(path, dbName);
+        LeaveSampledStatistics(dbFile);
+        ExplainGroupLookup(dbFile).ShouldContain("idx_jsonvalue_fulltypename_partition", Case.Sensitive);
+
+        using (var db = await BuildDb2(path, dbName).ConnectAsync())
+        {
+            (await db.ReadObjectsAsync<WideModel>(filter: GroupFilter())).Count().ShouldBe(RowsPerGroup);
+        }
+
+        ReadUserVersion(dbFile).ShouldBe((long)Queries.FullStatisticsUserVersion);
+        AssertPartialIndexChosen(dbFile);
+    }
+
+    [TestMethod]
+    public async Task Connect_DoesNotLowerAHigherUserVersion()
+    {
+        var (path, dbName) = NewDbPath();
+        var dbFile = Path.Combine(path, dbName);
+
+        await SeedIndexedStore(path, dbName);
+        SetUserVersion(dbFile, 7);
+
+        using (var db = await BuildDb2(path, dbName).ConnectAsync())
+        {
+            await db.CreateIndexAsync<WideModel>(x => x.Seq, "seq_idx");
+        }
+
+        ReadUserVersion(dbFile).ShouldBe(7L);
+    }
+
     // ---------- assertions ----------
     private static void AssertPartialIndexChosen(string dbFile)
     {
@@ -234,7 +270,47 @@ public class PlannerStatisticsTests
         return command.ExecuteScalar() is not null;
     }
 
+    private static long ReadUserVersion(string dbFile)
+    {
+        using var conn = OpenInspection(dbFile);
+        using var command = conn.CreateCommand();
+        command.CommandText = "PRAGMA user_version";
+        return (long)command.ExecuteScalar();
+    }
+
+    private static void SetUserVersion(string dbFile, int value)
+    {
+        using var conn = OpenInspection(dbFile);
+        using var command = conn.CreateCommand();
+
+#pragma warning disable CA2100 // A test-chosen integer literal.
+        command.CommandText = "PRAGMA user_version = " + value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+#pragma warning restore CA2100
+
+        command.ExecuteNonQuery();
+    }
+
     // ---------- seeding ----------
+    private static async Task SeedIndexedStore(string path, string dbName)
+    {
+        using (var db = await BuildDb(path, dbName).ConnectAsync())
+        {
+            await db.WriteObjectsAsync(WideRows(), x => x.Key);
+            await db.CreateIndexAsync<WideModel>(x => x.GroupId, IndexName);
+        }
+
+        SeedSmallTypes(Path.Combine(path, dbName));
+    }
+
+    /// <summary>Leaves what 5.3.1 left: statistics sampled at 400 rows, and no version stamp.</summary>
+    private static void LeaveSampledStatistics(string dbFile)
+    {
+        using var conn = OpenInspection(dbFile);
+        using var command = conn.CreateCommand();
+        command.CommandText = "PRAGMA analysis_limit = 400; ANALYZE; PRAGMA user_version = 0;";
+        command.ExecuteNonQuery();
+    }
+
     private static List<WideModel> WideRows()
     {
         var rows = new List<WideModel>(WideRowCount);

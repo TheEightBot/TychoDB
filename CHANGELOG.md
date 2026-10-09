@@ -23,6 +23,11 @@
   (plain `PRAGMA optimize`, even after `analysis_limit = 0`, capped at 2,000 rows and
   mis-ranked the indexes the same way); once statistics are current it is a no-op. A full
   `ANALYZE` took 3.2 s on the 1.68M-row store and 17.5 s on an upgraded 2.2 GB store.
+  A store written by an earlier 5.x release already holds sampled rows, which
+  `PRAGMA optimize` never revisits (nothing is missing and nothing has grown), so the first
+  connect of such a store runs one full `ANALYZE` and stamps it with `PRAGMA user_version = 1`
+  (a higher value is never lowered). If an earlier release writes to the store after that,
+  its sampled rows return and are not detected.
 
 ## 5.3.1 — 2026-10-05
 

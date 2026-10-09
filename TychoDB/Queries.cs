@@ -569,6 +569,17 @@ internal static class Queries
     // produce the same mis-ranking.
     public const string Analyze = "PRAGMA analysis_limit = 0; ANALYZE;";
 
+    // PRAGMA user_version of a store whose statistics were gathered in full at least
+    // once. A store written by an earlier 5.x release reads 0 and may hold sampled
+    // rows, which PRAGMA optimize never revisits (nothing is missing and nothing has
+    // grown), so the first connect runs Analyze instead of PragmaOptimize. Written
+    // only when the stored value is lower, so a higher version is never lowered.
+    public const int FullStatisticsUserVersion = 1;
+
+    public const string UserVersion = "PRAGMA user_version;";
+
+    public const string StampFullStatistics = "PRAGMA user_version = 1;";
+
     // SQLite's recommended form for a long-lived connection: check every table and
     // re-analyze those that need it, without the temporary analysis_limit the default
     // mask (0xfffe, bit 0x10) applies. A no-op when statistics are current.

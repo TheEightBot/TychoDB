@@ -502,7 +502,11 @@ This matters for how they behave:
   A store written by 5.3.1 or earlier gets one full `ANALYZE` on its first connect, to
   replace the sampled statistics those versions wrote. Statistics are never sampled: a
   sample of the type-ordered general index sees only the smallest types and would make
-  the planner prefer it over a partial index.
+  the planner prefer it over a partial index. Together with dropping the redundant
+  indexes 4.x created, that connect-time work can stall the first launch of a large
+  upgraded store for 10–30 s; pass `autoOptimize: false` to skip it (and the `ANALYZE`
+  after `CreateIndex`) and call `Optimize()` / `OptimizeAsync()` from a background thread
+  instead — the same work, ~0 ms when nothing changed.
 
 Index names are scoped per type, so the same name can be reused for different types
 (including two types that share a short name in different namespaces).
@@ -546,6 +550,13 @@ db.Disconnect();
 
 // Or disconnect asynchronously
 await db.DisconnectAsync();
+
+// Open without the one-time upgrade work (dropping indexes left by earlier versions and
+// gathering statistics can stall the first launch of a large store for 10–30 s) and run
+// the same work later, from a background thread — on a loading page, for example
+var deferredDb = new Tycho(dbPath: "./data", jsonSerializer: serializer, autoOptimize: false);
+await deferredDb.ConnectAsync();
+await Task.Run(() => deferredDb.Optimize());
 ```
 
 ### Device Performance Profiles
@@ -598,6 +609,12 @@ await db.DeleteObjectsAsync();
 ```csharp
 // Optimize database performance and reduce size
 db.Cleanup(shrinkMemory: true, vacuum: true);
+
+// Drop indexes left by earlier versions and bring planner statistics up to date; ~0 ms
+// when nothing changed. Holds the connection for the duration — every other operation on
+// this instance waits; 17–24 s on a 2.2 GB store upgraded from 4.x — and runs on the
+// calling thread, so call it from a background thread, never the UI thread.
+await Task.Run(() => db.Optimize());
 ```
 
 ## LINQ Support

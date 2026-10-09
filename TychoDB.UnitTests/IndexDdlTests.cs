@@ -511,6 +511,50 @@ public class IndexDdlTests
     }
 
     [TestMethod]
+    public async Task LegacyDatabase_WithAutoOptimizeOff_KeepsRedundantIndexesUntilOptimize()
+    {
+        var (path, dbName) = NewDbPath();
+        var dbFile = Path.Combine(path, dbName);
+
+        using (var db = await BuildDb(path, dbName).ConnectAsync())
+        {
+            await db.WriteObjectsAsync(SeedData(), x => x.StringProperty);
+        }
+
+        using (var conn = OpenInspection(dbFile))
+        {
+            using var command = conn.CreateCommand();
+            command.CommandText =
+                "CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename ON JsonValue (FullTypeName);" +
+                "CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename ON JsonValue (Key, FullTypeName);" +
+                "CREATE INDEX IF NOT EXISTS idx_streamvalue_key_partition ON StreamValue (Key, Partition);";
+            command.ExecuteNonQuery();
+        }
+
+        // With autoOptimize off, connect leaves the legacy indexes in place; freeing
+        // their pages is Optimize's job.
+        using (await BuildDb2(path, dbName, autoOptimize: false).ConnectAsync())
+        {
+        }
+
+        var kept = ReadIndexDdl(dbFile);
+        kept.ShouldContainKey("idx_jsonvalue_fulltypename");
+        kept.ShouldContainKey("idx_jsonvalue_key_fulltypename");
+        kept.ShouldContainKey("idx_streamvalue_key_partition");
+
+        using (var db = await BuildDb2(path, dbName, autoOptimize: false).ConnectAsync())
+        {
+            db.Optimize();
+        }
+
+        var after = ReadIndexDdl(dbFile);
+        after.ShouldNotContainKey("idx_jsonvalue_fulltypename");
+        after.ShouldNotContainKey("idx_jsonvalue_key_fulltypename");
+        after.ShouldNotContainKey("idx_streamvalue_key_partition");
+        after.ShouldContainKey("idx_jsonvalue_fulltypename_partition");
+    }
+
+    [TestMethod]
     public async Task StringPathSort_CanRequestNumericForm_AndUsesTheNumericIndex()
     {
         var (path, dbName) = NewDbPath();
@@ -714,13 +758,13 @@ public class IndexDdlTests
     }
 
     /// <summary>Reopens an existing database without rebuilding it.</summary>
-    private static Tycho BuildDb2(string path, string dbName)
+    private static Tycho BuildDb2(string path, string dbName, bool autoOptimize = true)
     {
         SqliteConnection.ClearAllPools();
 #if ENCRYPTED
-        return new Tycho(path, Serializer, dbName, DbPassword, rebuildCache: false, requireTypeRegistration: false);
+        return new Tycho(path, Serializer, dbName, DbPassword, rebuildCache: false, requireTypeRegistration: false, autoOptimize: autoOptimize);
 #else
-        return new Tycho(path, Serializer, dbName, rebuildCache: false, requireTypeRegistration: false);
+        return new Tycho(path, Serializer, dbName, rebuildCache: false, requireTypeRegistration: false, autoOptimize: autoOptimize);
 #endif
     }
 

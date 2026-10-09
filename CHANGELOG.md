@@ -29,6 +29,25 @@
   (a higher value is never lowered). If an earlier release writes to the store after that,
   its sampled rows return and are not detected.
 
+### Added
+
+- **`autoOptimize` constructor parameter (default `true`), `Optimize()` and
+  `OptimizeAsync()`.** Connecting a store written by an earlier version does one-time work
+  on the connecting thread: it drops the four redundant indexes 4.x created — most of a
+  10–30 s first launch measured on a large upgraded store, since freeing an index's pages
+  takes time proportional to its size and SQLCipher's default `secure_delete` writes every
+  freed page back — and gathers planner statistics (3.2 s / 17.5 s above when they are
+  missing, sampled or stale). Pass `autoOptimize: false` to connect without either, and
+  without the `ANALYZE` after `CreateIndex` (a new index is chosen by default heuristics
+  until its statistics arrive); then call `Optimize()` or `OptimizeAsync()` when convenient
+  — on a loading page, for example. They do exactly the work connect skipped: the drops,
+  then a full `ANALYZE` on a store written by an earlier release or `PRAGMA optimize(0x10002)`
+  otherwise, so a call with nothing to do costs ~0 ms. They hold the single connection for the
+  duration, so every other operation on the instance waits (17–24 s on the 2.2 GB store), and
+  run on the calling thread — Microsoft.Data.Sqlite executes synchronously, so `OptimizeAsync`
+  alone does not move the work off the caller — so call them from a background thread. The
+  disconnect-time `PRAGMA optimize` is unaffected by the opt-out.
+
 ## 5.3.1 — 2026-10-05
 
 ### Fixed

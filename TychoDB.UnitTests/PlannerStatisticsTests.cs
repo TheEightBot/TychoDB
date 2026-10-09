@@ -169,6 +169,99 @@ public class PlannerStatisticsTests
         ReadUserVersion(dbFile).ShouldBe(7L);
     }
 
+    [TestMethod]
+    public async Task Connect_WithAutoOptimizeOff_LeavesStatisticsUntilOptimizeIsCalled()
+    {
+        var (path, dbName) = NewDbPath();
+        var dbFile = Path.Combine(path, dbName);
+
+        await SeedIndexedStore(path, dbName);
+        LeaveSampledStatistics(dbFile);
+
+        using (var db = await BuildDb2(path, dbName, autoOptimize: false).ConnectAsync())
+        {
+            (await db.ReadObjectsAsync<WideModel>(filter: GroupFilter())).Count().ShouldBe(RowsPerGroup);
+        }
+
+        // Neither connecting nor disposing touched the sampled rows.
+        ReadUserVersion(dbFile).ShouldBe(0L);
+        ExplainGroupLookup(dbFile).ShouldContain("idx_jsonvalue_fulltypename_partition", Case.Sensitive);
+
+        using (var db = await BuildDb2(path, dbName, autoOptimize: false).ConnectAsync())
+        {
+            (await db.OptimizeAsync()).ShouldBeTrue();
+        }
+
+        ReadUserVersion(dbFile).ShouldBe((long)Queries.FullStatisticsUserVersion);
+        AssertPartialIndexChosen(dbFile);
+    }
+
+    [TestMethod]
+    public async Task Optimize_OnStoreFromAnEarlierRelease_GathersFullStatistics()
+    {
+        var (path, dbName) = NewDbPath();
+        var dbFile = Path.Combine(path, dbName);
+
+        await SeedIndexedStore(path, dbName);
+        LeaveSampledStatistics(dbFile);
+
+        using (var db = await BuildDb2(path, dbName, autoOptimize: false).ConnectAsync())
+        {
+            db.Optimize();
+        }
+
+        ReadUserVersion(dbFile).ShouldBe((long)Queries.FullStatisticsUserVersion);
+        AssertPartialIndexChosen(dbFile);
+    }
+
+    [TestMethod]
+    public async Task Optimize_WithCurrentStatistics_LeavesThemAlone()
+    {
+        var (path, dbName) = NewDbPath();
+        var dbFile = Path.Combine(path, dbName);
+
+        await SeedIndexedStore(path, dbName);
+        var before = ReadStatRows(dbFile);
+        before.ShouldNotBeEmpty();
+
+        using (var db = await BuildDb2(path, dbName, autoOptimize: false).ConnectAsync())
+        {
+            db.Optimize();
+        }
+
+        ReadStatRows(dbFile).ShouldBe(before, ignoreOrder: true);
+        AssertPartialIndexChosen(dbFile);
+    }
+
+    [TestMethod]
+    public async Task CreateIndex_WithAutoOptimizeOff_LeavesStatisticsToOptimize()
+    {
+        var (path, dbName) = NewDbPath();
+        var dbFile = Path.Combine(path, dbName);
+
+        using (var db = await BuildDb(path, dbName).ConnectAsync())
+        {
+            await db.WriteObjectsAsync(WideRows(), x => x.Key);
+        }
+
+        SeedSmallTypes(dbFile);
+
+        // The connection closes between operations, so the file can be inspected while
+        // the instance is alive.
+        using var detached = BuildDetachedDb(path, dbName).Connect();
+
+        await detached.CreateIndexAsync<WideModel>(x => x.GroupId, IndexName);
+
+        var physicalName = ReadPhysicalIndexName(dbFile);
+        ReadStat(dbFile, physicalName).ShouldBeNull();
+        ExplainGroupLookup(dbFile).ShouldContain($"USING INDEX {physicalName}", Case.Sensitive);
+        (await detached.ReadObjectsAsync<WideModel>(filter: GroupFilter())).Count().ShouldBe(RowsPerGroup);
+
+        detached.Optimize();
+
+        AssertPartialIndexChosen(dbFile);
+    }
+
     // ---------- assertions ----------
     private static void AssertPartialIndexChosen(string dbFile)
     {
@@ -397,13 +490,28 @@ public class PlannerStatisticsTests
     }
 
     /// <summary>Reopens an existing database without rebuilding it.</summary>
-    private static Tycho BuildDb2(string path, string dbName)
+    private static Tycho BuildDb2(string path, string dbName, bool autoOptimize = true)
     {
         SqliteConnection.ClearAllPools();
 #if ENCRYPTED
-        return new Tycho(path, Serializer, dbName, DbPassword, rebuildCache: false, requireTypeRegistration: false);
+        return new Tycho(path, Serializer, dbName, DbPassword, rebuildCache: false, requireTypeRegistration: false, autoOptimize: autoOptimize);
 #else
-        return new Tycho(path, Serializer, dbName, rebuildCache: false, requireTypeRegistration: false);
+        return new Tycho(path, Serializer, dbName, rebuildCache: false, requireTypeRegistration: false, autoOptimize: autoOptimize);
+#endif
+    }
+
+    /// <summary>
+    /// Reopens an existing database, opted out of automatic maintenance, with a
+    /// connection that closes between operations and no pooling, so an inspection
+    /// connection can read the file while the instance is alive.
+    /// </summary>
+    private static Tycho BuildDetachedDb(string path, string dbName)
+    {
+        SqliteConnection.ClearAllPools();
+#if ENCRYPTED
+        return new Tycho(path, Serializer, dbName, DbPassword, persistConnection: false, rebuildCache: false, requireTypeRegistration: false, useConnectionPooling: false, autoOptimize: false);
+#else
+        return new Tycho(path, Serializer, dbName, persistConnection: false, rebuildCache: false, requireTypeRegistration: false, useConnectionPooling: false, autoOptimize: false);
 #endif
     }
 

@@ -46,15 +46,6 @@ internal static class Queries
         CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename_partition
         ON JsonValue (FullTypeName, Partition);
 
-        -- Shed indexes that earlier versions created and that duplicate either the
-        -- primary-key autoindex or a prefix of the index above. Each one cost a
-        -- full b-tree of write maintenance on every insert, update and delete while
-        -- serving no query the remaining indexes cannot. Idempotent and cheap.
-        DROP INDEX IF EXISTS idx_jsonvalue_fulltypename;
-        DROP INDEX IF EXISTS idx_jsonvalue_key_fulltypename;
-        DROP INDEX IF EXISTS idx_jsonvalue_key_fulltypename_partition;
-        DROP INDEX IF EXISTS idx_streamvalue_key_partition;
-
         CREATE TABLE IF NOT EXISTS StreamValue
         (
             Key             TEXT NOT NULL,
@@ -74,6 +65,21 @@ internal static class Queries
         );
         """;
 
+    // Indexes earlier versions created that duplicate either the primary-key autoindex
+    // or a prefix of idx_jsonvalue_fulltypename_partition. Each one costs a full b-tree
+    // of write maintenance on every insert, update and delete while serving no query
+    // the remaining indexes cannot. Idempotent, and a no-op once they are gone; but
+    // freeing their pages on an upgraded store takes time proportional to their size,
+    // so the connect script includes this only when autoOptimize is on (see
+    // Tycho.Optimize).
+    public const string DropLegacyIndexes =
+        """
+        DROP INDEX IF EXISTS idx_jsonvalue_fulltypename;
+        DROP INDEX IF EXISTS idx_jsonvalue_key_fulltypename;
+        DROP INDEX IF EXISTS idx_jsonvalue_key_fulltypename_partition;
+        DROP INDEX IF EXISTS idx_streamvalue_key_partition;
+        """;
+
     // Profile defaults. cache_size is in KiB (negative = KiB, not pages);
     // mmap_size is in bytes; wal_autocheckpoint is in pages.
     private const int MobileCacheSizeKb = 8_000;         // ~8 MB page cache
@@ -91,12 +97,14 @@ internal static class Queries
 
     /// <summary>
     /// Builds the full per-connection setup script (PRAGMAs + schema DDL) for the
-    /// given performance profile, honoring optional cache-size / mmap overrides.
+    /// given performance profile, honoring optional cache-size / mmap overrides, and
+    /// shedding the indexes earlier versions created unless told not to.
     /// </summary>
     public static string BuildConnectionScript(
         TychoPerformanceProfile profile,
         int? cacheSizeKbOverride = null,
-        long? mmapSizeBytesOverride = null)
+        long? mmapSizeBytesOverride = null,
+        bool dropLegacyIndexes = true)
     {
         bool desktop = profile == TychoPerformanceProfile.Desktop;
 
@@ -105,7 +113,7 @@ internal static class Queries
         int walAutocheckpoint = desktop ? DesktopWalAutocheckpoint : MobileWalAutocheckpoint;
         long journalSizeLimit = desktop ? DesktopJournalSizeLimitBytes : MobileJournalSizeLimitBytes;
 
-        var sb = new System.Text.StringBuilder(SharedPragmas.Length + SchemaDdl.Length + 160);
+        var sb = new System.Text.StringBuilder(SharedPragmas.Length + SchemaDdl.Length + DropLegacyIndexes.Length + 160);
         var ic = System.Globalization.CultureInfo.InvariantCulture;
 
         sb.Append(SharedPragmas).Append('\n')
@@ -114,6 +122,11 @@ internal static class Queries
           .Append("PRAGMA wal_autocheckpoint = ").Append(walAutocheckpoint.ToString(ic)).Append(";\n")
           .Append("PRAGMA journal_size_limit = ").Append(journalSizeLimit.ToString(ic)).Append(";\n\n")
           .Append(SchemaDdl);
+
+        if (dropLegacyIndexes)
+        {
+            sb.Append('\n').Append(DropLegacyIndexes);
+        }
 
         return sb.ToString();
     }

@@ -47,6 +47,7 @@ public class Tycho : IDisposable
     private readonly IJsonSerializer _jsonSerializer;
     private readonly bool _persistConnection;
     private readonly bool _requireTypeRegistration;
+    private readonly bool _autoOptimize;
 
     // One rewrite per type, so its divergence verdict is probed once and reused.
     private readonly ConcurrentDictionary<Type, KeyColumnRewrite> _keyColumnRewrites = new();
@@ -104,6 +105,16 @@ public class Tycho : IDisposable
     /// <param name="performanceProfile">Selects device-appropriate SQLite PRAGMA tuning. Default is <see cref="TychoPerformanceProfile.Mobile"/>.</param>
     /// <param name="cacheSizeKb">Optional override for the SQLite page cache size, in KiB. Overrides the profile default.</param>
     /// <param name="mmapSizeBytes">Optional override for the SQLite memory-map size, in bytes (0 disables mmap). Overrides the profile default.</param>
+    /// <param name="autoOptimize">
+    /// Whether this instance maintains the store on its own: at connect it drops the
+    /// redundant indexes 4.x created and gathers planner statistics when the store has
+    /// none, they were sampled by an earlier release, or a table has grown tenfold, and
+    /// it refreshes statistics after <c>CreateIndex</c>. That work runs on the connecting
+    /// thread and can take 10–30 s on a large store upgraded from 4.x; pass false to
+    /// connect without it and call <see cref="Optimize"/> or <see cref="OptimizeAsync"/>
+    /// from a background thread at a convenient time, which does the same work.
+    /// Statistics are still refreshed when the connection closes. Default is true.
+    /// </param>
     public Tycho(
         string dbPath,
         IJsonSerializer jsonSerializer,
@@ -116,7 +127,8 @@ public class Tycho : IDisposable
         int commandTimeout = 30,
         TychoPerformanceProfile performanceProfile = TychoPerformanceProfile.Mobile,
         int? cacheSizeKb = null,
-        long? mmapSizeBytes = null)
+        long? mmapSizeBytes = null,
+        bool autoOptimize = true)
     {
         SQLitePCL.Batteries_V2.Init();
 
@@ -153,7 +165,8 @@ public class Tycho : IDisposable
         _dbConnectionString = connectionStringBuilder.ToString();
         _persistConnection = persistConnection;
         _requireTypeRegistration = requireTypeRegistration;
-        _connectionScript = Queries.BuildConnectionScript(performanceProfile, cacheSizeKb, mmapSizeBytes);
+        _autoOptimize = autoOptimize;
+        _connectionScript = Queries.BuildConnectionScript(performanceProfile, cacheSizeKb, mmapSizeBytes, autoOptimize);
     }
 
     /// <summary>
@@ -341,27 +354,36 @@ public class Tycho : IDisposable
     {
         try
         {
-            using var command = connection.CreateCommand();
-            command.CommandText = Queries.UserVersion;
-            long userVersion = command.ExecuteScalar() is long version ? version : 0L;
-
-            if (userVersion < Queries.FullStatisticsUserVersion)
-            {
-                command.CommandText = Queries.Analyze;
-                command.ExecuteNonQuery();
-
-                command.CommandText = Queries.StampFullStatistics;
-                command.ExecuteNonQuery();
-            }
-            else
-            {
-                command.CommandText = Queries.PragmaOptimize;
-                command.ExecuteNonQuery();
-            }
+            GatherStatistics(connection);
         }
         catch
         {
             // Statistics are an optimization, not a correctness requirement.
+        }
+    }
+
+    /// <summary>
+    /// The work of <see cref="RefreshStatistics"/>, letting failures propagate so that
+    /// <see cref="Optimize"/> reports them.
+    /// </summary>
+    private static void GatherStatistics(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = Queries.UserVersion;
+        long userVersion = command.ExecuteScalar() is long version ? version : 0L;
+
+        if (userVersion < Queries.FullStatisticsUserVersion)
+        {
+            command.CommandText = Queries.Analyze;
+            command.ExecuteNonQuery();
+
+            command.CommandText = Queries.StampFullStatistics;
+            command.ExecuteNonQuery();
+        }
+        else
+        {
+            command.CommandText = Queries.PragmaOptimize;
+            command.ExecuteNonQuery();
         }
     }
 
@@ -2278,7 +2300,7 @@ public class Tycho : IDisposable
     /// with no DDL and no ANALYZE.
     /// </para>
     /// </summary>
-    private static bool ExecuteCreateIndex(SqliteConnection conn, IndexDefinition definition)
+    private static bool ExecuteCreateIndex(SqliteConnection conn, IndexDefinition definition, bool analyze)
     {
         using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
 
@@ -2326,14 +2348,20 @@ public class Tycho : IDisposable
 
         // Refresh planner statistics outside the transaction so the index just
         // created is usable by the very next query rather than only after a
-        // Disconnect. Advisory: a failure here must not fail index creation.
-        try
+        // Disconnect. Advisory: a failure here must not fail index creation. An
+        // instance that opted out of automatic maintenance leaves this to Optimize;
+        // until then the planner estimates the new index by default heuristics,
+        // which still favor it.
+        if (analyze)
         {
-            ExecuteNonQuery(conn, Queries.Analyze);
-        }
-        catch
-        {
-            // Statistics are an optimization, not a correctness requirement.
+            try
+            {
+                ExecuteNonQuery(conn, Queries.Analyze);
+            }
+            catch
+            {
+                // Statistics are an optimization, not a correctness requirement.
+            }
         }
 
         return true;
@@ -2410,8 +2438,8 @@ public class Tycho : IDisposable
         _connection
             .WithConnectionBlock(
                 _connectionGate,
-                definition,
-                static (conn, state) => ExecuteCreateIndex(conn, state),
+                (definition, analyze: _autoOptimize),
+                static (conn, state) => ExecuteCreateIndex(conn, state.definition, state.analyze),
                 _persistConnection);
 
         return this;
@@ -2436,8 +2464,8 @@ public class Tycho : IDisposable
         return _connection
             .WithConnectionBlockAsync(
                 _connectionGate,
-                definition,
-                static (conn, state) => ExecuteCreateIndex(conn, state),
+                (definition, analyze: _autoOptimize),
+                static (conn, state) => ExecuteCreateIndex(conn, state.definition, state.analyze),
                 _persistConnection,
                 cancellationToken);
     }
@@ -2678,6 +2706,60 @@ public class Tycho : IDisposable
                     return results;
                 },
                 _persistConnection);
+    }
+
+    /// <summary>
+    /// Does the maintenance connecting does on its own when <c>autoOptimize</c> is on:
+    /// drops the redundant indexes earlier versions created, then gathers planner
+    /// statistics — a full <c>ANALYZE</c> on a store written by an earlier release,
+    /// otherwise <c>PRAGMA optimize(0x10002)</c>, which re-analyzes only tables whose
+    /// indexes lack statistics or whose row count moved tenfold. With nothing to do it
+    /// costs ~0 ms, so calling it on every launch is fine.
+    /// <para>
+    /// Holds the database's single connection for the duration, so every other
+    /// operation on this instance waits: the first run on a 2.2 GB store upgraded from
+    /// 4.x took 17–24 s, and a re-analysis 3.2 s on a 1.68M-row store. The work runs on
+    /// the calling thread — Microsoft.Data.Sqlite executes synchronously, so
+    /// <see cref="OptimizeAsync"/> does not move it off the caller by itself — and must
+    /// not be called from a UI thread.
+    /// </para>
+    /// </summary>
+    public void Optimize()
+    {
+        ArgumentNullException.ThrowIfNull(_connection);
+
+        _connection
+            .WithConnectionBlock(
+                _connectionGate,
+                static conn => OptimizeStore(conn),
+                _persistConnection);
+    }
+
+    /// <summary>
+    /// Asynchronously does what <see cref="Optimize"/> does, with the same cost. It
+    /// holds the database's single connection for the duration and runs on the calling
+    /// thread — Microsoft.Data.Sqlite executes synchronously, so this method does not
+    /// move the work off the caller by itself — and must not be called from a UI thread.
+    /// </summary>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing true when the store was optimized.</returns>
+    public ValueTask<bool> OptimizeAsync(CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(_connection);
+
+        return _connection
+            .WithConnectionBlockAsync(
+                _connectionGate,
+                static conn => OptimizeStore(conn),
+                _persistConnection,
+                cancellationToken);
+    }
+
+    private static bool OptimizeStore(SqliteConnection conn)
+    {
+        ExecuteNonQuery(conn, Queries.DropLegacyIndexes);
+        GatherStatistics(conn);
+        return true;
     }
 
     /// <summary>
@@ -3008,8 +3090,8 @@ public class Tycho : IDisposable
         connection
             .WithConnectionBlock(
                 _connectionGate,
-                _connectionScript,
-                static (conn, script) =>
+                (script: _connectionScript, autoOptimize: _autoOptimize),
+                static (conn, state) =>
                 {
                     conn.Open();
 
@@ -3021,12 +3103,15 @@ public class Tycho : IDisposable
                     // Profile PRAGMAs + idempotent schema/index creation. Composed from
                     // library constants and numeric profile values only (no user input).
 #pragma warning disable CA2100
-                    command.CommandText = script;
+                    command.CommandText = state.script;
 #pragma warning restore CA2100
 
                     command.ExecuteNonQuery();
 
-                    RefreshStatistics(conn);
+                    if (state.autoOptimize)
+                    {
+                        RefreshStatistics(conn);
+                    }
                 },
                 _persistConnection);
 
@@ -3057,7 +3142,10 @@ public class Tycho : IDisposable
 
             command.ExecuteNonQuery();
 
-            RefreshStatistics(connection);
+            if (_autoOptimize)
+            {
+                RefreshStatistics(connection);
+            }
 
             return connection;
         }

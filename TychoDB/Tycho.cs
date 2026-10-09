@@ -298,14 +298,23 @@ public class Tycho : IDisposable
     }
 
     /// <summary>
-    /// Runs SQLite's recommended <c>PRAGMA optimize</c> (bounded by
-    /// <c>analysis_limit</c>), refreshing query-planner statistics so indexes —
-    /// including expression indexes over JSON_EXTRACT — keep being chosen.
+    /// Runs <c>PRAGMA optimize(0x10002)</c>, the form SQLite recommends for a
+    /// long-lived connection at open: it checks every table, not just those already
+    /// queried, and re-analyzes any whose indexes lack statistics or whose row count
+    /// moved by an order of magnitude, so expression indexes over JSON_EXTRACT keep
+    /// being chosen. Otherwise a no-op.
     /// <para>
-    /// Called both when opening and when closing a connection. The open-time call is
-    /// what SQLite recommends for long-lived processes: a mobile app that connects
-    /// once and never cleanly disconnects would otherwise run its entire lifetime on
-    /// default planner heuristics.
+    /// The mask leaves out the temporary <c>analysis_limit</c> the default form
+    /// applies. Statistics must be read from the whole of each index: the general
+    /// <c>(FullTypeName, Partition)</c> index is ordered by type name, so a sample of
+    /// its first few hundred entries sees only the smallest types and credits every
+    /// type with a handful of rows, while a sample of a per-type partial index sits
+    /// inside one key and credits every key with hundreds. The planner then prefers
+    /// the general index and reads every row of the type on each lookup.
+    /// </para>
+    /// <para>
+    /// Called both when opening and when closing a connection. The open-time call
+    /// covers a mobile app that connects once and never cleanly disconnects.
     /// </para>
     /// Best-effort: failures never block connect or teardown.
     /// </summary>
@@ -314,7 +323,7 @@ public class Tycho : IDisposable
         try
         {
             using var command = connection.CreateCommand();
-            command.CommandText = "PRAGMA analysis_limit = 400; PRAGMA optimize;";
+            command.CommandText = Queries.PragmaOptimize;
             command.ExecuteNonQuery();
         }
         catch
@@ -2287,7 +2296,7 @@ public class Tycho : IDisposable
         // Disconnect. Advisory: a failure here must not fail index creation.
         try
         {
-            ExecuteNonQuery(conn, Queries.AnalyzeBounded);
+            ExecuteNonQuery(conn, Queries.Analyze);
         }
         catch
         {

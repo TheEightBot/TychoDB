@@ -1,5 +1,29 @@
 # Changelog
 
+## 5.3.2 (unreleased)
+
+### Fixed
+
+- **Indexed lookups on a large type read and parsed every row of the type, because
+  planner statistics were sampled.** The `PRAGMA optimize` run on connect and disconnect
+  and the `ANALYZE` run after `CreateIndex` set `analysis_limit = 400`, so SQLite read only
+  the first ~400 entries of each index. The general `(FullTypeName, Partition)` index is
+  ordered by type name, and the types that sort first are typically tiny, so its sample
+  credited every type with a handful of rows (`81` on a 1.68M-row store whose largest type
+  held 586,986 rows), while the sample of a per-type partial index sat inside a single key
+  and credited every key with hundreds (`401`, against a true 542). The planner therefore
+  preferred the general index over the partial one: 82–366 ms per lookup, 310 ms for a
+  missing key, against 0–1 ms with full statistics or none at all. Results were identical
+  throughout; only speed changed. Statistics are no longer sampled: `CreateIndex` runs a
+  full `ANALYZE` (analyzing the new index alone would mix a full row with whatever the other
+  indexes hold and can mis-rank them the same way), and connect/disconnect run
+  `PRAGMA optimize(0x10002)`, SQLite's documented form for long-lived connections. It checks
+  every table and re-analyzes those whose statistics are missing or whose row count moved
+  by an order of magnitude, without the temporary analysis limit the default form applies
+  (plain `PRAGMA optimize`, even after `analysis_limit = 0`, capped at 2,000 rows and
+  mis-ranked the indexes the same way); once statistics are current it is a no-op. A full
+  `ANALYZE` took 3.2 s on the 1.68M-row store and 17.5 s on an upgraded 2.2 GB store.
+
 ## 5.3.1 — 2026-10-05
 
 ### Fixed

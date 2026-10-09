@@ -561,9 +561,18 @@ internal static class Queries
     public static string DropIndex(string fullIndexName)
         => string.Concat(DropIndexPrefix, fullIndexName, ";");
 
-    // Bounded ANALYZE: refreshes sqlite_stat1 so a newly created index is usable by
-    // the very next query. analysis_limit caps the work so this stays cheap on mobile.
-    public const string AnalyzeBounded = "PRAGMA analysis_limit = 400; ANALYZE;";
+    // Full ANALYZE: refreshes sqlite_stat1 so a newly created index is usable by the
+    // very next query. Every index is read in full: a sample (analysis_limit) of the
+    // type-ordered general index sees only the smallest types and makes the planner
+    // prefer it over the per-type partial index (see Tycho.RunOptimize). ANALYZE of
+    // the new index alone would mix a full row with whatever the others hold and can
+    // produce the same mis-ranking.
+    public const string Analyze = "PRAGMA analysis_limit = 0; ANALYZE;";
+
+    // SQLite's recommended form for a long-lived connection: check every table and
+    // re-analyze those that need it, without the temporary analysis_limit the default
+    // mask (0xfffe, bit 0x10) applies. A no-op when statistics are current.
+    public const string PragmaOptimize = "PRAGMA optimize(0x10002);";
 
     public const string SelectIndexMetadata =
         """

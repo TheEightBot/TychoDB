@@ -332,13 +332,21 @@ public class Tycho : IDisposable
         try
         {
             using var command = connection.CreateCommand();
-            command.CommandText = Queries.PragmaOptimize;
-            command.ExecuteNonQuery();
+            OptimizeIfNeeded(command);
         }
         catch
         {
             // Advisory only — ignore failures during teardown.
         }
+    }
+
+    private static void OptimizeIfNeeded(SqliteCommand command)
+    {
+        command.CommandText = Queries.TouchJsonValue;
+        command.ExecuteScalar();
+
+        command.CommandText = Queries.PragmaOptimize;
+        command.ExecuteNonQuery();
     }
 
     /// <summary>
@@ -382,8 +390,7 @@ public class Tycho : IDisposable
         }
         else
         {
-            command.CommandText = Queries.PragmaOptimize;
-            command.ExecuteNonQuery();
+            OptimizeIfNeeded(command);
         }
     }
 

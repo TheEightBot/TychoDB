@@ -27,7 +27,10 @@
   `PRAGMA optimize` never revisits (nothing is missing and nothing has grown), so the first
   connect of such a store runs one full `ANALYZE` and stamps it with `PRAGMA user_version = 1`
   (a higher value is never lowered). If an earlier release writes to the store after that,
-  its sampled rows return and are not detected.
+  its sampled rows return and are not detected. On the Encrypted package (SQLite 3.39.2,
+  which lets `PRAGMA optimize` consider only tables the connection has already queried), a
+  probe read precedes the pragma so that connect, disconnect and `Optimize` behave the same
+  as on the plain build.
 
 ### Added
 

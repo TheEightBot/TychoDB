@@ -598,6 +598,13 @@ internal static class Queries
     // mask (0xfffe, bit 0x10) applies. A no-op when statistics are current.
     public const string PragmaOptimize = "PRAGMA optimize(0x10002);";
 
+    // A planned read of JsonValue, run before PragmaOptimize. SQLite before 3.46 (the
+    // SQLCipher build is 3.39.2) ignores the 0x10000 bit and lets PRAGMA optimize
+    // consider only tables the connection's planner has used, so a connection that
+    // has run no query yet would analyze nothing. One index probe makes every build
+    // behave the same.
+    public const string TouchJsonValue = "SELECT 1 FROM JsonValue WHERE FullTypeName = '' AND Partition = '' LIMIT 1;";
+
     public const string SelectIndexMetadata =
         """
         SELECT PhysicalName, Definition, ShapeVersion

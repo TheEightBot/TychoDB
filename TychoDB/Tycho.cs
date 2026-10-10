@@ -286,7 +286,7 @@ public class Tycho : IDisposable
         {
             if (_connection is not null)
             {
-                RunOptimize(_connection);
+                RefreshStaleStatistics(_connection);
                 _connection.Close();
                 _connection.Dispose();
                 _connection = null;
@@ -305,7 +305,7 @@ public class Tycho : IDisposable
             return;
         }
 
-        RunOptimize(_connection);
+        RefreshStaleStatistics(_connection);
 
         await _connection.CloseAsync().ConfigureAwait(false);
         await _connection.DisposeAsync().ConfigureAwait(false);
@@ -314,14 +314,12 @@ public class Tycho : IDisposable
     }
 
     /// <summary>
-    /// Runs <c>PRAGMA optimize(0x10002)</c> when a connection closes: it checks every
-    /// table, not just those already queried, and re-analyzes any whose indexes lack
-    /// statistics or whose row count moved by an order of magnitude, so expression
-    /// indexes over JSON_EXTRACT keep being chosen. Otherwise a no-op. The open-time
-    /// counterpart is <see cref="RefreshStatistics"/>.
+    /// Re-analyzes when a connection closes if <see cref="StatisticsNeedRefresh"/> says
+    /// so, so expression indexes over JSON_EXTRACT keep being chosen by an app that
+    /// grew its data this session. The open-time counterpart is
+    /// <see cref="RefreshStatistics"/>.
     /// <para>
-    /// The mask leaves out the temporary <c>analysis_limit</c> the default form
-    /// applies. Statistics must be read from the whole of each index: the general
+    /// Statistics are always read from the whole of each index: the general
     /// <c>(FullTypeName, Partition)</c> index is ordered by type name, so a sample of
     /// its first few hundred entries sees only the smallest types and credits every
     /// type with a handful of rows, while a sample of a per-type partial index sits
@@ -330,12 +328,15 @@ public class Tycho : IDisposable
     /// </para>
     /// Best-effort: failures never block teardown.
     /// </summary>
-    private static void RunOptimize(SqliteConnection connection)
+    private static void RefreshStaleStatistics(SqliteConnection connection)
     {
         try
         {
             using var command = connection.CreateCommand();
-            OptimizeIfNeeded(command);
+            if (StatisticsNeedRefresh(command))
+            {
+                AnalyzeAndStamp(command);
+            }
         }
         catch
         {
@@ -343,23 +344,14 @@ public class Tycho : IDisposable
         }
     }
 
-    private static void OptimizeIfNeeded(SqliteCommand command)
-    {
-        command.CommandText = Queries.TouchJsonValue;
-        command.ExecuteScalar();
-
-        command.CommandText = Queries.PragmaOptimize;
-        command.ExecuteNonQuery();
-    }
-
     /// <summary>
     /// Gathers planner statistics for a freshly opened connection, which covers a
-    /// mobile app that connects once and never cleanly disconnects. A store stamped
-    /// with <see cref="Queries.FullStatisticsUserVersion"/> gets the same
-    /// <c>PRAGMA optimize(0x10002)</c> as <see cref="RunOptimize"/>; a store written by
-    /// an earlier release gets one full <c>ANALYZE</c>, because the sampled rows those
-    /// releases wrote are neither missing nor stale by SQLite's rules and would
-    /// otherwise persist. Best-effort: failures never block connect.
+    /// mobile app that connects once and never cleanly disconnects. A store written by
+    /// an earlier release gets one full <c>ANALYZE</c> and the stamp, because the
+    /// sampled rows those releases wrote look complete and current; a store stamped
+    /// with <see cref="Queries.FullStatisticsUserVersion"/> is re-analyzed only when
+    /// <see cref="StatisticsNeedRefresh"/> says so. Best-effort: failures never block
+    /// connect.
     /// </summary>
     private static void RefreshStatistics(SqliteConnection connection)
     {
@@ -380,21 +372,65 @@ public class Tycho : IDisposable
     private static void GatherStatistics(SqliteConnection connection)
     {
         using var command = connection.CreateCommand();
-        command.CommandText = Queries.UserVersion;
-        long userVersion = command.ExecuteScalar() is long version ? version : 0L;
 
-        if (userVersion < FullStatisticsUserVersion)
+        if (ReadUserVersion(command) >= FullStatisticsUserVersion && !StatisticsNeedRefresh(command))
         {
-            command.CommandText = Queries.Analyze;
-            command.ExecuteNonQuery();
+            return;
+        }
 
+        AnalyzeAndStamp(command);
+    }
+
+    /// <summary>
+    /// True when an index of <c>JsonValue</c> has no <c>sqlite_stat1</c> row, or the
+    /// exact row count differs tenfold from the count recorded when statistics were
+    /// gathered. SQLite's own <c>PRAGMA optimize</c> decides this from the cell counts
+    /// down the leftmost path of the table's b-tree, which a few large documents at
+    /// the lowest rowids make an order of magnitude wrong, so it re-analyzed such
+    /// stores on every call; the exact count is a scan of the covering general index.
+    /// </summary>
+    private static bool StatisticsNeedRefresh(SqliteCommand command)
+    {
+        command.CommandText = Queries.HasStatTable;
+        if (command.ExecuteScalar() is null)
+        {
+            return true;
+        }
+
+        command.CommandText = Queries.SelectStatisticsCoverage;
+        using var reader = command.ExecuteReader();
+        if (!reader.Read() || reader.GetInt64(0) > 0 || reader.IsDBNull(1))
+        {
+            return true;
+        }
+
+        long recordedRows = reader.GetInt64(1);
+        long rows = reader.GetInt64(2);
+
+        if (recordedRows == 0)
+        {
+            return rows > 0;
+        }
+
+        return rows >= recordedRows * 10 || rows <= recordedRows / 10;
+    }
+
+    private static void AnalyzeAndStamp(SqliteCommand command)
+    {
+        command.CommandText = Queries.Analyze;
+        command.ExecuteNonQuery();
+
+        if (ReadUserVersion(command) < FullStatisticsUserVersion)
+        {
             command.CommandText = Queries.StampFullStatistics;
             command.ExecuteNonQuery();
         }
-        else
-        {
-            OptimizeIfNeeded(command);
-        }
+    }
+
+    private static long ReadUserVersion(SqliteCommand command)
+    {
+        command.CommandText = Queries.UserVersion;
+        return command.ExecuteScalar() is long version ? version : 0L;
     }
 
     public void Backup(SqliteConnection backupDatabaseConnection)
@@ -2722,10 +2758,10 @@ public class Tycho : IDisposable
     /// <summary>
     /// Does the maintenance connecting does on its own when <c>autoOptimize</c> is on:
     /// drops the redundant indexes earlier versions created, then gathers planner
-    /// statistics — a full <c>ANALYZE</c> on a store written by an earlier release,
-    /// otherwise <c>PRAGMA optimize(0x10002)</c>, which re-analyzes only tables whose
-    /// indexes lack statistics or whose row count moved tenfold. With nothing to do it
-    /// costs ~0 ms, so calling it on every launch is fine.
+    /// statistics — a full <c>ANALYZE</c> on a store written by an earlier release, or
+    /// when an index has no statistics, or when the row count moved tenfold since they
+    /// were gathered; otherwise nothing. With nothing to do it costs an exact row count
+    /// (36 ms on 1.8M rows), so calling it on every launch is fine.
     /// <para>
     /// Holds the database's single connection for the duration, so every other
     /// operation on this instance waits: the first run on a 2.2 GB store upgraded from
@@ -3035,7 +3071,7 @@ public class Tycho : IDisposable
         {
             if (_connection is not null)
             {
-                RunOptimize(_connection);
+                RefreshStaleStatistics(_connection);
             }
 
             _connectionGate?.Dispose();

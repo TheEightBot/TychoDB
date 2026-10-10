@@ -577,34 +577,43 @@ internal static class Queries
     // Full ANALYZE: refreshes sqlite_stat1 so a newly created index is usable by the
     // very next query. Every index is read in full: a sample (analysis_limit) of the
     // type-ordered general index sees only the smallest types and makes the planner
-    // prefer it over the per-type partial index (see Tycho.RunOptimize). ANALYZE of
-    // the new index alone would mix a full row with whatever the others hold and can
-    // produce the same mis-ranking.
+    // prefer it over the per-type partial index (see Tycho.RefreshStatistics). ANALYZE
+    // of the new index alone would mix a full row with whatever the others hold and
+    // can produce the same mis-ranking.
     public const string Analyze = "PRAGMA analysis_limit = 0; ANALYZE;";
 
     // PRAGMA user_version of a store whose statistics were gathered in full at least
     // once. A store written by an earlier 5.x release reads 0 and may hold sampled
-    // rows, which PRAGMA optimize never revisits (nothing is missing and nothing has
-    // grown), so the first connect runs Analyze instead of PragmaOptimize. Written
-    // only when the stored value is lower, so a higher version is never lowered. The
-    // literal is the single source of both the stamp and the value compared against.
+    // rows, which look complete and current (nothing is missing and nothing has
+    // grown), so the first connect runs Analyze unconditionally. Written only when the
+    // stored value is lower, so a higher version is never lowered. The literal is the
+    // single source of both the stamp and the value compared against.
     public const string FullStatisticsUserVersion = "1";
 
     public const string UserVersion = "PRAGMA user_version;";
 
     public const string StampFullStatistics = "PRAGMA user_version = " + FullStatisticsUserVersion + ";";
 
-    // SQLite's recommended form for a long-lived connection: check every table and
-    // re-analyze those that need it, without the temporary analysis_limit the default
-    // mask (0xfffe, bit 0x10) applies. A no-op when statistics are current.
-    public const string PragmaOptimize = "PRAGMA optimize(0x10002);";
+    public const string HasStatTable = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_stat1';";
 
-    // A planned read of JsonValue, run before PragmaOptimize. SQLite before 3.46 (the
-    // SQLCipher build is 3.39.2) ignores the 0x10000 bit and lets PRAGMA optimize
-    // consider only tables the connection's planner has used, so a connection that
-    // has run no query yet would analyze nothing. One index probe makes every build
-    // behave the same.
-    public const string TouchJsonValue = "SELECT 1 FROM JsonValue WHERE FullTypeName = '' AND Partition = '' LIMIT 1;";
+    // Whether JsonValue's statistics need gathering again: indexes without a
+    // sqlite_stat1 row, the row count recorded when statistics were gathered (the
+    // first number of the general index's row), and the exact row count now. SQLite's
+    // PRAGMA optimize makes this decision from the cell counts down the leftmost path
+    // of the table's b-tree, which a few large documents at the lowest rowids make an
+    // order of magnitude wrong, so it re-analyzed such stores on every call. The exact
+    // count is a scan of the covering general index: 36 ms on 1.8M rows.
+    public const string SelectStatisticsCoverage =
+        """
+        SELECT
+            (SELECT count(*) FROM sqlite_master AS m
+             WHERE m.type = 'index' AND m.tbl_name = 'JsonValue'
+               AND NOT EXISTS (SELECT 1 FROM sqlite_stat1 AS s WHERE s.idx = m.name)),
+            (SELECT CAST(substr(stat, 1, instr(stat || ' ', ' ') - 1) AS INTEGER)
+             FROM sqlite_stat1
+             WHERE tbl = 'JsonValue' AND idx = 'idx_jsonvalue_fulltypename_partition'),
+            (SELECT count(*) FROM JsonValue);
+        """;
 
     public const string SelectIndexMetadata =
         """

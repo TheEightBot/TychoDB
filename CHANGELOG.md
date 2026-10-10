@@ -16,21 +16,21 @@
   missing key, against 0–1 ms with full statistics or none at all. Results were identical
   throughout; only speed changed. Statistics are no longer sampled: `CreateIndex` runs a
   full `ANALYZE` (analyzing the new index alone would mix a full row with whatever the other
-  indexes hold and can mis-rank them the same way), and connect/disconnect run
-  `PRAGMA optimize(0x10002)`, SQLite's documented form for long-lived connections. It checks
-  every table and re-analyzes those whose statistics are missing or whose row count moved
-  by an order of magnitude, without the temporary analysis limit the default form applies
-  (plain `PRAGMA optimize`, even after `analysis_limit = 0`, capped at 2,000 rows and
-  mis-ranked the indexes the same way); once statistics are current it is a no-op. A full
-  `ANALYZE` took 3.2 s on the 1.68M-row store and 17.5 s on an upgraded 2.2 GB store.
-  A store written by an earlier 5.x release already holds sampled rows, which
-  `PRAGMA optimize` never revisits (nothing is missing and nothing has grown), so the first
-  connect of such a store runs one full `ANALYZE` and stamps it with `PRAGMA user_version = 1`
-  (a higher value is never lowered). If an earlier release writes to the store after that,
-  its sampled rows return and are not detected. On the Encrypted package (SQLite 3.39.2,
-  which lets `PRAGMA optimize` consider only tables the connection has already queried), a
-  probe read precedes the pragma so that connect, disconnect and `Optimize` behave the same
-  as on the plain build.
+  indexes hold and can mis-rank them the same way), and connect and disconnect run a full
+  `ANALYZE` when an index of `JsonValue` has no statistics or the table's exact row count
+  has moved tenfold since they were gathered — otherwise nothing. SQLite's own
+  `PRAGMA optimize` was tried first and rejected twice over: its default form caps the
+  analysis at 2,000 rows (plain `PRAGMA optimize`, even after `analysis_limit = 0`, wrote
+  `2001 501` against `101` and mis-ranked the indexes the same way), and its tenfold check
+  estimates the row count from the cell counts down the leftmost path of the table's
+  b-tree, which a few large documents at the lowest rowids make an order of magnitude
+  wrong: a 2.2 GB production store (1.84M rows, estimated at 174,370) was re-analyzed on
+  every call, 20–30 s each. The exact count is a scan of the covering general index, 36 ms
+  on 1.8M rows. A full `ANALYZE` took 3.2 s on the 1.68M-row store and 17.5 s on the 2.2 GB
+  store. A store written by an earlier 5.x release already holds sampled rows, which look
+  complete and current, so the first connect of such a store runs one full `ANALYZE` and
+  stamps it with `PRAGMA user_version = 1` (a higher value is never lowered). If an earlier
+  release writes to the store after that, its sampled rows return and are not detected.
 
 ### Added
 
@@ -44,12 +44,13 @@
   without the `ANALYZE` after `CreateIndex` (a new index is chosen by default heuristics
   until its statistics arrive); then call `Optimize()` or `OptimizeAsync()` when convenient
   — on a loading page, for example. They do exactly the work connect skipped: the drops,
-  then a full `ANALYZE` on a store written by an earlier release or `PRAGMA optimize(0x10002)`
-  otherwise, so a call with nothing to do costs ~0 ms. They hold the single connection for the
+  then a full `ANALYZE` on a store written by an earlier release, when an index has no
+  statistics, or when the row count moved tenfold — otherwise nothing, so a call with nothing
+  to do costs an exact row count (36 ms on 1.8M rows). They hold the single connection for the
   duration, so every other operation on the instance waits (17–24 s on the 2.2 GB store), and
   run on the calling thread — Microsoft.Data.Sqlite executes synchronously, so `OptimizeAsync`
   alone does not move the work off the caller — so call them from a background thread. The
-  disconnect-time `PRAGMA optimize` is unaffected by the opt-out.
+  disconnect-time check is unaffected by the opt-out.
 
 ## 5.3.1 — 2026-10-05
 

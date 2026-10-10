@@ -43,6 +43,11 @@ public class PlannerStatisticsTests
     private const string IndexName = "group_idx";
     private const string LookupGroup = "G0042";
 
+    // Documents large enough that each fills a leaf page of its own. Stored first, they
+    // occupy the lowest rowids and the leftmost leaf of the table's b-tree.
+    private const int LargeDocumentCount = 8;
+    private const int LargeDocumentPayloadLength = 3000;
+
     private static readonly IJsonSerializer Serializer = new NewtonsoftJsonSerializer();
 
     private static readonly long StampedUserVersion =
@@ -55,6 +60,13 @@ public class PlannerStatisticsTests
         public string GroupId { get; set; }
 
         public int Seq { get; set; }
+    }
+
+    public class LargeModel
+    {
+        public string Key { get; set; }
+
+        public string Payload { get; set; }
     }
 
     [TestMethod]
@@ -265,6 +277,89 @@ public class PlannerStatisticsTests
         AssertPartialIndexChosen(dbFile);
     }
 
+    [TestMethod]
+    public async Task Connect_WithLargeDocumentsFirst_DoesNotGatherStatisticsEveryLaunch()
+    {
+        var (path, dbName) = NewDbPath();
+        var dbFile = Path.Combine(path, dbName);
+
+        using (var db = await BuildDb(path, dbName).ConnectAsync())
+        {
+            await db.WriteObjectsAsync(LargeDocuments(), x => x.Key);
+            await db.WriteObjectsAsync(WideRows(), x => x.Key);
+            await db.CreateIndexAsync<WideModel>(x => x.GroupId, IndexName);
+        }
+
+#if !ENCRYPTED
+        // SQLite 3.46+ estimates the row count from the cell counts down the leftmost
+        // path of the b-tree; the large documents make that estimate an order of
+        // magnitude low, so its PRAGMA optimize would re-analyze on every connect.
+        SqliteWouldReanalyze(dbFile).ShouldBeTrue();
+#endif
+
+        PlantSentinelStatRow(dbFile);
+
+        for (int launch = 0; launch < 2; launch++)
+        {
+            using (var db = await BuildDb2(path, dbName).ConnectAsync())
+            {
+                (await db.ReadObjectsAsync<WideModel>(filter: GroupFilter())).Count().ShouldBe(RowsPerGroup);
+            }
+        }
+
+        HasSentinelStatRow(dbFile).ShouldBeTrue();
+        AssertPartialIndexChosen(dbFile);
+    }
+
+    [TestMethod]
+    public async Task Connect_GathersStatisticsAgain_OnlyAfterTenfoldGrowth()
+    {
+        var (path, dbName) = NewDbPath();
+        var dbFile = Path.Combine(path, dbName);
+
+        await SeedIndexedStore(path, dbName);
+        PlantSentinelStatRow(dbFile);
+
+        // Six times the rows: not enough.
+        SeedWideRowsDirectly(dbFile, WideRowCount, 5 * WideRowCount);
+
+        using (await BuildDb2(path, dbName).ConnectAsync())
+        {
+        }
+
+        HasSentinelStatRow(dbFile).ShouldBeTrue();
+
+        // Eleven times the rows: statistics are gathered again, over everything.
+        SeedWideRowsDirectly(dbFile, 6 * WideRowCount, 5 * WideRowCount);
+
+        using (await BuildDb2(path, dbName).ConnectAsync())
+        {
+        }
+
+        HasSentinelStatRow(dbFile).ShouldBeFalse();
+        ReadStat(dbFile, ReadPhysicalIndexName(dbFile))
+            .ShouldBe($"{11 * WideRowCount} {11 * WideRowCount} {11 * RowsPerGroup}");
+    }
+
+    [TestMethod]
+    public async Task Connect_GathersStatisticsAgain_AfterTenfoldShrink()
+    {
+        var (path, dbName) = NewDbPath();
+        var dbFile = Path.Combine(path, dbName);
+
+        await SeedIndexedStore(path, dbName);
+        PlantSentinelStatRow(dbFile);
+        DeleteWideRowsFrom(dbFile, WideRowCount / 20);
+
+        using (await BuildDb2(path, dbName).ConnectAsync())
+        {
+        }
+
+        HasSentinelStatRow(dbFile).ShouldBeFalse();
+        ReadStat(dbFile, ReadPhysicalIndexName(dbFile))
+            .ShouldBe($"{WideRowCount / 20} {WideRowCount / 20} {RowsPerGroup / 20}");
+    }
+
     // ---------- assertions ----------
     private static void AssertPartialIndexChosen(string dbFile)
     {
@@ -366,6 +461,48 @@ public class PlannerStatisticsTests
         return command.ExecuteScalar() is not null;
     }
 
+    private static bool SqliteWouldReanalyze(string dbFile)
+    {
+        using var conn = OpenInspection(dbFile);
+        using var command = conn.CreateCommand();
+
+        command.CommandText = "SELECT 1 FROM JsonValue WHERE FullTypeName = '' AND Partition = '' LIMIT 1";
+        command.ExecuteScalar();
+
+        command.CommandText = "PRAGMA optimize(0x10003)";
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            if (reader.GetString(0).Contains("ANALYZE", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// A whole-database ANALYZE empties sqlite_stat1 before rewriting it, so this row
+    /// survives only if none ran. It names StreamValue because SQLite reads a row whose
+    /// index it does not know as that table's row count, which must not touch JsonValue.
+    /// </summary>
+    private static void PlantSentinelStatRow(string dbFile)
+    {
+        using var conn = OpenInspection(dbFile);
+        using var command = conn.CreateCommand();
+        command.CommandText = "INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES ('StreamValue', 'idx_sentinel', '1 1')";
+        command.ExecuteNonQuery();
+    }
+
+    private static bool HasSentinelStatRow(string dbFile)
+    {
+        using var conn = OpenInspection(dbFile);
+        using var command = conn.CreateCommand();
+        command.CommandText = "SELECT count(*) FROM sqlite_stat1 WHERE idx = 'idx_sentinel'";
+        return (long)command.ExecuteScalar() == 1;
+    }
+
     private static long ReadUserVersion(string dbFile)
     {
         using var conn = OpenInspection(dbFile);
@@ -447,32 +584,47 @@ public class PlannerStatisticsTests
         transaction.Commit();
     }
 
-    private static void SeedWideRowsDirectly(string dbFile)
+    private static List<LargeModel> LargeDocuments()
     {
-        using var conn = OpenInspection(dbFile);
-        using var transaction = conn.BeginTransaction();
-        using var insert = conn.CreateCommand();
-        insert.Transaction = transaction;
-        insert.CommandText =
-            "INSERT INTO JsonValue (Key, FullTypeName, Partition, Data) " +
-            "VALUES ($key, $fullTypeName, '', json_object('Key', $key, 'GroupId', $groupId, 'Seq', $seq))";
-
-        var key = insert.Parameters.Add("$key", SqliteType.Text);
-        var fullTypeName = insert.Parameters.Add("$fullTypeName", SqliteType.Text);
-        var groupId = insert.Parameters.Add("$groupId", SqliteType.Text);
-        var seq = insert.Parameters.Add("$seq", SqliteType.Integer);
-
-        fullTypeName.Value = typeof(WideModel).FullName;
-
-        foreach (var row in WideRows())
+        var payload = new string('x', LargeDocumentPayloadLength);
+        var rows = new List<LargeModel>(LargeDocumentCount);
+        for (int i = 0; i < LargeDocumentCount; i++)
         {
-            key.Value = row.Key;
-            groupId.Value = row.GroupId;
-            seq.Value = row.Seq;
-            insert.ExecuteNonQuery();
+            rows.Add(new LargeModel { Key = $"large-{i}", Payload = payload });
         }
 
-        transaction.Commit();
+        return rows;
+    }
+
+    /// <summary>Writes wide rows with the same shape as <see cref="WideRows"/>, for Seq values from..from + count - 1.</summary>
+    private static void SeedWideRowsDirectly(string dbFile, int from = 0, int count = WideRowCount)
+    {
+        using var conn = OpenInspection(dbFile);
+        using var insert = conn.CreateCommand();
+        insert.CommandText =
+            """
+            WITH RECURSIVE s(i) AS (SELECT $from UNION ALL SELECT i + 1 FROM s WHERE i < $from + $count - 1)
+            INSERT INTO JsonValue (Key, FullTypeName, Partition, Data)
+            SELECT 'wide-' || i, $fullTypeName, '',
+                   json_object('Key', 'wide-' || i, 'GroupId', 'G' || printf('%04d', i % $groups), 'Seq', i)
+            FROM s
+            """;
+        insert.Parameters.AddWithValue("$from", from);
+        insert.Parameters.AddWithValue("$count", count);
+        insert.Parameters.AddWithValue("$groups", GroupCount);
+        insert.Parameters.AddWithValue("$fullTypeName", typeof(WideModel).FullName);
+        insert.ExecuteNonQuery();
+    }
+
+    private static void DeleteWideRowsFrom(string dbFile, int seq)
+    {
+        using var conn = OpenInspection(dbFile);
+        using var delete = conn.CreateCommand();
+        delete.CommandText =
+            "DELETE FROM JsonValue WHERE FullTypeName = $fullTypeName AND JSON_EXTRACT(Data, '$.Seq') >= $seq";
+        delete.Parameters.AddWithValue("$fullTypeName", typeof(WideModel).FullName);
+        delete.Parameters.AddWithValue("$seq", seq);
+        delete.ExecuteNonQuery();
     }
 
     // ---------- plumbing ----------

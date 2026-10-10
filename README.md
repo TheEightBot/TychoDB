@@ -497,8 +497,9 @@ This matters for how they behave:
   the old one, and indexes created by older versions are migrated away automatically.
   Declaring your indexes on every app launch is the intended usage.
 - **Statistics are refreshed** with a full `ANALYZE` after an index is created, so a
-  new index is usable by the very next query, and `PRAGMA optimize(0x10002)` runs on
-  connect and disconnect to re-analyze tables whose statistics are missing or stale.
+  new index is usable by the very next query, and connect and disconnect re-analyze
+  when an index has no statistics or the row count has moved tenfold since they were
+  gathered.
   A store written by 5.3.1 or earlier gets one full `ANALYZE` on its first connect, to
   replace the sampled statistics those versions wrote. Statistics are never sampled: a
   sample of the type-ordered general index sees only the smallest types and would make

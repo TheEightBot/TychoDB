@@ -81,20 +81,21 @@ plan. The tests bind the parameters; the CLI script uses literals.
 
 ## Fix
 
-- `Tycho.RunOptimize` runs `PRAGMA optimize(0x10002)` with no `analysis_limit`, at connect
-  and at disconnect/dispose alike. `0x10002` is SQLite's documented form for a long-lived
-  connection at open: check every table, re-analyze those whose indexes lack statistics or
-  whose row count moved by an order of magnitude, and leave out bit `0x10`. The disconnect
-  call needs the same mask; the default mask's 2,000-row cap reproduces the problem.
+- At connect and at disconnect/dispose, Tycho re-analyzes when an index of `JsonValue` has
+  no `sqlite_stat1` row or the exact `count(*)` differs tenfold from the row count recorded
+  in the general index's row, and otherwise does nothing. The branch first used SQLite's
+  `PRAGMA optimize(0x10002)` for this (the documented form for a long-lived connection at
+  open, without the default mask's 2,000-row cap, which reproduces the problem); the
+  follow-up below explains why it was replaced.
 - After `CreateIndex`, `Queries.Analyze` runs `PRAGMA analysis_limit = 0; ANALYZE;`. It is
   a full `ANALYZE`, not `ANALYZE <new index>`: a full row next to a sampled or stale row
   for the general index still mis-ranks. It is an explicit `ANALYZE`, not `PRAGMA optimize`:
   on 3.39.2 `optimize` only considers tables the planner has used on the connection, so it
   would do nothing right after `CREATE INDEX`.
-- A store written by an earlier 5.x release already holds sampled rows, which
-  `optimize(0x10002)` never revisits (repro case 6). On its first connect, Tycho runs one
-  full `ANALYZE` and stamps the store with `PRAGMA user_version = 1` (unused by Tycho until
-  now); later connects use `optimize(0x10002)`.
+- A store written by an earlier 5.x release already holds sampled rows, which look complete
+  and current (repro case 6). On its first connect, Tycho runs one full `ANALYZE` and stamps
+  the store with `PRAGMA user_version = 1` (unused by Tycho until now); later connects use
+  the check above.
 - `autoOptimize: false` connects without the one-time upgrade work — the four
   `DROP INDEX IF EXISTS` for the indexes 4.x created (now `Queries.DropLegacyIndexes`,
   appended to the connect script only when the option is on) and the statistics step above
@@ -114,13 +115,10 @@ plan. The tests bind the parameters; the CLI script uses literals.
 | real, 1.68M rows, fresh | 2.9 s | 3.2 s |
 | real, 2.2 GB, upgraded from 4.4.2 | — | 17.5 s |
 
-The full `ANALYZE` runs after each new index, as before. `PRAGMA optimize(0x10002)` runs
-`ANALYZE` only when an index has no statistics or a table's row count moved tenfold, and is
-otherwise a no-op (0.000 s measured), so the connect-time cost is paid once per store, not
-per launch. SQLite before 3.46 — the Encrypted package's 3.39.2 — ignores the `0x10000`
-bit and lets `PRAGMA optimize` consider only tables the connection's planner has used, so
-a probe read of `JsonValue` precedes the pragma; without it a fresh connection analyzed
-nothing there, which the opt-out test caught on the Encrypted build.
+The full `ANALYZE` runs after each new index, as before. Connect, disconnect and `Optimize`
+run it only when an index has no statistics or the exact row count moved tenfold; otherwise
+they cost the exact count, a scan of the covering general index (36 ms warm on 1.8M rows),
+so the analysis is paid once per store, not per launch.
 
 ## Decisions
 
@@ -144,24 +142,49 @@ nothing there, which the opt-out test caught on the Encrypted build.
    the duration (17–24 s on the 2.2 GB store the first time, ~0 ms afterwards) and run on
    the calling thread — Microsoft.Data.Sqlite executes synchronously, so the async form
    alone does not move the work off the caller — so apps call them from a background
-   thread. The disconnect-time `optimize(0x10002)` is not affected by the opt-out.
-   `CreateIndex` itself drops a per-type legacy index and builds the partial one, which is
-   the third piece of an upgrade stall and already under the app's control through when it
-   calls it.
+   thread. The disconnect-time check is not affected by the opt-out. `CreateIndex` itself
+   drops a per-type legacy index and builds the partial one, which is the third piece of an
+   upgrade stall and already under the app's control through when it calls it.
 3. **Review outcomes.** The opted-out `CreateIndex` no longer analyzes (an opted-out app
    declaring N indexes would otherwise pay N full analyzes, ~2× each while the legacy
    indexes survive); `user_version` is stamped only when lower, so a higher store version
    is never clobbered; `OptimizeAsync` stays inline like every other async method, with the
    threading caveat documented. Not changed: disconnect stays automatic (a mid-`ANALYZE`
-   kill rolls back and the next disconnect retries), and the opted-out connect skips
-   `optimize(0x10002)` entirely — on a stamped store it is usually a no-op, but when it is
-   not it is the multi-second `ANALYZE` the opt-out exists to avoid, and the launch-page
-   `Optimize` covers it.
+   kill rolls back and the next disconnect retries), and the opted-out connect skips the
+   statistics check entirely — when it is not a no-op it is the multi-second `ANALYZE` the
+   opt-out exists to avoid, and the launch-page `Optimize` covers it.
 4. **Known limitation.** The stamp is never invalidated, so if a 5.3.1-or-earlier build
    writes to the store after 5.3.2 has stamped it, its sampled rows return and nothing
    detects them; `Optimize` sees a stamped store with nothing missing and nothing grown.
    Downgrades are out of scope; a `force` flag on `Optimize` would be the remedy if it is
    ever needed.
+
+## Follow-up: SQLite's tenfold check
+
+Testing the branch against four real device stores, MoveScoutPro found one (1.84M rows,
+2.2 GB) on which `PRAGMA optimize(0x10002)` ran a full `ANALYZE` on every call — 2–30 s
+each, at connect and disconnect by default and at every `Optimize()` otherwise — although
+every index had a full, current statistics row. The pragma's tenfold check estimates the
+table's row count from the cell counts down the leftmost path of its b-tree; on that store
+the path was 265 × 329 × 2 = 174,370 against 1,841,652 rows, a ratio just past the
+threshold, because the lowest rowids hold large documents and the leftmost leaf has two
+cells. Reproduced synthetically (`docs/planner-statistics-row-estimate.sql`): a few ~3 KB
+documents inserted before 540,000 small rows make `PRAGMA optimize(0x10003)` report
+`ANALYZE "main"."JsonValue"` immediately after a full `ANALYZE`, and `optimize(0x10002)`
+re-runs it on every call. Any store can drift into this layout as rows are rewritten.
+
+Tycho now decides staleness itself and no longer calls `PRAGMA optimize`: a stamped store
+is re-analyzed only when an index of `JsonValue` has no `sqlite_stat1` row or the exact
+`count(*)` differs tenfold from the row count recorded in the general index's row. The
+count is a scan of the covering general index, 36 ms warm on 1.8M rows. This also removed
+the probe read that SQLite 3.39.2 (the Encrypted package) had needed, since that build lets
+`PRAGMA optimize` consider only tables the connection's planner has already used. The
+regression test stores eight large documents first, plants a sentinel `sqlite_stat1` row
+(a whole-database `ANALYZE` empties the table before rewriting it), connects twice, and
+checks the sentinel survived; two more tests check that the analysis does run after a
+tenfold growth or shrink and not after a sixfold one. One thing learned on the way: SQLite
+reads a `sqlite_stat1` row whose index it does not know as that table's row count, so the
+sentinel names `StreamValue`, not `JsonValue`.
 
 ## Considered and not done
 
@@ -190,5 +213,8 @@ removes by never sampling and never refreshing one index without the others.
   `IndexDdlTests` showing the opt-out keeps the legacy indexes until `Optimize` drops
   them); and the probe read that makes `PRAGMA optimize` consider `JsonValue` on SQLite
   3.39.2, which that observing test caught on the Encrypted build.
-- Final state: 372 passed, 4 skipped, 0 failed in both configurations (Debug 2 s,
-  Encrypted 1 m 26 s).
+- Replacing `PRAGMA optimize` with Tycho's own staleness check added three tests (large
+  documents first; tenfold growth, with a sixfold growth as the negative; tenfold shrink)
+  and removed the need for the 3.39.2 probe.
+- Final state: 375 passed, 4 skipped, 0 failed in both configurations (Debug 5 s,
+  Encrypted 1 m 36 s).

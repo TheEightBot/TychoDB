@@ -36,6 +36,9 @@ public class Tycho : IDisposable
     /// </summary>
     private const int IndexShapeVersion = 2;
 
+    private static readonly long FullStatisticsUserVersion =
+        long.Parse(Queries.FullStatisticsUserVersion, System.Globalization.CultureInfo.InvariantCulture);
+
     // Parameter cache - reuse parameter objects to reduce allocations
     private readonly ConcurrentDictionary<string, SqliteParameter> _parameterCache = new();
 
@@ -380,7 +383,7 @@ public class Tycho : IDisposable
         command.CommandText = Queries.UserVersion;
         long userVersion = command.ExecuteScalar() is long version ? version : 0L;
 
-        if (userVersion < Queries.FullStatisticsUserVersion)
+        if (userVersion < FullStatisticsUserVersion)
         {
             command.CommandText = Queries.Analyze;
             command.ExecuteNonQuery();
@@ -2356,8 +2359,9 @@ public class Tycho : IDisposable
         // Refresh planner statistics outside the transaction so the index just
         // created is usable by the very next query rather than only after a
         // Disconnect. Advisory: a failure here must not fail index creation. An
-        // instance that opted out of automatic maintenance leaves this to Optimize;
-        // until then the planner estimates the new index by default heuristics,
+        // instance that opted out of automatic maintenance skips this; its new index
+        // gets statistics at Optimize or at the next Disconnect, whichever comes
+        // first, and until then the planner estimates it by default heuristics,
         // which still favor it.
         if (analyze)
         {

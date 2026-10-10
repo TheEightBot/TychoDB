@@ -586,12 +586,13 @@ internal static class Queries
     // once. A store written by an earlier 5.x release reads 0 and may hold sampled
     // rows, which PRAGMA optimize never revisits (nothing is missing and nothing has
     // grown), so the first connect runs Analyze instead of PragmaOptimize. Written
-    // only when the stored value is lower, so a higher version is never lowered.
-    public const int FullStatisticsUserVersion = 1;
+    // only when the stored value is lower, so a higher version is never lowered. The
+    // literal is the single source of both the stamp and the value compared against.
+    public const string FullStatisticsUserVersion = "1";
 
     public const string UserVersion = "PRAGMA user_version;";
 
-    public const string StampFullStatistics = "PRAGMA user_version = 1;";
+    public const string StampFullStatistics = "PRAGMA user_version = " + FullStatisticsUserVersion + ";";
 
     // SQLite's recommended form for a long-lived connection: check every table and
     // re-analyze those that need it, without the temporary analysis_limit the default

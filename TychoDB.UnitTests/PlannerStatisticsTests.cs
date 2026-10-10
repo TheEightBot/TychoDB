@@ -45,6 +45,9 @@ public class PlannerStatisticsTests
 
     private static readonly IJsonSerializer Serializer = new NewtonsoftJsonSerializer();
 
+    private static readonly long StampedUserVersion =
+        long.Parse(Queries.FullStatisticsUserVersion, System.Globalization.CultureInfo.InvariantCulture);
+
     public class WideModel
     {
         public string Key { get; set; }
@@ -148,7 +151,7 @@ public class PlannerStatisticsTests
             (await db.ReadObjectsAsync<WideModel>(filter: GroupFilter())).Count().ShouldBe(RowsPerGroup);
         }
 
-        ReadUserVersion(dbFile).ShouldBe((long)Queries.FullStatisticsUserVersion);
+        ReadUserVersion(dbFile).ShouldBe(StampedUserVersion);
         AssertPartialIndexChosen(dbFile);
     }
 
@@ -192,7 +195,7 @@ public class PlannerStatisticsTests
             (await db.OptimizeAsync()).ShouldBeTrue();
         }
 
-        ReadUserVersion(dbFile).ShouldBe((long)Queries.FullStatisticsUserVersion);
+        ReadUserVersion(dbFile).ShouldBe(StampedUserVersion);
         AssertPartialIndexChosen(dbFile);
     }
 
@@ -210,7 +213,7 @@ public class PlannerStatisticsTests
             db.Optimize();
         }
 
-        ReadUserVersion(dbFile).ShouldBe((long)Queries.FullStatisticsUserVersion);
+        ReadUserVersion(dbFile).ShouldBe(StampedUserVersion);
         AssertPartialIndexChosen(dbFile);
     }
 

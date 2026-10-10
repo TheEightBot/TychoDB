@@ -36,9 +36,6 @@ public class Tycho : IDisposable
     /// </summary>
     private const int IndexShapeVersion = 2;
 
-    private static readonly long FullStatisticsUserVersion =
-        long.Parse(Queries.FullStatisticsUserVersion, System.Globalization.CultureInfo.InvariantCulture);
-
     // Parameter cache - reuse parameter objects to reduce allocations
     private readonly ConcurrentDictionary<string, SqliteParameter> _parameterCache = new();
 
@@ -50,7 +47,6 @@ public class Tycho : IDisposable
     private readonly IJsonSerializer _jsonSerializer;
     private readonly bool _persistConnection;
     private readonly bool _requireTypeRegistration;
-    private readonly bool _autoOptimize;
 
     // One rewrite per type, so its divergence verdict is probed once and reused.
     private readonly ConcurrentDictionary<Type, KeyColumnRewrite> _keyColumnRewrites = new();
@@ -109,14 +105,11 @@ public class Tycho : IDisposable
     /// <param name="cacheSizeKb">Optional override for the SQLite page cache size, in KiB. Overrides the profile default.</param>
     /// <param name="mmapSizeBytes">Optional override for the SQLite memory-map size, in bytes (0 disables mmap). Overrides the profile default.</param>
     /// <param name="autoOptimize">
-    /// Whether this instance maintains the store on its own: at connect it drops the
-    /// redundant indexes 4.x created and gathers planner statistics when the store has
-    /// none, they were sampled by an earlier release, or a table has grown tenfold, and
-    /// it refreshes statistics after <c>CreateIndex</c>. That work runs on the connecting
-    /// thread and can take 10–30 s on a large store upgraded from 4.x; pass false to
-    /// connect without it and call <see cref="Optimize"/> or <see cref="OptimizeAsync"/>
-    /// from a background thread at a convenient time, which does the same work.
-    /// Statistics are still refreshed when the connection closes. Default is true.
+    /// Whether connecting drops the redundant indexes 4.x created. Freeing their pages
+    /// runs on the connecting thread and took 10–30 s on a large store upgraded from
+    /// 4.x; pass false to connect without it and call <see cref="Optimize"/> or
+    /// <see cref="OptimizeAsync"/> from a background thread at a convenient time, which
+    /// does the same work. Default is true.
     /// </param>
     public Tycho(
         string dbPath,
@@ -168,7 +161,6 @@ public class Tycho : IDisposable
         _dbConnectionString = connectionStringBuilder.ToString();
         _persistConnection = persistConnection;
         _requireTypeRegistration = requireTypeRegistration;
-        _autoOptimize = autoOptimize;
         _connectionScript = Queries.BuildConnectionScript(performanceProfile, cacheSizeKb, mmapSizeBytes, autoOptimize);
     }
 
@@ -286,7 +278,6 @@ public class Tycho : IDisposable
         {
             if (_connection is not null)
             {
-                RefreshStaleStatistics(_connection);
                 _connection.Close();
                 _connection.Dispose();
                 _connection = null;
@@ -305,132 +296,10 @@ public class Tycho : IDisposable
             return;
         }
 
-        RefreshStaleStatistics(_connection);
-
         await _connection.CloseAsync().ConfigureAwait(false);
         await _connection.DisposeAsync().ConfigureAwait(false);
 
         _connection = null;
-    }
-
-    /// <summary>
-    /// Re-analyzes when a connection closes if <see cref="StatisticsNeedRefresh"/> says
-    /// so, so expression indexes over JSON_EXTRACT keep being chosen by an app that
-    /// grew its data this session. The open-time counterpart is
-    /// <see cref="RefreshStatistics"/>.
-    /// <para>
-    /// Statistics are always read from the whole of each index: the general
-    /// <c>(FullTypeName, Partition)</c> index is ordered by type name, so a sample of
-    /// its first few hundred entries sees only the smallest types and credits every
-    /// type with a handful of rows, while a sample of a per-type partial index sits
-    /// inside one key and credits every key with hundreds. The planner then prefers
-    /// the general index and reads every row of the type on each lookup.
-    /// </para>
-    /// Best-effort: failures never block teardown.
-    /// </summary>
-    private static void RefreshStaleStatistics(SqliteConnection connection)
-    {
-        try
-        {
-            using var command = connection.CreateCommand();
-            if (StatisticsNeedRefresh(command))
-            {
-                AnalyzeAndStamp(command);
-            }
-        }
-        catch
-        {
-            // Advisory only — ignore failures during teardown.
-        }
-    }
-
-    /// <summary>
-    /// Gathers planner statistics for a freshly opened connection, which covers a
-    /// mobile app that connects once and never cleanly disconnects. A store written by
-    /// an earlier release gets one full <c>ANALYZE</c> and the stamp, because the
-    /// sampled rows those releases wrote look complete and current; a store stamped
-    /// with <see cref="Queries.FullStatisticsUserVersion"/> is re-analyzed only when
-    /// <see cref="StatisticsNeedRefresh"/> says so. Best-effort: failures never block
-    /// connect.
-    /// </summary>
-    private static void RefreshStatistics(SqliteConnection connection)
-    {
-        try
-        {
-            GatherStatistics(connection);
-        }
-        catch
-        {
-            // Statistics are an optimization, not a correctness requirement.
-        }
-    }
-
-    /// <summary>
-    /// The work of <see cref="RefreshStatistics"/>, letting failures propagate so that
-    /// <see cref="Optimize"/> reports them.
-    /// </summary>
-    private static void GatherStatistics(SqliteConnection connection)
-    {
-        using var command = connection.CreateCommand();
-
-        if (ReadUserVersion(command) >= FullStatisticsUserVersion && !StatisticsNeedRefresh(command))
-        {
-            return;
-        }
-
-        AnalyzeAndStamp(command);
-    }
-
-    /// <summary>
-    /// True when an index of <c>JsonValue</c> has no <c>sqlite_stat1</c> row, or the
-    /// exact row count differs tenfold from the count recorded when statistics were
-    /// gathered. SQLite's own <c>PRAGMA optimize</c> decides this from the cell counts
-    /// down the leftmost path of the table's b-tree, which a few large documents at
-    /// the lowest rowids make an order of magnitude wrong, so it re-analyzed such
-    /// stores on every call; the exact count is a scan of the covering general index.
-    /// </summary>
-    private static bool StatisticsNeedRefresh(SqliteCommand command)
-    {
-        command.CommandText = Queries.HasStatTable;
-        if (command.ExecuteScalar() is null)
-        {
-            return true;
-        }
-
-        command.CommandText = Queries.SelectStatisticsCoverage;
-        using var reader = command.ExecuteReader();
-        if (!reader.Read() || reader.GetInt64(0) > 0 || reader.IsDBNull(1))
-        {
-            return true;
-        }
-
-        long recordedRows = reader.GetInt64(1);
-        long rows = reader.GetInt64(2);
-
-        if (recordedRows == 0)
-        {
-            return rows > 0;
-        }
-
-        return rows >= recordedRows * 10 || rows <= recordedRows / 10;
-    }
-
-    private static void AnalyzeAndStamp(SqliteCommand command)
-    {
-        command.CommandText = Queries.Analyze;
-        command.ExecuteNonQuery();
-
-        if (ReadUserVersion(command) < FullStatisticsUserVersion)
-        {
-            command.CommandText = Queries.StampFullStatistics;
-            command.ExecuteNonQuery();
-        }
-    }
-
-    private static long ReadUserVersion(SqliteCommand command)
-    {
-        command.CommandText = Queries.UserVersion;
-        return command.ExecuteScalar() is long version ? version : 0L;
     }
 
     public void Backup(SqliteConnection backupDatabaseConnection)
@@ -2343,10 +2212,10 @@ public class Tycho : IDisposable
     /// <para>
     /// Mobile apps typically call CreateIndex on every launch, so the already-current
     /// case must be cheap: it costs one metadata lookup and one sqlite_master probe,
-    /// with no DDL and no ANALYZE.
+    /// with no DDL.
     /// </para>
     /// </summary>
-    private static bool ExecuteCreateIndex(SqliteConnection conn, IndexDefinition definition, bool analyze)
+    private static bool ExecuteCreateIndex(SqliteConnection conn, IndexDefinition definition)
     {
         using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
 
@@ -2390,25 +2259,6 @@ public class Tycho : IDisposable
         {
             transaction.Rollback();
             throw new TychoException($"Failed to Create Index: {definition.PhysicalName}", ex);
-        }
-
-        // Refresh planner statistics outside the transaction so the index just
-        // created is usable by the very next query rather than only after a
-        // Disconnect. Advisory: a failure here must not fail index creation. An
-        // instance that opted out of automatic maintenance skips this; its new index
-        // gets statistics at Optimize or at the next Disconnect, whichever comes
-        // first, and until then the planner estimates it by default heuristics,
-        // which still favor it.
-        if (analyze)
-        {
-            try
-            {
-                ExecuteNonQuery(conn, Queries.Analyze);
-            }
-            catch
-            {
-                // Statistics are an optimization, not a correctness requirement.
-            }
         }
 
         return true;
@@ -2485,8 +2335,8 @@ public class Tycho : IDisposable
         _connection
             .WithConnectionBlock(
                 _connectionGate,
-                (definition, analyze: _autoOptimize),
-                static (conn, state) => ExecuteCreateIndex(conn, state.definition, state.analyze),
+                definition,
+                static (conn, definition) => ExecuteCreateIndex(conn, definition),
                 _persistConnection);
 
         return this;
@@ -2511,8 +2361,8 @@ public class Tycho : IDisposable
         return _connection
             .WithConnectionBlockAsync(
                 _connectionGate,
-                (definition, analyze: _autoOptimize),
-                static (conn, state) => ExecuteCreateIndex(conn, state.definition, state.analyze),
+                definition,
+                static (conn, definition) => ExecuteCreateIndex(conn, definition),
                 _persistConnection,
                 cancellationToken);
     }
@@ -2756,19 +2606,16 @@ public class Tycho : IDisposable
     }
 
     /// <summary>
-    /// Does the maintenance connecting does on its own when <c>autoOptimize</c> is on:
-    /// drops the redundant indexes earlier versions created, then gathers planner
-    /// statistics — a full <c>ANALYZE</c> on a store written by an earlier release, or
-    /// when an index has no statistics, or when the row count moved tenfold since they
-    /// were gathered; otherwise nothing. With nothing to do it costs an exact row count
-    /// (36 ms on 1.8M rows), so calling it on every launch is fine.
+    /// Does what connecting does on its own when <c>autoOptimize</c> is on: drops the
+    /// redundant indexes 4.x created. A no-op once they are gone, so calling it on
+    /// every launch is fine.
     /// <para>
     /// Holds the database's single connection for the duration, so every other
-    /// operation on this instance waits: the first run on a 2.2 GB store upgraded from
-    /// 4.x took 17–24 s, and a re-analysis 3.2 s on a 1.68M-row store. The work runs on
-    /// the calling thread — Microsoft.Data.Sqlite executes synchronously, so
-    /// <see cref="OptimizeAsync"/> does not move it off the caller by itself — and must
-    /// not be called from a UI thread.
+    /// operation on this instance waits: freeing the indexes' pages took 10–30 s on a
+    /// large store upgraded from 4.x. The work runs on the calling thread —
+    /// Microsoft.Data.Sqlite executes synchronously, so <see cref="OptimizeAsync"/>
+    /// does not move it off the caller by itself — and must not be called from a UI
+    /// thread.
     /// </para>
     /// </summary>
     public void Optimize()
@@ -2805,7 +2652,6 @@ public class Tycho : IDisposable
     private static bool OptimizeStore(SqliteConnection conn)
     {
         ExecuteNonQuery(conn, Queries.DropLegacyIndexes);
-        GatherStatistics(conn);
         return true;
     }
 
@@ -3069,11 +2915,6 @@ public class Tycho : IDisposable
 
         if (disposing)
         {
-            if (_connection is not null)
-            {
-                RefreshStaleStatistics(_connection);
-            }
-
             _connectionGate?.Dispose();
             _connection?.Close();
             _connection?.Dispose();
@@ -3137,8 +2978,8 @@ public class Tycho : IDisposable
         connection
             .WithConnectionBlock(
                 _connectionGate,
-                (script: _connectionScript, autoOptimize: _autoOptimize),
-                static (conn, state) =>
+                _connectionScript,
+                static (conn, script) =>
                 {
                     conn.Open();
 
@@ -3150,15 +2991,10 @@ public class Tycho : IDisposable
                     // Profile PRAGMAs + idempotent schema/index creation. Composed from
                     // library constants and numeric profile values only (no user input).
 #pragma warning disable CA2100
-                    command.CommandText = state.script;
+                    command.CommandText = script;
 #pragma warning restore CA2100
 
                     command.ExecuteNonQuery();
-
-                    if (state.autoOptimize)
-                    {
-                        RefreshStatistics(conn);
-                    }
                 },
                 _persistConnection);
 
@@ -3188,11 +3024,6 @@ public class Tycho : IDisposable
 #pragma warning restore CA2100
 
             command.ExecuteNonQuery();
-
-            if (_autoOptimize)
-            {
-                RefreshStatistics(connection);
-            }
 
             return connection;
         }

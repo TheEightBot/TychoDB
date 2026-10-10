@@ -215,7 +215,7 @@ public class IndexDdlTests
     }
 
     [TestMethod]
-    public async Task CreateIndex_RefreshesPlannerStatistics()
+    public async Task CreateIndex_GathersNoPlannerStatistics()
     {
         var (path, dbName) = NewDbPath();
 
@@ -225,12 +225,12 @@ public class IndexDdlTests
             await db.CreateIndexAsync<IndexTestModel>(x => x.LongProperty, "long_idx");
         }
 
-        // Before this bucket sqlite_stat1 did not exist at all, so the planner ran
-        // on default heuristics for the life of the process.
+        // The planner runs on default heuristics, which favor the partial indexes;
+        // see PlannerStatisticsTests for why statistics would only mislead it.
         using var conn = OpenInspection(Path.Combine(path, dbName));
         using var command = conn.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_stat1'";
-        Convert.ToInt32(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture).ShouldBe(1);
+        command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'sqlite_stat%'";
+        Convert.ToInt32(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture).ShouldBe(0);
     }
 
     [TestMethod]
@@ -426,12 +426,9 @@ public class IndexDdlTests
         // bare SCAN/SEARCH assertion cannot (on a small single-type table a scan is
         // genuinely the cheaper plan).
         //
-        // Both sides of the comparison have to run on freshly gathered statistics, so
-        // gather them here rather than inheriting whatever the connection's advisory
-        // PRAGMA optimize happened to do: that pragma's heuristics are version
-        // dependent, and SQLCipher's older SQLite leaves sqlite_stat1 unpopulated
-        // where the plain build fills it in. Without this the baseline would be a
-        // no-statistics plan and the comparison would not be like for like.
+        // Both sides of the comparison have to run on the same full statistics, which
+        // Tycho never gathers, so gather them here; the redundant indexes below are
+        // then analyzed too, and the comparison is like for like.
         Analyze(dbFile);
 
         var planBefore = CorePlans(dbFile);

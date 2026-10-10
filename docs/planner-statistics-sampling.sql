@@ -1,6 +1,7 @@
 -- Sampled ANALYZE (PRAGMA analysis_limit = 400) makes SQLite prefer the general
 -- (FullTypeName, Partition) index over a per-type partial expression index; with no
--- statistics at all, every query shape TychoDB emits picks the right index.
+-- statistics at all, every single-index query shape TychoDB emits picks the right index
+-- (two indexed filters ANDed do not: see planner-statistics-sampling.md).
 --
 -- Usage:  rm -f repro.db repro.db-wal repro.db-shm; sqlite3 repro.db < planner-statistics-sampling.sql
 -- Needs only the sqlite3 CLI (written against 3.51.0). Every row is generated below; no
@@ -77,7 +78,7 @@ SELECT count(*), sum(length(Data)) FROM (SELECT rowid, Data FROM JsonValue WHERE
 
 -- ---------------------------------------------------------------------------
 .print
-.print '== [2] No statistics, as TychoDB connects: DROP TABLE sqlite_stat1; ANALYZE sqlite_master;'
+.print '== [2] No statistics: DROP TABLE sqlite_stat1; ANALYZE sqlite_master;'
 DROP TABLE IF EXISTS sqlite_stat1;
 DROP TABLE IF EXISTS sqlite_stat4;
 ANALYZE sqlite_master;

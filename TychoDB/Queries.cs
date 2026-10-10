@@ -64,16 +64,6 @@ internal static class Queries
             PRIMARY KEY (IndexName, FullTypeName)
         );
 
-        -- The planner chooses the right index for every query TychoDB emits on its
-        -- default heuristics, and statistics only mislead it: a sample of the
-        -- type-ordered general index credits every type with a handful of rows, and
-        -- the planner then reads every row of a type on each indexed lookup. Earlier
-        -- releases gathered them. Whatever an ANALYZE left behind is dropped, and the
-        -- reload makes this connection forget what it read at open; it leaves an empty
-        -- sqlite_stat1 behind.
-        DROP TABLE IF EXISTS sqlite_stat1;
-        DROP TABLE IF EXISTS sqlite_stat4;
-        ANALYZE sqlite_master;
         """;
 
     // Indexes earlier versions created that duplicate either the primary-key autoindex
@@ -584,6 +574,95 @@ internal static class Queries
 
     public static string DropIndex(string fullIndexName)
         => string.Concat(DropIndexPrefix, fullIndexName, ";");
+
+    // ---- Planner statistics ----
+    //
+    // Statistics exist for one decision: ranking two per-type partial indexes against
+    // each other when a query filters on both of their properties. Without a
+    // sqlite_stat1 row for each, the planner cannot tell which is more selective and
+    // takes the one created last; with rows gathered by a *sampled* ANALYZE
+    // (analysis_limit > 0) it is actively misled, because a sample of the type-ordered
+    // general index credits every type with a handful of rows while a sample of a
+    // partial index sits inside one key and credits every key with hundreds, and the
+    // planner then reads every row of the type on each indexed lookup (5.0.1–5.3.1).
+    // So statistics are gathered in full, for the one table that carries expression
+    // indexes, and only when an index is built or found to have none; nothing samples,
+    // and nothing runs at connect once a store has been repaired.
+
+    // Full statistics for JsonValue, then two corrections and a reload. analysis_limit = 0
+    // lifts any limit a caller set on the connection; neither ANALYZE nor a write to
+    // sqlite_stat1 changes schema_version.
+    //
+    // 1. Rows gathered while a type (or the table) was empty read "0 0 0" and are
+    //    removed: the planner does better on its defaults than on "no rows", and a
+    //    missing row is what makes CreateIndex gather statistics again once the type
+    //    has rows.
+    // 2. The general index's row is pinned to "N N/2 N/2". ANALYZE writes the average
+    //    rows per FullTypeName, and that average is wrong for every type in a store
+    //    where one type dominates: taken while few types existed it says a type is the
+    //    whole table and the planner scans instead of seeking, taken over many it says a
+    //    big type is small and the planner prefers the general index to that type's
+    //    partial index (the mechanism of the sampled-statistics regression, in a milder
+    //    form). N/2 keeps the general index cheaper than a scan for any type (a scan
+    //    costs about 3N in the planner's model, an index visit between 1.1 and 3 per
+    //    row) and more expensive than a partial index for any equality whose value
+    //    repeats on fewer than half the rows, any one-sided range (estimated at a
+    //    quarter of the index without stat4) and any sort with a limit, which leaves the
+    //    partial indexes' own rows — the accurate ones — to rank against each other.
+    //    SQLite documents writing sqlite_stat1 for this purpose
+    //    (https://www.sqlite.org/lang_analyze.html).
+    public const string AnalyzeJsonValue =
+        """
+        PRAGMA analysis_limit = 0;
+        ANALYZE JsonValue;
+        DELETE FROM sqlite_stat1 WHERE tbl = 'JsonValue' AND (stat = '0' OR stat LIKE '0 %');
+        UPDATE sqlite_stat1
+        SET stat = CAST(stat AS INTEGER) || ' ' || max(CAST(stat AS INTEGER) / 2, 1) || ' ' || max(CAST(stat AS INTEGER) / 2, 1)
+        WHERE tbl = 'JsonValue' AND idx = 'idx_jsonvalue_fulltypename_partition';
+        ANALYZE sqlite_master;
+        """;
+
+    // SQLite's documented way to make an open connection re-read sqlite_stat1
+    // (https://www.sqlite.org/lang_analyze.html).
+    public const string ReloadStatistics = "ANALYZE sqlite_master;";
+
+    // Discards every statistics row (sampled rows from an earlier release, or a
+    // caller's own ANALYZE) and reloads. Used only when the store has no expression
+    // index, so there is nothing for statistics to rank. The rows are deleted rather
+    // than the table dropped: the reload would recreate it anyway, and a DELETE is not
+    // a schema change.
+    public const string DropStatistics =
+        """
+        DELETE FROM sqlite_stat1;
+        DROP TABLE IF EXISTS sqlite_stat4;
+        ANALYZE sqlite_master;
+        """;
+
+    public const string StatisticsTableExists =
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_stat1';";
+
+    public const string CountIndexMetadata = "SELECT COUNT(*) FROM TychoIndex;";
+
+    // The stat1 row for one physical index: "<rows> <avg per first column> ...". NULL
+    // when the index has never been analyzed, or was analyzed while its type was empty.
+    public const string SelectIndexStatistics =
+        "SELECT stat FROM sqlite_stat1 WHERE tbl = 'JsonValue' AND idx = $physicalName;";
+
+    // Whether a type has any rows at all; one probe of the general index.
+    public const string TypeHasRows =
+        "SELECT 1 FROM JsonValue WHERE FullTypeName = $fullTypeName LIMIT 1;";
+
+    // PRAGMA user_version of a store whose statistics are known to be unsampled: either
+    // repaired once by this release or created by it. A store written by an earlier
+    // release reads 0 and may carry sampled rows, which the connect-time repair
+    // replaces or discards exactly once before stamping; a stamped store does nothing
+    // at connect. The literal is the single source of both the stamp and the value
+    // compared against.
+    public const string StatisticsUserVersion = "1";
+
+    public const string UserVersion = "PRAGMA user_version;";
+
+    public const string StampStatisticsUserVersion = "PRAGMA user_version = " + StatisticsUserVersion + ";";
 
     public const string SelectIndexMetadata =
         """

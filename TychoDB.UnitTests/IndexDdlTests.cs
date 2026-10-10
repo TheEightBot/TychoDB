@@ -215,7 +215,7 @@ public class IndexDdlTests
     }
 
     [TestMethod]
-    public async Task CreateIndex_GathersNoPlannerStatistics()
+    public async Task CreateIndex_GathersFullPlannerStatistics()
     {
         var (path, dbName) = NewDbPath();
 
@@ -225,12 +225,13 @@ public class IndexDdlTests
             await db.CreateIndexAsync<IndexTestModel>(x => x.LongProperty, "long_idx");
         }
 
-        // The planner runs on default heuristics, which favor the partial indexes;
-        // see PlannerStatisticsTests for why statistics would only mislead it.
+        // Building an index gathers full statistics for JsonValue (no analysis_limit),
+        // so the new index carries the type's true row count and the planner can rank
+        // it against the type's other indexes; see PlannerStatisticsTests.
         using var conn = OpenInspection(Path.Combine(path, dbName));
         using var command = conn.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM sqlite_stat1";
-        Convert.ToInt32(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture).ShouldBe(0);
+        command.CommandText = "SELECT stat FROM sqlite_stat1 WHERE idx LIKE 'idx_long_idx_%'";
+        ((string)command.ExecuteScalar()).ShouldStartWith("100 ");
     }
 
     [TestMethod]
@@ -426,9 +427,10 @@ public class IndexDdlTests
         // bare SCAN/SEARCH assertion cannot (on a small single-type table a scan is
         // genuinely the cheaper plan).
         //
-        // Both sides of the comparison have to run on the same full statistics, which
-        // Tycho never gathers, so gather them here; the redundant indexes below are
-        // then analyzed too, and the comparison is like for like.
+        // Both sides of the comparison have to run on the same full statistics, so
+        // gather them here for every index in the file (Tycho analyzes JsonValue when
+        // it builds an index, not the redundant indexes created below by hand), and the
+        // comparison is like for like.
         Analyze(dbFile);
 
         var planBefore = CorePlans(dbFile);

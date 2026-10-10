@@ -229,7 +229,7 @@ public class IndexDdlTests
         // see PlannerStatisticsTests for why statistics would only mislead it.
         using var conn = OpenInspection(Path.Combine(path, dbName));
         using var command = conn.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'sqlite_stat%'";
+        command.CommandText = "SELECT COUNT(*) FROM sqlite_stat1";
         Convert.ToInt32(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture).ShouldBe(0);
     }
 

@@ -78,7 +78,7 @@ public class PlannerStatisticsTests
             (await db.ReadObjectsAsync<WideModel>(filter: GroupFilter())).Count().ShouldBe(RowsPerGroup);
         }
 
-        HasStatTable(dbFile).ShouldBeFalse();
+        ReadStatRows(dbFile).ShouldBeEmpty();
         AssertGroupLookupUsesPartialIndex(dbFile);
     }
 
@@ -110,8 +110,29 @@ public class PlannerStatisticsTests
             (await db.ReadObjectsAsync<WideModel>(filter: GroupFilter())).Count().ShouldBe(RowsPerGroup);
         }
 
-        HasStatTable(dbFile).ShouldBeFalse();
+        ReadStatRows(dbFile).ShouldBeEmpty();
         AssertGroupLookupUsesPartialIndex(dbFile);
+    }
+
+    [TestMethod]
+    public async Task Connect_RemovesStatisticsLeftByAnEarlierRelease()
+    {
+        foreach (var autoOptimize in new[] { true, false })
+        {
+            var dbFile = await SeedIndexedStore();
+            var (path, dbName) = (Path.GetDirectoryName(dbFile), Path.GetFileName(dbFile));
+
+            LeaveSampledStatistics(dbFile);
+            Explain(dbFile, filter: GroupFilter()).ShouldContain(GeneralIndexName, Case.Sensitive);
+
+            using (var db = await BuildDb2(path, dbName, autoOptimize).ConnectAsync())
+            {
+                (await db.ReadObjectsAsync<WideModel>(filter: GroupFilter())).Count().ShouldBe(RowsPerGroup);
+            }
+
+            ReadStatRows(dbFile).ShouldBeEmpty();
+            AssertGroupLookupUsesPartialIndex(dbFile);
+        }
     }
 
     [TestMethod]
@@ -266,12 +287,27 @@ public class PlannerStatisticsTests
         return (string)command.ExecuteScalar();
     }
 
-    private static bool HasStatTable(string dbFile)
+    /// <summary>Every statistics row in the store; connecting leaves sqlite_stat1 behind, empty.</summary>
+    private static List<string> ReadStatRows(string dbFile)
     {
+        var rows = new List<string>();
+
         using var conn = OpenInspection(dbFile);
         using var command = conn.CreateCommand();
-        command.CommandText = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name LIKE 'sqlite_stat%'";
-        return command.ExecuteScalar() is not null;
+        command.CommandText = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_stat1'";
+        if (command.ExecuteScalar() is null)
+        {
+            return rows;
+        }
+
+        command.CommandText = "SELECT tbl || ' ' || ifnull(idx, '-') || ' ' || stat FROM sqlite_stat1";
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add(reader.GetString(0));
+        }
+
+        return rows;
     }
 
     // ---------- seeding ----------
@@ -291,6 +327,15 @@ public class PlannerStatisticsTests
         var dbFile = Path.Combine(path, dbName);
         SeedSmallTypes(dbFile);
         return dbFile;
+    }
+
+    /// <summary>Leaves what 5.3.1 left: statistics sampled at 400 rows per index.</summary>
+    private static void LeaveSampledStatistics(string dbFile)
+    {
+        using var conn = OpenInspection(dbFile);
+        using var command = conn.CreateCommand();
+        command.CommandText = "PRAGMA analysis_limit = 400; ANALYZE;";
+        command.ExecuteNonQuery();
     }
 
     private static List<WideModel> WideRows()

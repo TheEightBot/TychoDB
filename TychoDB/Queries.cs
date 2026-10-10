@@ -63,6 +63,17 @@ internal static class Queries
             ShapeVersion    INTEGER NOT NULL,
             PRIMARY KEY (IndexName, FullTypeName)
         );
+
+        -- The planner chooses the right index for every query TychoDB emits on its
+        -- default heuristics, and statistics only mislead it: a sample of the
+        -- type-ordered general index credits every type with a handful of rows, and
+        -- the planner then reads every row of a type on each indexed lookup. Earlier
+        -- releases gathered them. Whatever an ANALYZE left behind is dropped, and the
+        -- reload makes this connection forget what it read at open; it leaves an empty
+        -- sqlite_stat1 behind.
+        DROP TABLE IF EXISTS sqlite_stat1;
+        DROP TABLE IF EXISTS sqlite_stat4;
+        ANALYZE sqlite_master;
         """;
 
     // Indexes earlier versions created that duplicate either the primary-key autoindex

@@ -496,8 +496,19 @@ This matters for how they behave:
   no DDL. Declaring the same index name with a *different* property rebuilds it and drops
   the old one, and indexes created by older versions are migrated away automatically.
   Declaring your indexes on every app launch is the intended usage.
-- **Statistics are refreshed** with a bounded `ANALYZE` after an index is created, so a
-  new index is usable by the very next query.
+- **Statistics are gathered when an index is built**, in full, for the one table that
+  carries expression indexes, so the planner can rank a type's partial indexes against
+  each other from the very next query; re-declaring an index gathers them again only if
+  it was built while its type was empty and has rows now. Nothing samples and nothing runs
+  at connect on a current store. The general index's statistics row is pinned to half the
+  table, because the per-type average `ANALYZE` writes there misleads the planner whenever
+  one type dominates a store; 5.0.1–5.3.1 sampled the statistics instead, which made the
+  planner read every row of a large type on each indexed lookup.
+- **Upgraded stores are repaired once at connect:** the redundant indexes 4.x created are
+  dropped (10–30 s on a large store), and the sampled statistics 5.0.1–5.3.1 left behind
+  are replaced (a full `ANALYZE`, proportional to the store's size). Pass
+  `autoOptimize: false` to skip both and call `Optimize()` / `OptimizeAsync()` from a
+  background thread instead — the same work, a no-op once the store is current.
 
 Index names are scoped per type, so the same name can be reused for different types
 (including two types that share a short name in different namespaces).
@@ -541,6 +552,13 @@ db.Disconnect();
 
 // Or disconnect asynchronously
 await db.DisconnectAsync();
+
+// Open without the one-time upgrade maintenance (dropping the indexes 4.x created, 10–30 s
+// on a large store; replacing the statistics 5.0.1–5.3.1 sampled, a full ANALYZE) and do
+// it later, from a background thread — on a loading page, for example
+var deferredDb = new Tycho(dbPath: "./data", jsonSerializer: serializer, autoOptimize: false);
+await deferredDb.ConnectAsync();
+await Task.Run(() => deferredDb.Optimize());
 ```
 
 ### Device Performance Profiles
@@ -593,6 +611,12 @@ await db.DeleteObjectsAsync();
 ```csharp
 // Optimize database performance and reduce size
 db.Cleanup(shrinkMemory: true, vacuum: true);
+
+// Drop the indexes 4.x created and repair the statistics 5.0.1–5.3.1 sampled; a no-op
+// once the store is current. Holds the connection for the duration — every other
+// operation on this instance waits; 10–30 s on a large store upgraded from 4.x — and
+// runs on the calling thread, so call it from a background thread, never the UI thread.
+await Task.Run(() => db.Optimize());
 ```
 
 ## LINQ Support

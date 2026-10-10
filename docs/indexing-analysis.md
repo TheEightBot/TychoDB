@@ -124,6 +124,10 @@ win; the query-plan sweep in that bucket must confirm no query regresses to a ta
 
 ## 5. Statistics
 
+> **5.4.0:** the bounded `ANALYZE` and `PRAGMA optimize` this section led to sampled the
+> indexes and misled the planner; see `docs/planner-statistics-sampling.md` for the
+> regression and the design that replaced them.
+
 `sqlite_stat1` does not exist even after a full connect→index-create→dispose cycle —
 `Disconnect`'s `PRAGMA optimize` produced no statistics table in the diagnose run. All
 plans above are chosen by default heuristics. Bucket 3 adds a bounded `ANALYZE` after

@@ -46,15 +46,6 @@ internal static class Queries
         CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename_partition
         ON JsonValue (FullTypeName, Partition);
 
-        -- Shed indexes that earlier versions created and that duplicate either the
-        -- primary-key autoindex or a prefix of the index above. Each one cost a
-        -- full b-tree of write maintenance on every insert, update and delete while
-        -- serving no query the remaining indexes cannot. Idempotent and cheap.
-        DROP INDEX IF EXISTS idx_jsonvalue_fulltypename;
-        DROP INDEX IF EXISTS idx_jsonvalue_key_fulltypename;
-        DROP INDEX IF EXISTS idx_jsonvalue_key_fulltypename_partition;
-        DROP INDEX IF EXISTS idx_streamvalue_key_partition;
-
         CREATE TABLE IF NOT EXISTS StreamValue
         (
             Key             TEXT NOT NULL,
@@ -72,6 +63,22 @@ internal static class Queries
             ShapeVersion    INTEGER NOT NULL,
             PRIMARY KEY (IndexName, FullTypeName)
         );
+
+        """;
+
+    // Indexes earlier versions created that duplicate either the primary-key autoindex
+    // or a prefix of idx_jsonvalue_fulltypename_partition. Each one costs a full b-tree
+    // of write maintenance on every insert, update and delete while serving no query
+    // the remaining indexes cannot. Idempotent, and a no-op once they are gone; but
+    // freeing their pages on an upgraded store takes time proportional to their size,
+    // so the connect script includes this only when autoOptimize is on (see
+    // Tycho.Optimize).
+    public const string DropLegacyIndexes =
+        """
+        DROP INDEX IF EXISTS idx_jsonvalue_fulltypename;
+        DROP INDEX IF EXISTS idx_jsonvalue_key_fulltypename;
+        DROP INDEX IF EXISTS idx_jsonvalue_key_fulltypename_partition;
+        DROP INDEX IF EXISTS idx_streamvalue_key_partition;
         """;
 
     // Profile defaults. cache_size is in KiB (negative = KiB, not pages);
@@ -91,12 +98,14 @@ internal static class Queries
 
     /// <summary>
     /// Builds the full per-connection setup script (PRAGMAs + schema DDL) for the
-    /// given performance profile, honoring optional cache-size / mmap overrides.
+    /// given performance profile, honoring optional cache-size / mmap overrides, and
+    /// shedding the indexes earlier versions created unless told not to.
     /// </summary>
     public static string BuildConnectionScript(
         TychoPerformanceProfile profile,
         int? cacheSizeKbOverride = null,
-        long? mmapSizeBytesOverride = null)
+        long? mmapSizeBytesOverride = null,
+        bool dropLegacyIndexes = true)
     {
         bool desktop = profile == TychoPerformanceProfile.Desktop;
 
@@ -105,7 +114,7 @@ internal static class Queries
         int walAutocheckpoint = desktop ? DesktopWalAutocheckpoint : MobileWalAutocheckpoint;
         long journalSizeLimit = desktop ? DesktopJournalSizeLimitBytes : MobileJournalSizeLimitBytes;
 
-        var sb = new System.Text.StringBuilder(SharedPragmas.Length + SchemaDdl.Length + 160);
+        var sb = new System.Text.StringBuilder(SharedPragmas.Length + SchemaDdl.Length + DropLegacyIndexes.Length + 160);
         var ic = System.Globalization.CultureInfo.InvariantCulture;
 
         sb.Append(SharedPragmas).Append('\n')
@@ -114,6 +123,11 @@ internal static class Queries
           .Append("PRAGMA wal_autocheckpoint = ").Append(walAutocheckpoint.ToString(ic)).Append(";\n")
           .Append("PRAGMA journal_size_limit = ").Append(journalSizeLimit.ToString(ic)).Append(";\n\n")
           .Append(SchemaDdl);
+
+        if (dropLegacyIndexes)
+        {
+            sb.Append('\n').Append(DropLegacyIndexes);
+        }
 
         return sb.ToString();
     }
@@ -561,9 +575,94 @@ internal static class Queries
     public static string DropIndex(string fullIndexName)
         => string.Concat(DropIndexPrefix, fullIndexName, ";");
 
-    // Bounded ANALYZE: refreshes sqlite_stat1 so a newly created index is usable by
-    // the very next query. analysis_limit caps the work so this stays cheap on mobile.
-    public const string AnalyzeBounded = "PRAGMA analysis_limit = 400; ANALYZE;";
+    // ---- Planner statistics ----
+    //
+    // Statistics exist for one decision: ranking two per-type partial indexes against
+    // each other when a query filters on both of their properties. Without a
+    // sqlite_stat1 row for each, the planner cannot tell which is more selective and
+    // takes the one created last; with rows gathered by a *sampled* ANALYZE
+    // (analysis_limit > 0) it is actively misled, because a sample of the type-ordered
+    // general index credits every type with a handful of rows while a sample of a
+    // partial index sits inside one key and credits every key with hundreds, and the
+    // planner then reads every row of the type on each indexed lookup (5.0.1–5.3.1).
+    // So statistics are gathered in full, for the one table that carries expression
+    // indexes, and only when an index is built or found to have none; nothing samples,
+    // and nothing runs at connect once a store has been repaired.
+
+    // Full statistics for JsonValue, then two corrections and a reload. analysis_limit = 0
+    // lifts any limit a caller set on the connection; neither ANALYZE nor a write to
+    // sqlite_stat1 changes schema_version.
+    //
+    // 1. Rows gathered while a type (or the table) was empty read "0 0 0" and are
+    //    removed: the planner does better on its defaults than on "no rows", and a
+    //    missing row is what makes CreateIndex gather statistics again once the type
+    //    has rows.
+    // 2. The general index's row is pinned to "N N/2 N/2". ANALYZE writes the average
+    //    rows per FullTypeName, and that average is wrong for every type in a store
+    //    where one type dominates: taken while few types existed it says a type is the
+    //    whole table and the planner scans instead of seeking, taken over many it says a
+    //    big type is small and the planner prefers the general index to that type's
+    //    partial index (the mechanism of the sampled-statistics regression, in a milder
+    //    form). N/2 keeps the general index cheaper than a scan for any type (a scan
+    //    costs about 3N in the planner's model, an index visit between 1.1 and 3 per
+    //    row) and more expensive than a partial index for any equality whose value
+    //    repeats on fewer than half the rows, any one-sided range (estimated at a
+    //    quarter of the index without stat4) and any sort with a limit, which leaves the
+    //    partial indexes' own rows — the accurate ones — to rank against each other.
+    //    SQLite documents writing sqlite_stat1 for this purpose
+    //    (https://www.sqlite.org/lang_analyze.html).
+    public const string AnalyzeJsonValue =
+        """
+        PRAGMA analysis_limit = 0;
+        ANALYZE JsonValue;
+        DELETE FROM sqlite_stat1 WHERE tbl = 'JsonValue' AND (stat = '0' OR stat LIKE '0 %');
+        UPDATE sqlite_stat1
+        SET stat = CAST(stat AS INTEGER) || ' ' || max(CAST(stat AS INTEGER) / 2, 1) || ' ' || max(CAST(stat AS INTEGER) / 2, 1)
+        WHERE tbl = 'JsonValue' AND idx = 'idx_jsonvalue_fulltypename_partition';
+        ANALYZE sqlite_master;
+        """;
+
+    // SQLite's documented way to make an open connection re-read sqlite_stat1
+    // (https://www.sqlite.org/lang_analyze.html).
+    public const string ReloadStatistics = "ANALYZE sqlite_master;";
+
+    // Discards every statistics row (sampled rows from an earlier release, or a
+    // caller's own ANALYZE) and reloads. Used only when the store has no expression
+    // index, so there is nothing for statistics to rank. The rows are deleted rather
+    // than the table dropped: the reload would recreate it anyway, and a DELETE is not
+    // a schema change.
+    public const string DropStatistics =
+        """
+        DELETE FROM sqlite_stat1;
+        DROP TABLE IF EXISTS sqlite_stat4;
+        ANALYZE sqlite_master;
+        """;
+
+    public const string StatisticsTableExists =
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_stat1';";
+
+    public const string CountIndexMetadata = "SELECT COUNT(*) FROM TychoIndex;";
+
+    // The stat1 row for one physical index: "<rows> <avg per first column> ...". NULL
+    // when the index has never been analyzed, or was analyzed while its type was empty.
+    public const string SelectIndexStatistics =
+        "SELECT stat FROM sqlite_stat1 WHERE tbl = 'JsonValue' AND idx = $physicalName;";
+
+    // Whether a type has any rows at all; one probe of the general index.
+    public const string TypeHasRows =
+        "SELECT 1 FROM JsonValue WHERE FullTypeName = $fullTypeName LIMIT 1;";
+
+    // PRAGMA user_version of a store whose statistics are known to be unsampled: either
+    // repaired once by this release or created by it. A store written by an earlier
+    // release reads 0 and may carry sampled rows, which the connect-time repair
+    // replaces or discards exactly once before stamping; a stamped store does nothing
+    // at connect. The literal is the single source of both the stamp and the value
+    // compared against.
+    public const string StatisticsUserVersion = "1";
+
+    public const string UserVersion = "PRAGMA user_version;";
+
+    public const string StampStatisticsUserVersion = "PRAGMA user_version = " + StatisticsUserVersion + ";";
 
     public const string SelectIndexMetadata =
         """

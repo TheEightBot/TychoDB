@@ -74,7 +74,7 @@ internal static class Diagnostics
             Console.WriteLine($"Delta vs baseline: {FormatBytes(sizeBroken - sizeBaseline)}");
             Console.WriteLine();
 
-            DumpTable(conn, "sqlite_stat1", "Planner statistics after Tycho dispose (PRAGMA optimize ran)");
+            DumpTable(conn, "sqlite_stat1", "Planner statistics after Tycho dispose (expected: none)");
             RunQueryPlans(conn, "Query plans WITH public-API indexes");
 
             // ---- Phase C: synthetic per-index cost + corrected shapes ----

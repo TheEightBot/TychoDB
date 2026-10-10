@@ -1,5 +1,64 @@
 # Changelog
 
+## 5.4.0 (unreleased)
+
+### Fixed
+
+- **Indexed lookups on a large type read and parsed every row of the type, because
+  planner statistics were sampled.** Since 5.0.1 the `PRAGMA optimize` run on connect and
+  disconnect, and since 5.1.1 the `ANALYZE` run after `CreateIndex`, set
+  `analysis_limit = 400`, so SQLite read only the first ~400 entries of each index. The
+  general `(FullTypeName, Partition)` index is ordered by type name, and the types that
+  sort first are typically tiny, so its sample credited every type with a handful of rows
+  (`81` on a 1.68M-row production store whose largest type held 586,986 rows), while the
+  sample of a per-type partial index sat inside a single key and credited every key with
+  hundreds (`401`, against a true 542). The planner therefore preferred the general index
+  over the partial one: 82–366 ms per lookup on that store, 310 ms for a missing key,
+  against under a millisecond with correct statistics. Results were identical throughout;
+  only speed changed.
+
+  Statistics are now gathered in full (`analysis_limit = 0`), for `JsonValue` only, and
+  only when `CreateIndex` builds an index or re-declares one that was built while its type
+  was empty and has rows now; nothing samples, and nothing runs `PRAGMA optimize`. After
+  each `ANALYZE` the general index's `sqlite_stat1` row is pinned to half the table: the
+  per-type average `ANALYZE` writes there misleads the planner whenever one type dominates
+  a store — into a table scan for every type when the statistics were taken while few
+  types existed, and into the general index over a big type's partial index otherwise —
+  while half the table keeps the general index cheaper than a scan and dearer than any
+  partial index whose match is under half the rows, so the partial indexes' own, accurate
+  rows decide between themselves. Without any statistics, two indexed filters ANDed used
+  whichever partial index was created last: 4.6 ms (57 ms on SQLCipher) against 0.02 ms
+  for a one-row result at 40,000 rows when the less selective index came second. Rows
+  recorded for an empty type (`0 0 0`) are not kept. Verified plan-by-plan on both bundled
+  engines for every shape TychoDB emits: equality, a non-selective equality, range, sort
+  with a limit, two indexed filters in either creation order, an unindexed filter, a whole
+  type (large and tiny), and a count.
+
+  An upgraded store is repaired once: when `autoOptimize` is on, the first connect
+  replaces its sampled rows with full ones (or discards them when the store has no
+  expression index, since statistics only serve to rank one against another) and stamps
+  `PRAGMA user_version`; a stamped store pays one header read at connect and writes
+  nothing — `schema_version` is unchanged across reconnects. With `autoOptimize: false`
+  the store keeps the plans it had on the previous release until `Optimize()` /
+  `OptimizeAsync()` runs the same repair. A full `ANALYZE` is proportional to the store:
+  3.2 s on the 1.68M-row production store and 17.5 s on a 2.2 GB one, paid once per store
+  and once per index build. (#36)
+
+### Added
+
+- **`autoOptimize` constructor parameter (default `true`), `Optimize()` and
+  `OptimizeAsync()`.** Connecting a store written by 4.x drops the four redundant indexes
+  it created — most of a 10–30 s first launch measured on a large upgraded store, since
+  freeing an index's pages takes time proportional to its size and SQLCipher's default
+  `secure_delete` writes every freed page back — and connecting a store written by
+  5.0.1–5.3.1 repairs its statistics (above). Pass `autoOptimize: false` to connect without
+  either and call `Optimize()` or `OptimizeAsync()` when convenient — on a loading page, for
+  example; both are a no-op once the store is current. They hold the single connection for
+  the duration, so every other operation on the instance waits, and run on the calling
+  thread — Microsoft.Data.Sqlite executes synchronously, so `OptimizeAsync` alone does not
+  move the work off the caller — so call them from a background thread. The new constructor
+  parameter is source-compatible; assemblies that construct `Tycho` need recompiling. (#36)
+
 ## 5.3.1 — 2026-10-05
 
 ### Fixed
@@ -192,7 +251,9 @@ query plans: [docs/indexing-analysis.md](docs/indexing-analysis.md).
   shared one index name and the second `CREATE INDEX IF NOT EXISTS` silently did nothing.
 - **Planner statistics.** A bounded `ANALYZE` runs after an index is created, and
   `PRAGMA optimize` now also runs on connect. Previously `sqlite_stat1` was never
-  created at all, so the planner always ran on default heuristics.
+  created at all, so the planner always ran on default heuristics. *Superseded in 5.4.0:
+  the bound sampled the indexes and misled the planner; statistics are now gathered in
+  full at index creation and `PRAGMA optimize` no longer runs.*
 - **New API:** `DropIndex<T>`, `DropIndexAsync<T>`, and `ListIndexes()` (additive), plus
   `SortBuilder.OrderBy(SortDirection, string propertyPath, bool isPropertyPathNumeric)`
   so the raw-string sort overload can emit the numeric form its index is built on —
@@ -222,6 +283,7 @@ index); batch writes **−44%**; database file with three indexes **20.2 → 8.4
   (bounded by `analysis_limit = 400`) so the query planner keeps fresh statistics and
   continues to choose indexes — including expression indexes over `JSON_EXTRACT`. The
   connect-time call matters for long-lived mobile apps that never cleanly disconnect.
+  *Removed in 5.4.0; see its Fixed entry.*
 - **Bounded WAL on mobile.** The `Mobile` profile sets `journal_size_limit = 8 MB` so
   the WAL file truncates after a checkpoint instead of growing unbounded; `Desktop`
   leaves it unlimited.

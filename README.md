@@ -496,18 +496,16 @@ This matters for how they behave:
   no DDL. Declaring the same index name with a *different* property rebuilds it and drops
   the old one, and indexes created by older versions are migrated away automatically.
   Declaring your indexes on every app launch is the intended usage.
-- **Statistics are refreshed** with a full `ANALYZE` after an index is created, so a
-  new index is usable by the very next query, and connect and disconnect re-analyze
-  when an index has no statistics or the row count has moved tenfold since they were
-  gathered.
-  A store written by 5.3.1 or earlier gets one full `ANALYZE` on its first connect, to
-  replace the sampled statistics those versions wrote. Statistics are never sampled: a
-  sample of the type-ordered general index sees only the smallest types and would make
-  the planner prefer it over a partial index. Together with dropping the redundant
-  indexes 4.x created, that connect-time work can stall the first launch of a large
-  upgraded store for 10–30 s; pass `autoOptimize: false` to skip it (and the `ANALYZE`
-  after `CreateIndex`) and call `Optimize()` / `OptimizeAsync()` from a background thread
-  instead — the same work, ~0 ms when nothing changed.
+- **No planner statistics.** TychoDB never runs `ANALYZE`. SQLite's default heuristics
+  choose the right index for every query shape TychoDB emits, and statistics only made
+  that choice worse: a sample of the type-ordered general index credits every type with
+  a handful of rows, and the planner then reads every row of the type on each indexed
+  lookup (5.3.0 and 5.3.1). Statistics an earlier release or an external `ANALYZE` left
+  in the file are removed at connect.
+- **Dropping the indexes 4.x created** happens at connect and can stall the first launch
+  of a large upgraded store for 10–30 s; pass `autoOptimize: false` to skip it and call
+  `Optimize()` / `OptimizeAsync()` from a background thread instead — the same work, a
+  no-op once the indexes are gone.
 
 Index names are scoped per type, so the same name can be reused for different types
 (including two types that share a short name in different namespaces).
@@ -552,9 +550,9 @@ db.Disconnect();
 // Or disconnect asynchronously
 await db.DisconnectAsync();
 
-// Open without the one-time upgrade work (dropping indexes left by earlier versions and
-// gathering statistics can stall the first launch of a large store for 10–30 s) and run
-// the same work later, from a background thread — on a loading page, for example
+// Open without dropping the indexes 4.x created (freeing their pages can stall the first
+// launch of a large upgraded store for 10–30 s) and do it later, from a background
+// thread — on a loading page, for example
 var deferredDb = new Tycho(dbPath: "./data", jsonSerializer: serializer, autoOptimize: false);
 await deferredDb.ConnectAsync();
 await Task.Run(() => deferredDb.Optimize());
@@ -611,10 +609,10 @@ await db.DeleteObjectsAsync();
 // Optimize database performance and reduce size
 db.Cleanup(shrinkMemory: true, vacuum: true);
 
-// Drop indexes left by earlier versions and bring planner statistics up to date; ~0 ms
-// when nothing changed. Holds the connection for the duration — every other operation on
-// this instance waits; 17–24 s on a 2.2 GB store upgraded from 4.x — and runs on the
-// calling thread, so call it from a background thread, never the UI thread.
+// Drop the indexes 4.x created; a no-op once they are gone. Holds the connection for the
+// duration — every other operation on this instance waits; 10–30 s on a large store
+// upgraded from 4.x — and runs on the calling thread, so call it from a background
+// thread, never the UI thread.
 await Task.Run(() => db.Optimize());
 ```
 

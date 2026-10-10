@@ -14,43 +14,28 @@
   and credited every key with hundreds (`401`, against a true 542). The planner therefore
   preferred the general index over the partial one: 82–366 ms per lookup, 310 ms for a
   missing key, against 0–1 ms with full statistics or none at all. Results were identical
-  throughout; only speed changed. Statistics are no longer sampled: `CreateIndex` runs a
-  full `ANALYZE` (analyzing the new index alone would mix a full row with whatever the other
-  indexes hold and can mis-rank them the same way), and connect and disconnect run a full
-  `ANALYZE` when an index of `JsonValue` has no statistics or the table's exact row count
-  has moved tenfold since they were gathered — otherwise nothing. SQLite's own
-  `PRAGMA optimize` was tried first and rejected twice over: its default form caps the
-  analysis at 2,000 rows (plain `PRAGMA optimize`, even after `analysis_limit = 0`, wrote
-  `2001 501` against `101` and mis-ranked the indexes the same way), and its tenfold check
-  estimates the row count from the cell counts down the leftmost path of the table's
-  b-tree, which a few large documents at the lowest rowids make an order of magnitude
-  wrong: a 2.2 GB production store (1.84M rows, estimated at 174,370) was re-analyzed on
-  every call, 20–30 s each. The exact count is a scan of the covering general index, 36 ms
-  on 1.8M rows. A full `ANALYZE` took 3.2 s on the 1.68M-row store and 17.5 s on the 2.2 GB
-  store. A store written by an earlier 5.x release already holds sampled rows, which look
-  complete and current, so the first connect of such a store runs one full `ANALYZE` and
-  stamps it with `PRAGMA user_version = 1` (a higher value is never lowered). If an earlier
-  release writes to the store after that, its sampled rows return and are not detected.
+  throughout; only speed changed. TychoDB no longer gathers statistics at all: SQLite's
+  default heuristics choose the right index for every query shape it emits (equality,
+  range, sort with a limit, two indexed filters, an unindexed filter, a whole type, a
+  count — verified on both bundled engines), while keeping statistics correct would have
+  cost a full `ANALYZE` of 3.2 s on the 1.68M-row store and 17.5 s on a 2.2 GB store, plus
+  a way to tell when they had gone stale. Connect drops the statistics tables an earlier
+  release left behind and reloads, so an upgraded store is repaired on its first connect
+  whether or not `autoOptimize` is on; an empty `sqlite_stat1` remains.
 
 ### Added
 
 - **`autoOptimize` constructor parameter (default `true`), `Optimize()` and
-  `OptimizeAsync()`.** Connecting a store written by an earlier version does one-time work
-  on the connecting thread: it drops the four redundant indexes 4.x created — most of a
-  10–30 s first launch measured on a large upgraded store, since freeing an index's pages
-  takes time proportional to its size and SQLCipher's default `secure_delete` writes every
-  freed page back — and gathers planner statistics (3.2 s / 17.5 s above when they are
-  missing, sampled or stale). Pass `autoOptimize: false` to connect without either, and
-  without the `ANALYZE` after `CreateIndex` (a new index is chosen by default heuristics
-  until its statistics arrive); then call `Optimize()` or `OptimizeAsync()` when convenient
-  — on a loading page, for example. They do exactly the work connect skipped: the drops,
-  then a full `ANALYZE` on a store written by an earlier release, when an index has no
-  statistics, or when the row count moved tenfold — otherwise nothing, so a call with nothing
-  to do costs an exact row count (36 ms on 1.8M rows). They hold the single connection for the
-  duration, so every other operation on the instance waits (17–24 s on the 2.2 GB store), and
-  run on the calling thread — Microsoft.Data.Sqlite executes synchronously, so `OptimizeAsync`
-  alone does not move the work off the caller — so call them from a background thread. The
-  disconnect-time check is unaffected by the opt-out.
+  `OptimizeAsync()`.** Connecting a store written by 4.x drops the four redundant indexes
+  it created — most of a 10–30 s first launch measured on a large upgraded store, since
+  freeing an index's pages takes time proportional to its size and SQLCipher's default
+  `secure_delete` writes every freed page back. Pass `autoOptimize: false` to connect
+  without the drops and call `Optimize()` or `OptimizeAsync()` when convenient — on a
+  loading page, for example; they are a no-op once the indexes are gone. They hold the
+  single connection for the duration, so every other operation on the instance waits, and
+  run on the calling thread — Microsoft.Data.Sqlite executes synchronously, so
+  `OptimizeAsync` alone does not move the work off the caller — so call them from a
+  background thread.
 
 ## 5.3.1 — 2026-10-05
 

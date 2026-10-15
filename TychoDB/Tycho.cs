@@ -2730,9 +2730,9 @@ public class Tycho : IDisposable
     /// every launch is fine.
     /// <para>
     /// Holds the database's single connection for the duration, so every other
-    /// operation on this instance waits: on a 3 GB store upgraded from 4.x the drops,
-    /// the rebuilds and the <c>VACUUM</c> took about 5, 6 and 24 s, and the
-    /// <c>VACUUM</c> needs free disk space for a copy of the file. The work runs on the
+    /// operation on this instance waits: on a 1.8M-row, 3 GB store upgraded from 4.x the
+    /// drops, the rebuilds and the <c>VACUUM</c> took about 9, 9 and 5 s, 26 s in all, and
+    /// the <c>VACUUM</c> needs free disk space for a copy of the file. The work runs on the
     /// calling thread — Microsoft.Data.Sqlite executes synchronously, so
     /// <see cref="OptimizeAsync"/> does not move it off the caller by itself — and must
     /// not be called from a UI thread.

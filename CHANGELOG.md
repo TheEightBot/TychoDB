@@ -52,21 +52,24 @@
 
 - **`autoOptimize` constructor parameter (default `true`), `Optimize()` and
   `OptimizeAsync()`.** A store written by 4.x needs one-time work that runs on the calling
-  thread: connecting drops the four redundant indexes 4.x created — most of a 10–30 s first
-  launch measured on a large upgraded store, since freeing an index's pages takes time
-  proportional to its size and SQLCipher's default `secure_delete` writes every freed page
-  back — and the first `CreateIndex` for each declaration drops the whole-table index 4.x
-  built for it and builds the partial one (0.5–2.2 s each on a 1.8M-row store). Pass
-  `autoOptimize: false` to defer both: connect leaves the indexes in place, and
-  `CreateIndex` records the declaration as pending (`ShapeVersion 0` in `TychoIndex`)
-  while queries keep using the index 4.x built; a declaration no existing index serves is
-  built at once either way. `Optimize()` / `OptimizeAsync()` then do, in one hold of the
+  thread: connecting drops the four redundant indexes 4.x created — 9 s on a 1.8M-row,
+  3 GB store, and most of a 10–30 s first launch measured in an app on device, since
+  freeing an index's pages takes time proportional to its size and SQLCipher's default
+  `secure_delete` writes every freed page back — and the first `CreateIndex` for each
+  declaration drops the whole-table index 4.x built for it and builds the partial one
+  (0.7–4.7 s each on that store, 9 s for six). Pass `autoOptimize: false` to defer both:
+  connect leaves the indexes in place, and `CreateIndex` records the declaration as
+  pending (`ShapeVersion 0` in `TychoIndex`) while queries keep using the index 4.x built
+  — connect and six declarations then take about 140 ms on that store; a declaration no
+  existing index serves is built at once either way. `Optimize()` / `OptimizeAsync()`
+  then do, in one hold of the
   connection: the four drops, every pending rebuild (each in a transaction of its own, so
   an interruption leaves either the old index or the new one), the orphan drops a rollback
   needs, the statistics delete, and a full `VACUUM` when the store has no incremental
   auto-vacuum — every 4.x store, whose connect script set the pragma too late — which
-  returns the freed pages to the file system (3.06 GB → 1.08 GB in 24 s on the production
-  store) and converts the store, or an in-place `incremental_vacuum` when at least a tenth
+  returns the freed pages to the file system (3.06 GB → 1.03 GB in 5 s on that store; the
+  whole call took 26 s) and converts the store, or an in-place `incremental_vacuum` when
+  at least a tenth
   of the file is free. Idempotent: with nothing pending they read the schema and write
   nothing, so calling them on every launch is fine. They hold the single connection for
   the duration, so every other operation on the instance waits, and run on the calling

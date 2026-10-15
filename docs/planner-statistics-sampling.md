@@ -136,17 +136,46 @@ MoveScoutPro measured on the first launch of a large upgraded store (main-thread
 its size, and with `secure_delete` on — SQLCipher's default — every freed page is written
 back. On the 165 MB synthetic store, dropping three ~15 MB legacy indexes took 6–7 ms each
 plain and 39–54 ms each with `secure_delete`; on a 1.8M-row, 3 GB production store the
-four took 5 s, and the six per-type rebuilds `CreateIndex` does for an upgraded store —
-drop the whole-table index 4.x built, build the partial one — 6 s more. They stay on by
-default, because they make bulk writes 25–45% faster. `autoOptimize: false` connects
-without the drops and records each `CreateIndex` whose index 4.x built as pending, leaving
-that index to serve queries; `Optimize`/`OptimizeAsync` then do the drops, the rebuilds,
-the orphan sweep a 4.x rollback needs, the statistics delete, and a full `VACUUM` that
-returns the freed pages — 1.9 GB on that store, in 24 s — since a 4.x store has no
-incremental auto-vacuum and nothing else can. Both hold the single connection for the
+four took 9 s through the library, and the six per-type rebuilds `CreateIndex` does for an
+upgraded store — drop the whole-table index 4.x built, build the partial one — 9 s more
+(0.7–4.7 s each). They stay on by default, because they make bulk writes 25–45% faster.
+`autoOptimize: false` connects without the drops and records each `CreateIndex` whose
+index 4.x built as pending, leaving that index to serve queries — about 140 ms for the
+connect and six declarations on that store; `Optimize`/`OptimizeAsync` then do the drops,
+the rebuilds, the orphan sweep a 4.x rollback needs, the statistics delete, and a full
+`VACUUM` that returns the freed pages — 2 GB on that store, in 5 s; 26 s for the whole
+call — since a 4.x store has no incremental auto-vacuum and nothing else can. The numbers
+are in the table below. Both hold the single connection for the
 duration and run on the calling thread — Microsoft.Data.Sqlite executes synchronously, so
 the async form alone does not move the work off the caller — so apps call them from a
 background thread.
+
+## Measured on the real store
+
+Through the library on a copy of a 4.4.2 production store (1,801,125 rows, 3,063 MB, eleven
+indexes, no `TychoIndex`, `auto_vacuum` NONE), Release build, e_sqlite3 3.50.3, NVMe, the
+file just copied so everything is warm. The lookups are the app's four: a pricing level by
+brand, origin and load date; a distance by SPLC pair; a zip3; a zip.
+
+| `autoOptimize: false` | Time |
+|---|---|
+| Connect | 72 ms |
+| Six `CreateIndex`, all recorded pending, no DDL | 69 ms (67 of it the first call's JIT) |
+| Lookups while pending, on the 4.4.2 indexes | pricing 5.3 ms, SPLC 0.2 ms, zip3 and zip 0.05 ms |
+| `Optimize()`: four drops, six rebuilds, `VACUUM`, conversion | 26.3 s |
+| Lookups after | pricing 0.64 ms, the others 0.05 ms |
+| File | 3,063 MB → 1,030 MB, `auto_vacuum` 2, freelist 0 |
+| Next launch: Connect, six `CreateIndex`, `Optimize()` | 44 ms, 34 ms, 1 ms |
+
+| `autoOptimize: true` | Time |
+|---|---|
+| Connect, the four drops | 9.2 s |
+| Six `CreateIndex` inline, drop the 4.4.2 index and build | 9.0 s (0.7–4.7 s each) |
+| File after launch | 2,922 MB, 476,124 free pages, still NONE |
+| `Optimize()` on the next launch, the `VACUUM` alone | 5.4 s → 1,030 MB; a further call 1 ms |
+
+The string overload's same-named 4.4.2 index on a 5,000-row store: 4 ms to detect the
+mismatch and record it pending, 15 ms for `Optimize()` to rebuild it, 9 ms inline.
 
 ## Verification
 

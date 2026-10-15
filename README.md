@@ -509,15 +509,16 @@ This matters for how they behave:
   cannot rank two single-property indexes against each other, so a filter that ANDs two
   indexed properties uses one of them and checks the other row by row; a composite index
   on both serves it directly.
-- **Upgrading a store from 4.x costs seconds to tens of seconds, once:** connecting drops
-  the four redundant indexes 4.x created, and the first `CreateIndex` for each
-  declaration drops the whole-table index 4.x built for it and builds the partial one.
-  Both run on the calling thread. Pass `autoOptimize: false` to defer both: connect leaves
-  the indexes in place, `CreateIndex` records each declaration as pending while queries
-  keep using the index 4.x built, and `Optimize()` / `OptimizeAsync()` — called from a
-  background thread — do the drops, the rebuilds, and a `VACUUM` that returns the freed
-  pages (about 2 GB on a 3 GB store) to the file system. A declaration no existing index
-  serves is built at once either way.
+- **Upgrading a store from 4.x costs tens of seconds, once:** connecting drops the four
+  redundant indexes 4.x created (9 s on a 1.8M-row, 3 GB store), and the first
+  `CreateIndex` for each declaration drops the whole-table index 4.x built for it and
+  builds the partial one (9 s for six). Both run on the calling thread. Pass
+  `autoOptimize: false` to defer both: connect and the declarations then cost about
+  140 ms, `CreateIndex` records each declaration as pending while queries keep using the
+  index 4.x built, and `Optimize()` / `OptimizeAsync()` — called from a background
+  thread — do the drops, the rebuilds, and a `VACUUM` that returns the freed pages to the
+  file system (3.06 GB to 1.03 GB in 5 s; 26 s for the whole call). A declaration no
+  existing index serves is built at once either way.
 
 Index names are scoped per type, so the same name can be reused for different types
 (including two types that share a short name in different namespaces).
@@ -626,7 +627,7 @@ db.Cleanup(shrinkMemory: true, vacuum: true);
 // Do the one-time work an upgraded store needs: drop the indexes 4.x created, build the
 // indexes declared under autoOptimize: false, drop what a 4.x rollback left behind, and
 // VACUUM. A no-op once done. Holds the connection for the duration — every other
-// operation on this instance waits; about 35 s on a 3 GB store upgraded from 4.x — and
+// operation on this instance waits; 26 s on a 1.8M-row, 3 GB store upgraded from 4.x — and
 // runs on the calling thread, so call it from a background thread, never the UI thread.
 await Task.Run(() => db.Optimize());
 ```

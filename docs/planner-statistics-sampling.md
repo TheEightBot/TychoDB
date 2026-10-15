@@ -36,11 +36,13 @@ every row of the type on each lookup.
 
 ## Fix
 
-TychoDB gathers no statistics, and removes any it finds. The connect script ends with
-`DROP TABLE IF EXISTS sqlite_stat1; DROP TABLE IF EXISTS sqlite_stat4; ANALYZE sqlite_master;`
-— the last statement is SQLite's documented way to reload statistics on an open connection,
-and it leaves an empty `sqlite_stat1` behind. Nothing else runs `ANALYZE` or
-`PRAGMA optimize`. The one-time index drops stay, behind `autoOptimize` and `Optimize`.
+TychoDB gathers no statistics, and removes any it finds. Connect and `Optimize()` look for
+`sqlite_stat1`; when it exists and has rows they run `DELETE FROM sqlite_stat1; ANALYZE
+sqlite_master;` — the last statement is SQLite's documented way to reload statistics on an
+open connection — and otherwise write nothing. The table is never dropped: `ANALYZE
+sqlite_master` recreates it, so dropping it only guarantees a schema write on the next
+connect. Nothing else runs `ANALYZE` or `PRAGMA optimize`. The one-time index drops and
+rebuilds stay, behind `autoOptimize` and `Optimize`.
 
 Without a `sqlite_stat1` row, SQLite's planner credits a partial index with half the table
 and every index with a fixed selectivity per equality column, so the per-type partial index
@@ -63,7 +65,7 @@ The one thing statistics could add is the choice between two indexed properties 
 together: without them the planner cannot tell which is more selective and picks one by
 rule, so the lookup is bounded by the rows matching that property rather than the smaller
 set. On the stores measured so far every indexed property is selective enough for this not
-to matter.
+to matter, and a query that filters on two properties is what a composite index is for.
 
 ## Why not gather them properly instead
 
@@ -108,6 +110,13 @@ statistics, and that finding is reversed.
   sampled rows repaired on connect with `autoOptimize` on and off, and one test per query
   shape in the table above. Each asserts the plan for the library's own SQL and that no
   statistics row exists.
+- `TychoDB.UnitTests/OptimizeTests.cs` — the upgrade path from 4.4.2 through Tycho's own
+  API: a store with 4.4.2's per-type and built-in indexes and no incremental auto-vacuum,
+  declared under `autoOptimize: false` (pending, served by the 4.4.2 index) and then
+  optimized (rebuilt, drops done, `VACUUM` run, store converted, nothing written on the
+  next launch); the same store under `autoOptimize: true`; the string overload's
+  same-named 4.4.2 index; the orphan a rollback leaves; and a current store that connect,
+  the declarations and `Optimize` leave byte-identical.
 
 Bound parameters are fine in the library: SQLite re-plans when a bound value touches a
 partial-index `WHERE`, so `EXPLAIN QUERY PLAN` on an unbound statement shows the generic
@@ -115,28 +124,35 @@ plan. The tests bind the parameters; the CLI script uses literals.
 
 ## Cost
 
-Connect pays two `DROP TABLE IF EXISTS` (a schema lookup each when there is nothing to
-drop) and a statistics reload (a pass over the indexes in the schema). A store written by
-5.3.0 or 5.3.1 pays the drop of its small statistics table once.
+Connect pays one `sqlite_master` lookup for `sqlite_stat1`, and one `SELECT … LIMIT 1` on
+it when the table exists. A store written by 5.3.0 or 5.3.1 pays the delete of its small
+statistics table once; a current store is not written to at all (the connect script's
+`auto_vacuum` pragma, which rewrote page 1 at every connect on an auto-vacuum store, now
+runs only for a new file).
 
 The four `DROP INDEX IF EXISTS` for the indexes 4.x created were most of a 10–30 s stall
 MoveScoutPro measured on the first launch of a large upgraded store (main-thread samples in
 `sqlite3BtreeDropTable`/`clearDatabasePage`): freeing an index's pages is proportional to
 its size, and with `secure_delete` on — SQLCipher's default — every freed page is written
 back. On the 165 MB synthetic store, dropping three ~15 MB legacy indexes took 6–7 ms each
-plain and 39–54 ms each with `secure_delete`. They stay on by default, because they make
-bulk writes 25–45% faster; `autoOptimize: false` connects without them and
-`Optimize`/`OptimizeAsync` run them later. Both hold the single connection for the
+plain and 39–54 ms each with `secure_delete`; on a 1.8M-row, 3 GB production store the
+four took 5 s, and the six per-type rebuilds `CreateIndex` does for an upgraded store —
+drop the whole-table index 4.x built, build the partial one — 6 s more. They stay on by
+default, because they make bulk writes 25–45% faster. `autoOptimize: false` connects
+without the drops and records each `CreateIndex` whose index 4.x built as pending, leaving
+that index to serve queries; `Optimize`/`OptimizeAsync` then do the drops, the rebuilds,
+the orphan sweep a 4.x rollback needs, the statistics delete, and a full `VACUUM` that
+returns the freed pages — 1.9 GB on that store, in 24 s — since a 4.x store has no
+incremental auto-vacuum and nothing else can. Both hold the single connection for the
 duration and run on the calling thread — Microsoft.Data.Sqlite executes synchronously, so
 the async form alone does not move the work off the caller — so apps call them from a
-background thread. `CreateIndex` itself drops a per-type legacy index and builds the
-partial one, which is the other piece of an upgrade stall and already under the app's
-control through when it calls it.
+background thread.
 
 ## Verification
 
 - Baseline, unmodified 5.3.1: 362 passed, 4 skipped, in both Debug (SQLite 3.50.4) and
   Encrypted (3.39.2). The two scenario tests fail on it in both configurations with
   `SEARCH JsonValue USING INDEX idx_jsonvalue_fulltypename_partition`.
-- Final state: 373 passed, 4 skipped, 0 failed in both configurations (Debug 3 s,
-  Encrypted 1 m 24 s).
+- Final state: 381 passed, 4 skipped, 0 failed in both configurations (Debug 2 s,
+  Encrypted 1 m 30 s), the eight new tests in `OptimizeTests.cs` and
+  `ConfigurationTests.cs` included.

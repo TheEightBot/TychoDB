@@ -1,6 +1,6 @@
 # Changelog
 
-## 5.3.2 (unreleased)
+## 5.4.0 (unreleased)
 
 ### Fixed
 
@@ -17,25 +17,63 @@
   throughout; only speed changed. TychoDB no longer gathers statistics at all: SQLite's
   default heuristics choose the right index for every query shape it emits (equality,
   range, sort with a limit, two indexed filters, an unindexed filter, a whole type, a
-  count — verified on both bundled engines), while keeping statistics correct would have
-  cost a full `ANALYZE` of 3.2 s on the 1.68M-row store and 17.5 s on a 2.2 GB store, plus
-  a way to tell when they had gone stale. Connect drops the statistics tables an earlier
-  release left behind and reloads, so an upgraded store is repaired on its first connect
-  whether or not `autoOptimize` is on; an empty `sqlite_stat1` remains.
+  count — verified on both bundled engines, and on a 1.8M-row, 3 GB production store the
+  plans and timings with and without statistics were identical), while keeping statistics
+  correct would have cost a full `ANALYZE` of 3.2 s on the 1.68M-row store and 17.5 s on a
+  2.2 GB store, plus a way to tell when they had gone stale. Connect and `Optimize()`
+  delete the `sqlite_stat1` rows an earlier release or an external `ANALYZE` left and
+  reload, so an upgraded store is repaired on its first connect whether or not
+  `autoOptimize` is on; nothing is written when there are no rows, and the table is never
+  dropped, since `ANALYZE sqlite_master` would recreate it. The one thing statistics could
+  add — ranking two single-property indexes when a filter ANDs both — is what a composite
+  index is for.
+- **The string overload of `CreateIndex` silently kept the index 4.x built.** It names its
+  index exactly as 4.x did, so its `CREATE INDEX IF NOT EXISTS` met the 4.x index and did
+  nothing, while the metadata recorded the new definition as built: queries still matched
+  the old `(FullTypeName, expr)` shape, but the index carried every type's rows and the
+  metadata lied for good. `CreateIndex` now compares the stored DDL of a same-named index
+  with the definition it wants and rebuilds on a mismatch — on the spot, or through
+  `Optimize()` under `autoOptimize: false` — which also repairs the stores earlier 5.x
+  releases recorded that way.
+- **A 4.x rollback left its per-type indexes behind for good.** After 5.x → 4.x → 5.x,
+  4.x had recreated `idx_<name>_<Type>` next to the 5.x `idx_<name>_<Type>_<hash>`, and the
+  re-declaration found its own index current and never looked at the legacy name, so both
+  were maintained on every write and the planner could prefer the wider one. `CreateIndex`
+  now probes the legacy name on the current path and drops it (left to `Optimize()` under
+  `autoOptimize: false`), `Optimize()` sweeps it for every recorded index, and `DropIndex`
+  drops it together with the index.
+- **Connecting to an existing store wrote page 1 every time.** `PRAGMA auto_vacuum =
+  INCREMENTAL` only takes effect on a database being created, but on an auto-vacuum store
+  it stores the mode the file already has, in a write transaction that bumps the change
+  counter. It now runs only for a new or empty file, so connecting to a current store
+  writes nothing: the file is byte-identical afterwards.
 
 ### Added
 
 - **`autoOptimize` constructor parameter (default `true`), `Optimize()` and
-  `OptimizeAsync()`.** Connecting a store written by 4.x drops the four redundant indexes
-  it created — most of a 10–30 s first launch measured on a large upgraded store, since
-  freeing an index's pages takes time proportional to its size and SQLCipher's default
-  `secure_delete` writes every freed page back. Pass `autoOptimize: false` to connect
-  without the drops and call `Optimize()` or `OptimizeAsync()` when convenient — on a
-  loading page, for example; they are a no-op once the indexes are gone. They hold the
-  single connection for the duration, so every other operation on the instance waits, and
-  run on the calling thread — Microsoft.Data.Sqlite executes synchronously, so
-  `OptimizeAsync` alone does not move the work off the caller — so call them from a
-  background thread.
+  `OptimizeAsync()`.** A store written by 4.x needs one-time work that runs on the calling
+  thread: connecting drops the four redundant indexes 4.x created — most of a 10–30 s first
+  launch measured on a large upgraded store, since freeing an index's pages takes time
+  proportional to its size and SQLCipher's default `secure_delete` writes every freed page
+  back — and the first `CreateIndex` for each declaration drops the whole-table index 4.x
+  built for it and builds the partial one (0.5–2.2 s each on a 1.8M-row store). Pass
+  `autoOptimize: false` to defer both: connect leaves the indexes in place, and
+  `CreateIndex` records the declaration as pending (`ShapeVersion 0` in `TychoIndex`)
+  while queries keep using the index 4.x built; a declaration no existing index serves is
+  built at once either way. `Optimize()` / `OptimizeAsync()` then do, in one hold of the
+  connection: the four drops, every pending rebuild (each in a transaction of its own, so
+  an interruption leaves either the old index or the new one), the orphan drops a rollback
+  needs, the statistics delete, and a full `VACUUM` when the store has no incremental
+  auto-vacuum — every 4.x store, whose connect script set the pragma too late — which
+  returns the freed pages to the file system (3.06 GB → 1.08 GB in 24 s on the production
+  store) and converts the store, or an in-place `incremental_vacuum` when at least a tenth
+  of the file is free. Idempotent: with nothing pending they read the schema and write
+  nothing, so calling them on every launch is fine. They hold the single connection for
+  the duration, so every other operation on the instance waits, and run on the calling
+  thread — Microsoft.Data.Sqlite executes synchronously, so `OptimizeAsync` alone does not
+  move the work off the caller — so call them from a background thread; the `VACUUM` needs
+  free disk space for a copy of the file. `ListIndexes()` lists a pending index with the
+  definition it will get.
 
 ## 5.3.1 — 2026-10-05
 

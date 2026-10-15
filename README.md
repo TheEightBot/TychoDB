@@ -492,20 +492,32 @@ This matters for how they behave:
   a numeric property is `CAST(... as NUMERIC)` everywhere, a non-numeric property is
   plain `JSON_EXTRACT` everywhere.
 - **Calling `CreateIndex` repeatedly is cheap and safe.** Definitions are recorded in a
-  `TychoIndex` metadata table; re-declaring an unchanged index is a metadata lookup with
-  no DDL. Declaring the same index name with a *different* property rebuilds it and drops
-  the old one, and indexes created by older versions are migrated away automatically.
-  Declaring your indexes on every app launch is the intended usage.
+  `TychoIndex` metadata table; re-declaring an unchanged index is a metadata lookup and
+  two schema probes with no DDL. Declaring the same index name with a *different*
+  property rebuilds it and drops the old one, and indexes created by older versions are
+  migrated away automatically — on the spot, or by `Optimize()` when the store was opened
+  with `autoOptimize: false` (see below). Declaring your indexes on every app launch is
+  the intended usage.
 - **No planner statistics.** TychoDB never runs `ANALYZE`. SQLite's default heuristics
   choose the right index for every query shape TychoDB emits, and statistics only made
   that choice worse: a sample of the type-ordered general index credits every type with
   a handful of rows, and the planner then reads every row of the type on each indexed
   lookup (5.3.0 and 5.3.1). Statistics an earlier release or an external `ANALYZE` left
-  in the file are removed at connect.
-- **Dropping the indexes 4.x created** happens at connect and can stall the first launch
-  of a large upgraded store for 10–30 s; pass `autoOptimize: false` to skip it and call
-  `Optimize()` / `OptimizeAsync()` from a background thread instead — the same work, a
-  no-op once the indexes are gone.
+  in the file are deleted at connect and by `Optimize()`; a store without any is not
+  written to.
+- **Filter on two properties? Declare a composite index.** Without statistics the planner
+  cannot rank two single-property indexes against each other, so a filter that ANDs two
+  indexed properties uses one of them and checks the other row by row; a composite index
+  on both serves it directly.
+- **Upgrading a store from 4.x costs seconds to tens of seconds, once:** connecting drops
+  the four redundant indexes 4.x created, and the first `CreateIndex` for each
+  declaration drops the whole-table index 4.x built for it and builds the partial one.
+  Both run on the calling thread. Pass `autoOptimize: false` to defer both: connect leaves
+  the indexes in place, `CreateIndex` records each declaration as pending while queries
+  keep using the index 4.x built, and `Optimize()` / `OptimizeAsync()` — called from a
+  background thread — do the drops, the rebuilds, and a `VACUUM` that returns the freed
+  pages (about 2 GB on a 3 GB store) to the file system. A declaration no existing index
+  serves is built at once either way.
 
 Index names are scoped per type, so the same name can be reused for different types
 (including two types that share a short name in different namespaces).
@@ -550,11 +562,13 @@ db.Disconnect();
 // Or disconnect asynchronously
 await db.DisconnectAsync();
 
-// Open without dropping the indexes 4.x created (freeing their pages can stall the first
-// launch of a large upgraded store for 10–30 s) and do it later, from a background
-// thread — on a loading page, for example
+// Open without the one-time upgrade work (dropping the indexes 4.x created and rebuilding
+// the per-type ones can stall the first launch of a large upgraded store for tens of
+// seconds): connect and declare the indexes as usual, then do the work later, from a
+// background thread — on a loading page, for example
 var deferredDb = new Tycho(dbPath: "./data", jsonSerializer: serializer, autoOptimize: false);
 await deferredDb.ConnectAsync();
+deferredDb.CreateIndex<Person>(x => x.Age, "age_index");
 await Task.Run(() => deferredDb.Optimize());
 ```
 
@@ -609,10 +623,11 @@ await db.DeleteObjectsAsync();
 // Optimize database performance and reduce size
 db.Cleanup(shrinkMemory: true, vacuum: true);
 
-// Drop the indexes 4.x created; a no-op once they are gone. Holds the connection for the
-// duration — every other operation on this instance waits; 10–30 s on a large store
-// upgraded from 4.x — and runs on the calling thread, so call it from a background
-// thread, never the UI thread.
+// Do the one-time work an upgraded store needs: drop the indexes 4.x created, build the
+// indexes declared under autoOptimize: false, drop what a 4.x rollback left behind, and
+// VACUUM. A no-op once done. Holds the connection for the duration — every other
+// operation on this instance waits; about 35 s on a 3 GB store upgraded from 4.x — and
+// runs on the calling thread, so call it from a background thread, never the UI thread.
 await Task.Run(() => db.Optimize());
 ```
 

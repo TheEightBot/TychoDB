@@ -225,12 +225,13 @@ public class IndexDdlTests
             await db.CreateIndexAsync<IndexTestModel>(x => x.LongProperty, "long_idx");
         }
 
-        // The planner runs on default heuristics, which favor the partial indexes;
-        // see PlannerStatisticsTests for why statistics would only mislead it.
+        // The planner runs on default heuristics, which favor the partial indexes; see
+        // PlannerStatisticsTests for why statistics would only mislead it. A store only
+        // TychoDB has written has no statistics table at all.
         using var conn = OpenInspection(Path.Combine(path, dbName));
         using var command = conn.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM sqlite_stat1";
-        Convert.ToInt32(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture).ShouldBe(0);
+        command.CommandText = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_stat1'";
+        command.ExecuteScalar().ShouldBeNull();
     }
 
     [TestMethod]

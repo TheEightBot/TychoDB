@@ -2657,7 +2657,39 @@ public class Tycho : IDisposable
     private static bool OptimizeStore(SqliteConnection conn)
     {
         ExecuteNonQuery(conn, Queries.DropLegacyIndexes);
+        RemoveLeftoverStatistics(conn);
         return true;
+    }
+
+    /// <summary>
+    /// Deletes planner statistics an earlier release or an external <c>ANALYZE</c> left
+    /// in the file and reloads them on this connection. TychoDB gathers none: SQLite's
+    /// default heuristics choose the right index for every query it emits, and sampled
+    /// statistics made the planner read every row of a type on each indexed lookup
+    /// (5.3.0, 5.3.1). Writes nothing when there is nothing to delete, so a current
+    /// store's connect is read-only, and never drops the table: <c>ANALYZE
+    /// sqlite_master</c> would recreate it.
+    /// </summary>
+    private static void RemoveLeftoverStatistics(SqliteConnection conn)
+    {
+        if (ExecuteScalar(conn, Queries.SelectStatisticsTableExists) is null
+            || ExecuteScalar(conn, Queries.SelectStatisticsRowExists) is null)
+        {
+            return;
+        }
+
+        ExecuteNonQuery(conn, Queries.DeleteStatistics);
+    }
+
+    private static object? ExecuteScalar(SqliteConnection conn, string commandText)
+    {
+        using var command = conn.CreateCommand();
+
+#pragma warning disable CA2100 // Library constants only.
+        command.CommandText = commandText;
+#pragma warning restore CA2100
+
+        return command.ExecuteScalar();
     }
 
     /// <summary>
@@ -3000,6 +3032,8 @@ public class Tycho : IDisposable
 #pragma warning restore CA2100
 
                     command.ExecuteNonQuery();
+
+                    RemoveLeftoverStatistics(conn);
                 },
                 _persistConnection);
 
@@ -3030,6 +3064,8 @@ public class Tycho : IDisposable
 #pragma warning restore CA2100
 
             command.ExecuteNonQuery();
+
+            RemoveLeftoverStatistics(connection);
 
             return connection;
         }

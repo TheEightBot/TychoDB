@@ -287,7 +287,10 @@ public class PlannerStatisticsTests
         return (string)command.ExecuteScalar();
     }
 
-    /// <summary>Every statistics row in the store; connecting leaves sqlite_stat1 behind, empty.</summary>
+    /// <summary>
+    /// Every statistics row in the store. A store that had statistics keeps sqlite_stat1,
+    /// empty, after connecting deletes its rows; one that never had any has no such table.
+    /// </summary>
     private static List<string> ReadStatRows(string dbFile)
     {
         var rows = new List<string>();

@@ -59,6 +59,9 @@ internal static class Queries
             PRIMARY KEY (Key, Partition)
         );
 
+        -- ShapeVersion is the generated index shape the row was built in, or 0 for a
+        -- definition recorded under autoOptimize:false and not built yet (see
+        -- Tycho.PendingIndexShapeVersion).
         CREATE TABLE IF NOT EXISTS TychoIndex
         (
             IndexName       TEXT NOT NULL,
@@ -615,6 +618,31 @@ internal static class Queries
     public const string SelectPhysicalIndexExists =
         "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = $physicalName;";
 
+    public const string SelectIndexSql =
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = $physicalName;";
+
+    public const string SelectIndexNames =
+        "SELECT name FROM sqlite_master WHERE type = 'index';";
+
+    /// <summary>
+    /// The text sqlite_master keeps for an index this class's DDL created: SQLite stores
+    /// "CREATE INDEX " and then the statement from the index name on, verbatim, so the
+    /// IF NOT EXISTS and the closing semicolon are not part of it.
+    /// </summary>
+    public static string StoredIndexSql(string createIndexStatement)
+        => string.Concat("CREATE INDEX ".AsSpan(), createIndexStatement.AsSpan(CreateIndexPrefix.Length).TrimEnd(';'));
+
+    /// <summary>Whether <paramref name="definition"/> is a statement this class built for the index named.</summary>
+    public static bool IsIndexDefinitionFor(string definition, string physicalName)
+    {
+        int nameEnd = CreateIndexPrefix.Length + physicalName.Length;
+
+        return definition.Length > nameEnd
+            && definition.StartsWith(CreateIndexPrefix, StringComparison.Ordinal)
+            && string.CompareOrdinal(definition, CreateIndexPrefix.Length, physicalName, 0, physicalName.Length) == 0
+            && definition[nameEnd] == '\n';
+    }
+
     // Planner statistics. TychoDB gathers none — SQLite's default heuristics choose the
     // right index for every query it emits, and sampled statistics made the planner read
     // every row of a type on each indexed lookup (5.3.0, 5.3.1) — and deletes what an
@@ -632,6 +660,26 @@ internal static class Queries
         DELETE FROM sqlite_stat1;
         ANALYZE sqlite_master;
         """;
+
+    public const string ShrinkMemory = "PRAGMA shrink_memory;";
+
+    public const string AutoVacuumMode = "PRAGMA auto_vacuum;";
+
+    public const string FreelistCount = "PRAGMA freelist_count;";
+
+    public const string PageCount = "PRAGMA page_count;";
+
+    // In-place reclamation of free pages, then a WAL truncation so that space returns to
+    // disk too. Only effective in INCREMENTAL auto-vacuum mode.
+    public const string IncrementalVacuum =
+        "PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);";
+
+    // A store without incremental auto-vacuum can only shrink through a full VACUUM,
+    // which also converts it. The rebuild uses a file-backed temp store so a large
+    // database does not spike memory (VACUUM would otherwise honor temp_store = MEMORY
+    // and build the whole copy in RAM); the in-memory temp store is restored afterwards.
+    public const string FullVacuum =
+        "PRAGMA temp_store = FILE; PRAGMA auto_vacuum = INCREMENTAL; VACUUM; PRAGMA temp_store = MEMORY; PRAGMA wal_checkpoint(TRUNCATE);";
 
     // Cache common LIMIT values using FrozenDictionary for O(1) lookup
     private static readonly FrozenDictionary<int, string> CachedLimits = new Dictionary<int, string>

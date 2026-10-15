@@ -36,6 +36,14 @@ public class Tycho : IDisposable
     /// </summary>
     private const int IndexShapeVersion = 2;
 
+    /// <summary>
+    /// The ShapeVersion recorded for an index whose build was deferred: the definition is
+    /// the one <see cref="Optimize"/> will build, and the physical index it names is not
+    /// in the schema yet — whatever index the previous release built for the same
+    /// declaration still is, and serves queries meanwhile.
+    /// </summary>
+    private const int PendingIndexShapeVersion = 0;
+
     // Parameter cache - reuse parameter objects to reduce allocations
     private readonly ConcurrentDictionary<string, SqliteParameter> _parameterCache = new();
 
@@ -50,6 +58,7 @@ public class Tycho : IDisposable
     private readonly IJsonSerializer _jsonSerializer;
     private readonly bool _persistConnection;
     private readonly bool _requireTypeRegistration;
+    private readonly bool _autoOptimize;
 
     // One rewrite per type, so its divergence verdict is probed once and reused.
     private readonly ConcurrentDictionary<Type, KeyColumnRewrite> _keyColumnRewrites = new();
@@ -108,11 +117,14 @@ public class Tycho : IDisposable
     /// <param name="cacheSizeKb">Optional override for the SQLite page cache size, in KiB. Overrides the profile default.</param>
     /// <param name="mmapSizeBytes">Optional override for the SQLite memory-map size, in bytes (0 disables mmap). Overrides the profile default.</param>
     /// <param name="autoOptimize">
-    /// Whether connecting drops the redundant indexes 4.x created. Freeing their pages
-    /// runs on the connecting thread and took 10–30 s on a large store upgraded from
-    /// 4.x; pass false to connect without it and call <see cref="Optimize"/> or
-    /// <see cref="OptimizeAsync"/> from a background thread at a convenient time, which
-    /// does the same work. Default is true.
+    /// Whether the one-time work an upgraded store needs runs inline: connecting drops the
+    /// four redundant indexes 4.x created, and <c>CreateIndex</c> rebuilds an index whose
+    /// stored shape is out of date. Both run on the calling thread and took seconds to
+    /// tens of seconds on a large store upgraded from 4.x. Pass false to skip both —
+    /// connect leaves the indexes in place, and <c>CreateIndex</c> records the wanted
+    /// definition as pending while queries keep using the index the previous release
+    /// built — and call <see cref="Optimize"/> or <see cref="OptimizeAsync"/> from a
+    /// background thread at a convenient time. Default is true.
     /// </param>
     public Tycho(
         string dbPath,
@@ -164,6 +176,7 @@ public class Tycho : IDisposable
         _dbConnectionString = connectionStringBuilder.ToString();
         _persistConnection = persistConnection;
         _requireTypeRegistration = requireTypeRegistration;
+        _autoOptimize = autoOptimize;
         _databasePath = databasePath;
         _connectionScript = Queries.BuildConnectionScript(performanceProfile, cacheSizeKb, mmapSizeBytes, autoOptimize, newDatabase: false);
         _creationScript = Queries.BuildConnectionScript(performanceProfile, cacheSizeKb, mmapSizeBytes, autoOptimize, newDatabase: true);
@@ -2212,51 +2225,80 @@ public class Tycho : IDisposable
     }
 
     /// <summary>
-    /// Creates an index if an identical one is not already recorded, migrating away
-    /// from any previous shape or name for the same logical index.
+    /// Brings the schema in line with one index declaration.
     /// <para>
-    /// Mobile apps typically call CreateIndex on every launch, so the already-current
-    /// case must be cheap: it costs one metadata lookup and one sqlite_master probe,
-    /// with no DDL.
+    /// Mobile apps declare their indexes on every launch, so the already-current case
+    /// must be cheap: one metadata lookup and two sqlite_master probes, no DDL. The probe
+    /// reads the physical index's stored DDL rather than its mere presence, so a
+    /// same-named index of another shape — the one 4.x built under the name the string
+    /// overload still uses, which <c>CREATE INDEX IF NOT EXISTS</c> would keep without a
+    /// word — counts as stale, and a stale index is rebuilt.
+    /// </para>
+    /// <para>
+    /// With <paramref name="migrateInline"/> the rebuild happens here. Without it, when
+    /// an index the previous release built for the same declaration is still in the
+    /// schema, the wanted definition is recorded as pending and that index keeps serving
+    /// queries until <see cref="Optimize"/> replaces it; a declaration nothing in the
+    /// schema serves is built here either way, because no index is the slower outcome.
     /// </para>
     /// </summary>
-    private static bool ExecuteCreateIndex(SqliteConnection conn, IndexDefinition definition)
+    private static bool ExecuteCreateIndex(SqliteConnection conn, IndexDefinition definition, bool migrateInline)
     {
         using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
 
         try
         {
-            if (IsIndexCurrent(conn, definition))
+            var recorded = ReadRecordedIndex(conn, definition);
+            string? physicalSql = ReadIndexSql(conn, definition.PhysicalName);
+            bool hasLegacyName = !string.Equals(definition.LegacyPhysicalName, definition.PhysicalName, StringComparison.Ordinal);
+            bool legacyPresent = hasLegacyName
+                ? IndexExists(conn, definition.LegacyPhysicalName)
+                : physicalSql is not null;
+
+            if (string.Equals(physicalSql, Queries.StoredIndexSql(definition.CommandText), StringComparison.Ordinal))
             {
+                if (!IsRecordedAs(recorded, definition, IndexShapeVersion))
+                {
+                    UpsertIndexMetadata(conn, definition, IndexShapeVersion);
+                }
+
+                if (hasLegacyName && legacyPresent && migrateInline)
+                {
+                    ExecuteNonQuery(conn, Queries.DropIndex(definition.LegacyPhysicalName));
+                }
+
                 transaction.Commit();
                 return true;
             }
 
-            // Drop the previously recorded physical index (shape or definition
-            // changed) and any pre-metadata index that used the legacy name, so an
-            // upgraded database does not keep maintaining a stale b-tree forever.
-            foreach (var stalePhysicalName in ReadRecordedPhysicalNames(conn, definition))
+            if (legacyPresent && !migrateInline)
             {
-                ExecuteNonQuery(conn, Queries.DropIndex(ValidateStoredIndexName(stalePhysicalName)));
+                if (!IsRecordedAs(recorded, definition, PendingIndexShapeVersion))
+                {
+                    UpsertIndexMetadata(conn, definition, PendingIndexShapeVersion);
+                }
+
+                transaction.Commit();
+                return true;
             }
 
-            if (!string.Equals(definition.LegacyPhysicalName, definition.PhysicalName, StringComparison.Ordinal))
+            if (recorded is { } stale && !string.Equals(stale.PhysicalName, definition.PhysicalName, StringComparison.Ordinal))
+            {
+                ExecuteNonQuery(conn, Queries.DropIndex(ValidateStoredIndexName(stale.PhysicalName)));
+            }
+
+            if (physicalSql is not null)
+            {
+                ExecuteNonQuery(conn, Queries.DropIndex(definition.PhysicalName));
+            }
+
+            if (hasLegacyName && legacyPresent)
             {
                 ExecuteNonQuery(conn, Queries.DropIndex(definition.LegacyPhysicalName));
             }
 
             ExecuteNonQuery(conn, definition.CommandText);
-
-            using (var upsert = conn.CreateCommand())
-            {
-                upsert.CommandText = Queries.UpsertIndexMetadata;
-                upsert.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = definition.IndexName });
-                upsert.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = definition.MetadataTypeName });
-                upsert.Parameters.Add(new SqliteParameter("$physicalName", SqliteType.Text) { Value = definition.PhysicalName });
-                upsert.Parameters.Add(new SqliteParameter("$definition", SqliteType.Text) { Value = definition.CommandText });
-                upsert.Parameters.Add(new SqliteParameter("$shapeVersion", SqliteType.Integer) { Value = IndexShapeVersion });
-                upsert.ExecuteNonQuery();
-            }
+            UpsertIndexMetadata(conn, definition, IndexShapeVersion);
 
             transaction.Commit();
         }
@@ -2269,57 +2311,84 @@ public class Tycho : IDisposable
         return true;
     }
 
-    /// <summary>
-    /// True when the recorded definition matches what would be created now and the
-    /// physical index is still present in the schema.
-    /// </summary>
-    private static bool IsIndexCurrent(SqliteConnection conn, IndexDefinition definition)
+    /// <summary>One row of the TychoIndex metadata table, as stored.</summary>
+    private readonly record struct IndexMetadataRow(
+        string IndexName,
+        string FullTypeName,
+        string PhysicalName,
+        string Definition,
+        long ShapeVersion);
+
+    private static IndexMetadataRow? ReadRecordedIndex(SqliteConnection conn, IndexDefinition definition)
     {
-        using var lookup = conn.CreateCommand();
-        lookup.CommandText = Queries.SelectIndexMetadata;
-        lookup.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = definition.IndexName });
-        lookup.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = definition.MetadataTypeName });
-
-        string? recordedDefinition = null;
-        long recordedVersion = -1;
-
-        using (var reader = lookup.ExecuteReader())
-        {
-            if (reader.Read())
-            {
-                recordedDefinition = reader.GetString(1);
-                recordedVersion = reader.GetInt64(2);
-            }
-        }
-
-        if (recordedVersion != IndexShapeVersion ||
-            !string.Equals(recordedDefinition, definition.CommandText, StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        using var exists = conn.CreateCommand();
-        exists.CommandText = Queries.SelectPhysicalIndexExists;
-        exists.Parameters.Add(new SqliteParameter("$physicalName", SqliteType.Text) { Value = definition.PhysicalName });
-        return exists.ExecuteScalar() is not null;
-    }
-
-    private static List<string> ReadRecordedPhysicalNames(SqliteConnection conn, IndexDefinition definition)
-    {
-        var names = new List<string>(1);
-
         using var lookup = conn.CreateCommand();
         lookup.CommandText = Queries.SelectIndexMetadata;
         lookup.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = definition.IndexName });
         lookup.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = definition.MetadataTypeName });
 
         using var reader = lookup.ExecuteReader();
-        while (reader.Read())
-        {
-            names.Add(reader.GetString(0));
-        }
 
-        return names;
+        return reader.Read()
+            ? new IndexMetadataRow(definition.IndexName, definition.MetadataTypeName, reader.GetString(0), reader.GetString(1), reader.GetInt64(2))
+            : null;
+    }
+
+    private static bool IsRecordedAs(IndexMetadataRow? recorded, IndexDefinition definition, int shapeVersion)
+        => recorded is { } row
+           && row.ShapeVersion == shapeVersion
+           && string.Equals(row.Definition, definition.CommandText, StringComparison.Ordinal);
+
+    /// <summary>The stored DDL of the index named, or null when the schema has no such index.</summary>
+    private static string? ReadIndexSql(SqliteConnection conn, string physicalName)
+    {
+        using var lookup = conn.CreateCommand();
+        lookup.CommandText = Queries.SelectIndexSql;
+        lookup.Parameters.Add(new SqliteParameter("$physicalName", SqliteType.Text) { Value = physicalName });
+        return lookup.ExecuteScalar() as string;
+    }
+
+    private static bool IndexExists(SqliteConnection conn, string physicalName)
+    {
+        using var exists = conn.CreateCommand();
+        exists.CommandText = Queries.SelectPhysicalIndexExists;
+        exists.Parameters.Add(new SqliteParameter("$physicalName", SqliteType.Text) { Value = physicalName });
+        return exists.ExecuteScalar() is not null;
+    }
+
+    private static void UpsertIndexMetadata(SqliteConnection conn, IndexDefinition definition, int shapeVersion)
+        => UpsertIndexMetadata(conn, definition.IndexName, definition.MetadataTypeName, definition.PhysicalName, definition.CommandText, shapeVersion);
+
+    private static void UpsertIndexMetadata(
+        SqliteConnection conn,
+        string indexName,
+        string typeName,
+        string physicalName,
+        string definitionText,
+        int shapeVersion)
+    {
+        using var upsert = conn.CreateCommand();
+        upsert.CommandText = Queries.UpsertIndexMetadata;
+        upsert.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = indexName });
+        upsert.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = typeName });
+        upsert.Parameters.Add(new SqliteParameter("$physicalName", SqliteType.Text) { Value = physicalName });
+        upsert.Parameters.Add(new SqliteParameter("$definition", SqliteType.Text) { Value = definitionText });
+        upsert.Parameters.Add(new SqliteParameter("$shapeVersion", SqliteType.Integer) { Value = shapeVersion });
+        upsert.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// The name the same declaration had before physical names carried a hash of the
+    /// type: the name 4.x built it under, and the string overload still does. Null when
+    /// the recorded name carries no hash of the recorded type — the string overload's
+    /// own rows, whose legacy name is their physical name.
+    /// </summary>
+    private static string? LegacyPhysicalNameOf(string physicalName, string fullTypeName)
+    {
+        string suffix = string.Concat("_", StableHashSuffix(fullTypeName));
+
+        return physicalName.Length > suffix.Length && physicalName.EndsWith(suffix, StringComparison.Ordinal)
+            ? physicalName[..^suffix.Length]
+            : null;
     }
 
     private Tycho CreateIndexCore(
@@ -2340,8 +2409,8 @@ public class Tycho : IDisposable
         _connection
             .WithConnectionBlock(
                 _connectionGate,
-                definition,
-                static (conn, definition) => ExecuteCreateIndex(conn, definition),
+                (definition, migrateInline: _autoOptimize),
+                static (conn, state) => ExecuteCreateIndex(conn, state.definition, state.migrateInline),
                 _persistConnection);
 
         return this;
@@ -2366,8 +2435,8 @@ public class Tycho : IDisposable
         return _connection
             .WithConnectionBlockAsync(
                 _connectionGate,
-                definition,
-                static (conn, definition) => ExecuteCreateIndex(conn, definition),
+                (definition, migrateInline: _autoOptimize),
+                static (conn, state) => ExecuteCreateIndex(conn, state.definition, state.migrateInline),
                 _persistConnection,
                 cancellationToken);
     }
@@ -2557,6 +2626,11 @@ public class Tycho : IDisposable
 
             ExecuteNonQuery(conn, Queries.DropIndex(ValidateStoredIndexName(physicalName)));
 
+            if (LegacyPhysicalNameOf(physicalName, typeName) is { } legacyName)
+            {
+                ExecuteNonQuery(conn, Queries.DropIndex(legacyName));
+            }
+
             using (var delete = conn.CreateCommand())
             {
                 delete.CommandText = Queries.DeleteIndexMetadata;
@@ -2576,8 +2650,10 @@ public class Tycho : IDisposable
     }
 
     /// <summary>
-    /// Lists the indexes Tycho has created, as recorded in its metadata table.
-    /// Indexes created directly against the database outside Tycho are not listed.
+    /// Lists the indexes Tycho has created, as recorded in its metadata table. An index
+    /// declared under <c>autoOptimize: false</c> whose build <see cref="Optimize"/> has
+    /// not done yet is listed with the definition it will get. Indexes created directly
+    /// against the database outside Tycho are not listed.
     /// </summary>
     /// <returns>The recorded indexes, ordered by type then index name.</returns>
     public IReadOnlyList<TychoIndexInfo> ListIndexes()
@@ -2590,19 +2666,12 @@ public class Tycho : IDisposable
                 null,
                 static (conn, _) =>
                 {
-                    var results = new List<TychoIndexInfo>();
+                    var rows = ReadIndexMetadata(conn);
+                    var results = new List<TychoIndexInfo>(rows.Count);
 
-                    using var command = conn.CreateCommand();
-                    command.CommandText = Queries.SelectAllIndexMetadata;
-
-                    using var reader = command.ExecuteReader();
-                    while (reader.Read())
+                    foreach (var row in rows)
                     {
-                        results.Add(new TychoIndexInfo(
-                            reader.GetString(0),
-                            reader.GetString(1),
-                            reader.GetString(2),
-                            reader.GetString(3)));
+                        results.Add(new TychoIndexInfo(row.IndexName, row.FullTypeName, row.PhysicalName, row.Definition));
                     }
 
                     return results;
@@ -2610,17 +2679,63 @@ public class Tycho : IDisposable
                 _persistConnection);
     }
 
+    private static List<IndexMetadataRow> ReadIndexMetadata(SqliteConnection conn)
+    {
+        var rows = new List<IndexMetadataRow>();
+
+        using var command = conn.CreateCommand();
+        command.CommandText = Queries.SelectAllIndexMetadata;
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add(new IndexMetadataRow(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3),
+                reader.GetInt64(4)));
+        }
+
+        return rows;
+    }
+
+    private static HashSet<string> ReadIndexNames(SqliteConnection conn)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+
+        using var command = conn.CreateCommand();
+        command.CommandText = Queries.SelectIndexNames;
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            names.Add(reader.GetString(0));
+        }
+
+        return names;
+    }
+
     /// <summary>
-    /// Does what connecting does on its own when <c>autoOptimize</c> is on: drops the
-    /// redundant indexes 4.x created. A no-op once they are gone, so calling it on
+    /// Does the one-time work an upgraded store needs, in one hold of the connection:
+    /// drops the four redundant indexes 4.x created; builds every index
+    /// <c>CreateIndex</c> recorded as pending under <c>autoOptimize: false</c> and drops
+    /// the index the previous release built for it; drops the per-type indexes a 4.x
+    /// rollback recreated next to their replacements; deletes planner statistics an
+    /// external <c>ANALYZE</c> left; and returns the pages all of that freed to the file
+    /// system — through a full <c>VACUUM</c> when the store was created without
+    /// incremental auto-vacuum (every 4.x store), which also converts it, or an in-place
+    /// <c>incremental_vacuum</c> when at least a tenth of the file is free. Idempotent:
+    /// with nothing pending it reads the schema and writes nothing, so calling it on
     /// every launch is fine.
     /// <para>
     /// Holds the database's single connection for the duration, so every other
-    /// operation on this instance waits: freeing the indexes' pages took 10–30 s on a
-    /// large store upgraded from 4.x. The work runs on the calling thread —
-    /// Microsoft.Data.Sqlite executes synchronously, so <see cref="OptimizeAsync"/>
-    /// does not move it off the caller by itself — and must not be called from a UI
-    /// thread.
+    /// operation on this instance waits: on a 3 GB store upgraded from 4.x the drops,
+    /// the rebuilds and the <c>VACUUM</c> took about 5, 6 and 24 s, and the
+    /// <c>VACUUM</c> needs free disk space for a copy of the file. The work runs on the
+    /// calling thread — Microsoft.Data.Sqlite executes synchronously, so
+    /// <see cref="OptimizeAsync"/> does not move it off the caller by itself — and must
+    /// not be called from a UI thread.
     /// </para>
     /// </summary>
     public void Optimize()
@@ -2656,9 +2771,93 @@ public class Tycho : IDisposable
 
     private static bool OptimizeStore(SqliteConnection conn)
     {
-        ExecuteNonQuery(conn, Queries.DropLegacyIndexes);
-        RemoveLeftoverStatistics(conn);
+        try
+        {
+            ExecuteNonQuery(conn, Queries.DropLegacyIndexes);
+            RebuildPendingIndexes(conn);
+            RemoveLeftoverStatistics(conn);
+            ReclaimFreeSpace(conn);
+        }
+        catch (Exception ex) when (ex is not TychoException)
+        {
+            throw new TychoException("Failed to optimize database", ex);
+        }
+
         return true;
+    }
+
+    /// <summary>
+    /// Builds each index recorded as pending in a transaction of its own, dropping the
+    /// index the previous release built for it, so an interruption leaves that index
+    /// either as it was or complete; and drops the legacy-named index a 4.x rollback
+    /// recreated next to a current one. A legacy name another row records as its own
+    /// index is left alone.
+    /// </summary>
+    private static void RebuildPendingIndexes(SqliteConnection conn)
+    {
+        var rows = ReadIndexMetadata(conn);
+
+        if (rows.Count == 0)
+        {
+            return;
+        }
+
+        var indexNames = ReadIndexNames(conn);
+        var recordedNames = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var row in rows)
+        {
+            recordedNames.Add(row.PhysicalName);
+        }
+
+        foreach (var row in rows)
+        {
+            string physicalName = ValidateStoredIndexName(row.PhysicalName);
+            string? legacyName = LegacyPhysicalNameOf(physicalName, row.FullTypeName);
+            string? orphanName = legacyName is not null && indexNames.Contains(legacyName) && !recordedNames.Contains(legacyName)
+                ? legacyName
+                : null;
+
+            if (row.ShapeVersion == IndexShapeVersion)
+            {
+                if (orphanName is not null)
+                {
+                    ExecuteNonQuery(conn, Queries.DropIndex(orphanName));
+                }
+
+                continue;
+            }
+
+            if (!Queries.IsIndexDefinitionFor(row.Definition, physicalName))
+            {
+                throw new TychoException($"Index metadata for {row.IndexName} does not define {physicalName}");
+            }
+
+            using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
+
+            try
+            {
+                if (orphanName is not null)
+                {
+                    ExecuteNonQuery(conn, Queries.DropIndex(orphanName));
+                }
+
+                if (indexNames.Contains(physicalName))
+                {
+                    ExecuteNonQuery(conn, Queries.DropIndex(physicalName));
+                }
+
+                ExecuteNonQuery(conn, row.Definition);
+                UpsertIndexMetadata(conn, row.IndexName, row.FullTypeName, physicalName, row.Definition, IndexShapeVersion);
+
+                transaction.Commit();
+            }
+            catch (Exception ex)
+            {
+                transaction.Rollback();
+                throw new TychoException($"Failed to Create Index: {physicalName}", ex);
+            }
+        }
     }
 
     /// <summary>
@@ -2681,6 +2880,37 @@ public class Tycho : IDisposable
         ExecuteNonQuery(conn, Queries.DeleteStatistics);
     }
 
+    /// <summary>
+    /// Returns freed pages to the file system. A store created without incremental
+    /// auto-vacuum — every 4.x store: its connect script set the pragma after
+    /// <c>journal_mode = WAL</c>, which fixed the mode at NONE — can only shrink through
+    /// a full <c>VACUUM</c>, which rewrites the file and converts it, so later calls take
+    /// the in-place path; that path runs when at least a tenth of the file is free, so a
+    /// store with a little churn is left alone.
+    /// </summary>
+    private static void ReclaimFreeSpace(SqliteConnection conn)
+    {
+        long autoVacuumMode = ReadPragma(conn, Queries.AutoVacuumMode);
+
+        if (autoVacuumMode == 0)
+        {
+            ExecuteNonQuery(conn, Queries.FullVacuum);
+            return;
+        }
+
+        if (autoVacuumMode != 2)
+        {
+            return;
+        }
+
+        long freePages = ReadPragma(conn, Queries.FreelistCount);
+
+        if (freePages > 0 && freePages * 10 >= ReadPragma(conn, Queries.PageCount))
+        {
+            ExecuteNonQuery(conn, Queries.IncrementalVacuum);
+        }
+    }
+
     private static object? ExecuteScalar(SqliteConnection conn, string commandText)
     {
         using var command = conn.CreateCommand();
@@ -2691,6 +2921,9 @@ public class Tycho : IDisposable
 
         return command.ExecuteScalar();
     }
+
+    private static long ReadPragma(SqliteConnection conn, string pragma)
+        => ExecuteScalar(conn, pragma) is long value ? value : 0L;
 
     /// <summary>
     /// Performs database cleanup operations to optimize performance and reduce size.
@@ -2718,9 +2951,7 @@ public class Tycho : IDisposable
                     {
                         if (state.shrinkMemory)
                         {
-                            using var shrinkCommand = conn.CreateCommand();
-                            shrinkCommand.CommandText = "PRAGMA shrink_memory;";
-                            shrinkCommand.ExecuteNonQuery();
+                            ExecuteNonQuery(conn, Queries.ShrinkMemory);
                         }
 
                         if (!state.vacuum)
@@ -2729,36 +2960,11 @@ public class Tycho : IDisposable
                         }
 
                         // incremental_vacuum only reclaims space when the database is in
-                        // INCREMENTAL (2) auto-vacuum mode.
-                        long autoVacuumMode;
-                        using (var modeCommand = conn.CreateCommand())
-                        {
-                            modeCommand.CommandText = "PRAGMA auto_vacuum;";
-                            autoVacuumMode = modeCommand.ExecuteScalar() is long mode ? mode : 0L;
-                        }
-
-                        using var vacuumCommand = conn.CreateCommand();
-
-                        if (autoVacuumMode == 2)
-                        {
-                            // In-place free-page reclamation, then truncate the WAL file so
-                            // its space is returned to disk too.
-                            vacuumCommand.CommandText =
-                                "PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);";
-                        }
-                        else
-                        {
-                            // Legacy/NONE database: a full VACUUM reclaims free space and
-                            // converts to incremental auto-vacuum. Use a file-backed temp
-                            // store for the rebuild so a large database does not spike
-                            // memory (VACUUM would otherwise honor temp_store = MEMORY and
-                            // build the whole copy in RAM), then restore the in-memory
-                            // temp store for normal operation and truncate the WAL.
-                            vacuumCommand.CommandText =
-                                "PRAGMA temp_store = FILE; PRAGMA auto_vacuum = INCREMENTAL; VACUUM; PRAGMA temp_store = MEMORY; PRAGMA wal_checkpoint(TRUNCATE);";
-                        }
-
-                        vacuumCommand.ExecuteNonQuery();
+                        // INCREMENTAL (2) auto-vacuum mode; a legacy/NONE database needs
+                        // the full VACUUM, which also converts it.
+                        ExecuteNonQuery(
+                            conn,
+                            ReadPragma(conn, Queries.AutoVacuumMode) == 2 ? Queries.IncrementalVacuum : Queries.FullVacuum);
                     }
                     catch (Exception ex)
                     {

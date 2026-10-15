@@ -62,16 +62,18 @@
   pending (`ShapeVersion 0` in `TychoIndex`) while queries keep using the index 4.x built
   — connect and six declarations then take about 140 ms on that store; a declaration no
   existing index serves is built at once either way. `Optimize()` / `OptimizeAsync()`
-  then do, in one hold of the
-  connection: the four drops, every pending rebuild (each in a transaction of its own, so
-  an interruption leaves either the old index or the new one), the orphan drops a rollback
-  needs, the statistics delete, and a full `VACUUM` when the store has no incremental
-  auto-vacuum — every 4.x store, whose connect script set the pragma too late — which
-  returns the freed pages to the file system (3.06 GB → 1.03 GB in 5 s on that store; the
-  whole call took 26 s) and converts the store, or an in-place `incremental_vacuum` when
-  at least a tenth
-  of the file is free. Idempotent: with nothing pending they read the schema and write
-  nothing, so calling them on every launch is fine. They hold the single connection for
+  then do, in one hold of the connection: the four drops, every pending rebuild (each in a
+  transaction of its own, so an interruption leaves either the old index or the new one),
+  the orphan drops a rollback needs, the statistics delete, and a full `VACUUM` when the
+  store has no incremental auto-vacuum — every 4.x store, whose connect script set the
+  pragma too late — which returns the freed pages to the file system (3.06 GB → 1.03 GB in
+  5 s on that store; the whole call took 26 s) and converts the store, or an in-place
+  `incremental_vacuum` when at least a tenth of the file is free. None of these timings
+  changed with the file cold on disk. With the whole-table 4.x indexes gone, 50,000-row
+  bulk writes on that store ran 2.1x faster for an indexed type (38k → 80k rows/s) and 3x
+  for an unindexed one (62k → 190k rows/s), and partition deletes 2.2–2.7x. Idempotent:
+  with nothing pending they read the schema and write nothing, so calling them on every
+  launch is fine. They hold the single connection for
   the duration, so every other operation on the instance waits, and run on the calling
   thread — Microsoft.Data.Sqlite executes synchronously, so `OptimizeAsync` alone does not
   move the work off the caller — so call them from a background thread; the `VACUUM` needs

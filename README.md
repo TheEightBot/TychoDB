@@ -519,6 +519,11 @@ This matters for how they behave:
   thread — do the drops, the rebuilds, and a `VACUUM` that returns the freed pages to the
   file system (3.06 GB to 1.03 GB in 5 s; 26 s for the whole call). A declaration no
   existing index serves is built at once either way.
+- **The upgrade pays back on every write.** With the whole-table 4.x indexes gone,
+  50,000-row bulk writes on that store ran 2.1x faster for an indexed type (38k to 80k
+  rows/s) and 3x for an unindexed one (62k to 190k rows/s), and partition deletes 2.2x to
+  2.7x. The timings above were the same with the file cold on disk: nothing in the
+  upgrade or the launch path is bound by random reads any more.
 
 Index names are scoped per type, so the same name can be reused for different types
 (including two types that share a short name in different namespaces).

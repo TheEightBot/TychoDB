@@ -138,7 +138,9 @@ back. On the 165 MB synthetic store, dropping three ~15 MB legacy indexes took 6
 plain and 39–54 ms each with `secure_delete`; on a 1.8M-row, 3 GB production store the
 four took 9 s through the library, and the six per-type rebuilds `CreateIndex` does for an
 upgraded store — drop the whole-table index 4.x built, build the partial one — 9 s more
-(0.7–4.7 s each). They stay on by default, because they make bulk writes 25–45% faster.
+(0.7–4.7 s each). They stay on by default, because they make bulk writes faster: 25–45%
+measured for 5.0 with the four built-ins alone, 2.1–3x on the production store once the
+six whole-table per-type indexes go too (table below).
 `autoOptimize: false` connects without the drops and records each `CreateIndex` whose
 index 4.x built as pending, leaving that index to serve queries — about 140 ms for the
 connect and six declarations on that store; `Optimize`/`OptimizeAsync` then do the drops,
@@ -176,6 +178,28 @@ brand, origin and load date; a distance by SPLC pair; a zip3; a zip.
 
 The string overload's same-named 4.4.2 index on a 5,000-row store: 4 ms to detect the
 mismatch and record it pending, 15 ms for `Optimize()` to rebuild it, 9 ms inline.
+
+Cold: the same runs with the file copied without caching (`F_NOCACHE`; a system purge
+needs root), verified cold by a first sequential read at half the cached speed. Every phase
+was within noise of the warm run — deferred connect 78 ms and declarations 62 ms, first
+lookups 113 / 8.4 / 1.9 / 1.1 ms, `Optimize()` 23.8 s, inline connect 9.3 s and
+declarations 9.6 s, the steady-state launch on the cold 1 GB file 44 / 37 / 1 ms with first
+lookups 34 / 7.3 / 1.5 / 1.4 ms. Nothing left on the login path scales with random reads;
+the 457 s cold `ANALYZE` of the statistics design was that.
+
+Bulk writes on the same store, warm, 50,000 rows per `WriteObjectsAsync` into a fresh
+partition and `DeleteObjectsAsync` of that partition, steady-state repetitions:
+
+| | 4.4.2 shape, 11 indexes | Upgraded, 7 indexes | Gain |
+|---|---|---|---|
+| Write `PricingLevelModel` (three indexes on the type) | 37,700–38,000 rows/s | 78,200–82,900 rows/s | 2.1x |
+| Write `DeltaDownloadDateModel` (no index on the type) | 59,000–65,600 rows/s | 184,000–194,000 rows/s | 3.0x |
+| Delete the partition, indexed type | 1.0 s | 0.47 s | 2.2x |
+| Delete the partition, unindexed type | 0.68 s | 0.25 s | 2.7x |
+
+The 25–45% measured for 5.0 covered the four built-in drops on a synthetic store; the six
+whole-table per-type indexes 4.4.2 built cost as much again, and a partial index costs
+nothing for the types it does not cover.
 
 ## Verification
 

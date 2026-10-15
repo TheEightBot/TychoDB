@@ -12,17 +12,17 @@ using TychoDB;
 namespace TychoDB.UnitTests;
 
 /// <summary>
-/// Pins how TychoDB keeps the planner able to choose the right index: full statistics for
-/// <c>JsonValue</c> gathered when an index is built (or re-declared after being built on an
-/// empty type), a one-time repair of the sampled rows 5.0.1–5.3.1 left behind, and nothing
-/// at all at connect once a store is current.
+/// Proves the planner chooses the right index for every query shape TychoDB emits with no
+/// planner statistics at all, and that TychoDB gathers none.
 /// <para>
-/// Sampled statistics (<c>analysis_limit = 400</c>) mislead the planner: a sample of the
-/// type-ordered general index credits every type with a handful of rows, while a sample of
-/// a per-type partial index sits inside one key and credits every key with hundreds, so the
-/// planner read every row of the type on each indexed lookup. No statistics are not enough
-/// either: with two partial indexes on one type and a filter on both properties, the planner
-/// cannot tell which is more selective and takes whichever was created last.
+/// Without a <c>sqlite_stat1</c> row the planner credits a partial index with half the
+/// table and every index with a fixed selectivity per equality column, so a per-type
+/// partial index always beats the general <c>(FullTypeName, Partition)</c> index for the
+/// property it covers, whatever the data looks like. Statistics can only make that choice
+/// worse: a sample of the type-ordered general index sees only the smallest types and
+/// credits every type with a handful of rows, while a sample of the partial index sits
+/// inside one key and credits every key with hundreds, and the planner then reads every
+/// row of the type on each lookup (5.3.1).
 /// </para>
 /// </summary>
 [TestClass]
@@ -40,11 +40,8 @@ public class PlannerStatisticsTests
     private const int RowsPerGroup = 100;
     private const int WideRowCount = GroupCount * RowsPerGroup;
 
-    private const int BucketCount = 8;
-
     private const string GroupIndexName = "group_idx";
     private const string SeqIndexName = "seq_idx";
-    private const string BucketIndexName = "bucket_idx";
     private const string GeneralIndexName = "idx_jsonvalue_fulltypename_partition";
     private const string LookupGroup = "G0042";
 
@@ -57,8 +54,6 @@ public class PlannerStatisticsTests
         public string GroupId { get; set; }
 
         public int Seq { get; set; }
-
-        public int Bucket { get; set; }
 
         public string Label { get; set; }
     }
@@ -83,7 +78,7 @@ public class PlannerStatisticsTests
             (await db.ReadObjectsAsync<WideModel>(filter: GroupFilter())).Count().ShouldBe(RowsPerGroup);
         }
 
-        AssertFullStatistics(dbFile, GroupIndexName);
+        ReadStatRows(dbFile).ShouldBeEmpty();
         AssertGroupLookupUsesPartialIndex(dbFile);
     }
 
@@ -93,14 +88,11 @@ public class PlannerStatisticsTests
         var (path, dbName) = NewDbPath();
         var dbFile = Path.Combine(path, dbName);
 
-        // Launch 1: the app declares its index before any data exists; statistics
-        // gathered on an empty type are not kept.
+        // Launch 1: the app declares its index before any data exists.
         using (var db = await BuildDb(path, dbName).ConnectAsync())
         {
             await db.CreateIndexAsync<WideModel>(x => x.GroupId, GroupIndexName);
         }
-
-        ReadStatRows(dbFile).ShouldBeEmpty();
 
         SeedSmallTypes(dbFile);
 
@@ -110,8 +102,7 @@ public class PlannerStatisticsTests
             await db.WriteObjectsAsync(WideRows(), x => x.Key);
         }
 
-        // Launch 3: the index is re-declared; it has rows now but no statistics, so
-        // they are gathered before the query runs.
+        // Launch 3: the index is re-declared (a no-op) and queried.
         using (var db = await BuildDb2(path, dbName).ConnectAsync())
         {
             await db.CreateIndexAsync<WideModel>(x => x.GroupId, GroupIndexName);
@@ -119,136 +110,33 @@ public class PlannerStatisticsTests
             (await db.ReadObjectsAsync<WideModel>(filter: GroupFilter())).Count().ShouldBe(RowsPerGroup);
         }
 
-        AssertFullStatistics(dbFile, GroupIndexName);
-        AssertGroupLookupUsesPartialIndex(dbFile);
-    }
-
-    [TestMethod]
-    public async Task Connect_RepairsSampledStatisticsLeftByAnEarlierRelease()
-    {
-        var dbFile = await SeedIndexedStore();
-        var (path, dbName) = (Path.GetDirectoryName(dbFile), Path.GetFileName(dbFile));
-
-        LeaveSampledStatistics(dbFile);
-        Explain(dbFile, filter: GroupFilter()).ShouldContain(GeneralIndexName, Case.Sensitive);
-
-        using (var db = await BuildDb2(path, dbName).ConnectAsync())
-        {
-            (await db.ReadObjectsAsync<WideModel>(filter: GroupFilter())).Count().ShouldBe(RowsPerGroup);
-        }
-
-        ReadUserVersion(dbFile).ShouldBe(1);
-        AssertFullStatistics(dbFile, GroupIndexName);
-        AssertGroupLookupUsesPartialIndex(dbFile);
-    }
-
-    [TestMethod]
-    public async Task Connect_WithAutoOptimizeOff_LeavesStatisticsUntilOptimize()
-    {
-        var dbFile = await SeedIndexedStore();
-        var (path, dbName) = (Path.GetDirectoryName(dbFile), Path.GetFileName(dbFile));
-
-        LeaveSampledStatistics(dbFile);
-        var sampled = ReadStatRows(dbFile);
-
-        // Connect leaves the store exactly as the previous release did.
-        using (var db = await BuildDb2(path, dbName, autoOptimize: false).ConnectAsync())
-        {
-            (await db.ReadObjectsAsync<WideModel>(filter: GroupFilter())).Count().ShouldBe(RowsPerGroup);
-        }
-
-        ReadUserVersion(dbFile).ShouldBe(0);
-        ReadStatRows(dbFile).ShouldBe(sampled);
-        Explain(dbFile, filter: GroupFilter()).ShouldContain(GeneralIndexName, Case.Sensitive);
-
-        // Optimize does the repair instead, once.
-        using (var db = await BuildDb2(path, dbName, autoOptimize: false).ConnectAsync())
-        {
-            (await db.OptimizeAsync()).ShouldBeTrue();
-        }
-
-        ReadUserVersion(dbFile).ShouldBe(1);
-        AssertFullStatistics(dbFile, GroupIndexName);
-        AssertGroupLookupUsesPartialIndex(dbFile);
-    }
-
-    [TestMethod]
-    public async Task Connect_OnStoreWithoutIndexes_DiscardsStatisticsAndStamps()
-    {
-        var (path, dbName) = NewDbPath();
-        var dbFile = Path.Combine(path, dbName);
-
-        using (var db = await BuildDb(path, dbName).ConnectAsync())
-        {
-            await db.WriteObjectsAsync(WideRows(), x => x.Key);
-        }
-
-        LeaveSampledStatistics(dbFile);
-        ReadStatRows(dbFile).ShouldNotBeEmpty();
-
-        using (await BuildDb2(path, dbName).ConnectAsync())
-        {
-        }
-
-        // Nothing to rank, so nothing to keep: the rows are discarded rather than analyzed.
         ReadStatRows(dbFile).ShouldBeEmpty();
-        ReadUserVersion(dbFile).ShouldBe(1);
+        AssertGroupLookupUsesPartialIndex(dbFile);
     }
 
     [TestMethod]
-    public async Task FreshStore_IsStampedAndHasNoStatisticsTable()
+    public async Task Connect_RemovesStatisticsLeftByAnEarlierRelease()
     {
-        var (path, dbName) = NewDbPath();
-        var dbFile = Path.Combine(path, dbName);
-
-        using (await BuildDb(path, dbName).ConnectAsync())
+        foreach (var autoOptimize in new[] { true, false })
         {
-        }
+            var dbFile = await SeedIndexedStore();
+            var (path, dbName) = (Path.GetDirectoryName(dbFile), Path.GetFileName(dbFile));
 
-        ReadUserVersion(dbFile).ShouldBe(1);
-        StatisticsTableExists(dbFile).ShouldBeFalse();
-    }
+            LeaveSampledStatistics(dbFile);
+            Explain(dbFile, filter: GroupFilter()).ShouldContain(GeneralIndexName, Case.Sensitive);
 
-    [TestMethod]
-    public async Task Connect_OnCurrentStore_WritesNothing()
-    {
-        var dbFile = await SeedIndexedStore();
-        var (path, dbName) = (Path.GetDirectoryName(dbFile), Path.GetFileName(dbFile));
+            using (var db = await BuildDb2(path, dbName, autoOptimize).ConnectAsync())
+            {
+                (await db.ReadObjectsAsync<WideModel>(filter: GroupFilter())).Count().ShouldBe(RowsPerGroup);
+            }
 
-        var schemaVersion = ReadSchemaVersion(dbFile);
-        var statRows = ReadStatRows(dbFile);
-
-        for (int i = 0; i < 3; i++)
-        {
-            using var db = await BuildDb2(path, dbName).ConnectAsync();
-            await db.CreateIndexAsync<WideModel>(x => x.GroupId, GroupIndexName);
-            await db.CreateIndexAsync<WideModel>(x => x.Seq, SeqIndexName);
-            (await db.ReadObjectsAsync<WideModel>(filter: GroupFilter())).Count().ShouldBe(RowsPerGroup);
-        }
-
-        ReadSchemaVersion(dbFile).ShouldBe(schemaVersion);
-        ReadStatRows(dbFile).ShouldBe(statRows);
-        ReadUserVersion(dbFile).ShouldBe(1);
-    }
-
-    [TestMethod]
-    public async Task TwoIndexedEqualities_UseTheMoreSelectiveIndex_InEitherCreationOrder()
-    {
-        foreach (var selectiveFirst in new[] { true, false })
-        {
-            var dbFile = await SeedIndexedStore(seqIndexFirst: selectiveFirst);
-
-            // Seq is unique; GroupId has 100 rows per value. Without statistics the planner
-            // takes whichever partial index was created last.
-            var plan = Explain(dbFile, filter: GroupFilter().And().Filter(FilterType.Equals, x => x.Seq, 42));
-
-            plan.ShouldContain($"USING INDEX {ReadPhysicalIndexName(dbFile, SeqIndexName)}", Case.Sensitive, $"seqIndexFirst: {selectiveFirst}");
-            plan.ShouldNotContain(GeneralIndexName, Case.Sensitive);
+            ReadStatRows(dbFile).ShouldBeEmpty();
+            AssertGroupLookupUsesPartialIndex(dbFile);
         }
     }
 
     [TestMethod]
-    public async Task WithStatistics_EqualityUsesThePartialIndex()
+    public async Task WithoutStatistics_EqualityUsesThePartialIndex()
     {
         var dbFile = await SeedIndexedStore();
 
@@ -259,7 +147,7 @@ public class PlannerStatisticsTests
     }
 
     [TestMethod]
-    public async Task WithStatistics_RangeUsesThePartialIndex()
+    public async Task WithoutStatistics_RangeUsesThePartialIndex()
     {
         var dbFile = await SeedIndexedStore();
 
@@ -272,7 +160,7 @@ public class PlannerStatisticsTests
     }
 
     [TestMethod]
-    public async Task WithStatistics_SortWithLimitUsesThePartialIndex()
+    public async Task WithoutStatistics_SortWithLimitUsesThePartialIndex()
     {
         var dbFile = await SeedIndexedStore();
 
@@ -287,51 +175,46 @@ public class PlannerStatisticsTests
     }
 
     [TestMethod]
-    public async Task WithStatistics_NonSelectiveIndexedEqualityUsesThePartialIndex()
+    public async Task WithoutStatistics_TwoIndexedEqualitiesUseOneOfThePartialIndexes()
     {
         var dbFile = await SeedIndexedStore();
 
-        // One of eight values: 2,500 rows, an eighth of the table. The general index's
-        // pinned row says half, so the partial index still wins.
-        var plan = Explain(dbFile, filter: FilterBuilder<WideModel>.Create().Filter(FilterType.Equals, x => x.Bucket, 3));
+        var plan = Explain(
+            dbFile,
+            filter: GroupFilter().And().Filter(FilterType.Equals, x => x.Seq, 42));
 
-        plan.ShouldContain($"USING INDEX {ReadPhysicalIndexName(dbFile, BucketIndexName)}", Case.Sensitive);
+        var partialIndexes = new[]
+        {
+            $"USING INDEX {ReadPhysicalIndexName(dbFile, GroupIndexName)}",
+            $"USING INDEX {ReadPhysicalIndexName(dbFile, SeqIndexName)}",
+        };
+
+        partialIndexes.Count(name => plan.Contains(name, StringComparison.Ordinal)).ShouldBe(1);
         plan.ShouldNotContain(GeneralIndexName, Case.Sensitive);
     }
 
     [TestMethod]
-    public async Task WithStatistics_UnindexedPropertyUsesTheGeneralIndex()
+    public async Task WithoutStatistics_UnindexedPropertyUsesTheGeneralIndex()
     {
         var dbFile = await SeedIndexedStore();
 
-        var filter = FilterBuilder<WideModel>.Create().Filter(FilterType.Equals, x => x.Label, "row 7");
+        var plan = Explain(
+            dbFile,
+            filter: FilterBuilder<WideModel>.Create().Filter(FilterType.Equals, x => x.Label, "row 7"));
 
-        Explain(dbFile, filter: filter).ShouldContain($"USING INDEX {GeneralIndexName}", Case.Sensitive);
-        Explain(dbFile, filter: filter, fullTypeName: SmallTypeName(0)).ShouldContain($"USING INDEX {GeneralIndexName}", Case.Sensitive);
+        plan.ShouldContain($"USING INDEX {GeneralIndexName}", Case.Sensitive);
     }
 
     [TestMethod]
-    public async Task WithStatistics_WholeTypeUsesTheGeneralIndex()
+    public async Task WithoutStatistics_WholeTypeUsesTheGeneralIndex()
     {
         var dbFile = await SeedIndexedStore();
 
-        // The wide type is 98% of the table and the small type 0.05%; both are reached
-        // through the general index, never by a scan, whatever ANALYZE averaged.
         Explain(dbFile).ShouldContain($"USING INDEX {GeneralIndexName}", Case.Sensitive);
-        Explain(dbFile, fullTypeName: SmallTypeName(0)).ShouldContain($"USING INDEX {GeneralIndexName}", Case.Sensitive);
     }
 
     [TestMethod]
-    public async Task Statistics_GeneralIndexRowIsPinnedToHalfTheTable()
-    {
-        var dbFile = await SeedIndexedStore();
-
-        // Statistics were gathered when the wide type was the whole table.
-        ReadStatRows(dbFile).ShouldContain($"JsonValue {GeneralIndexName} {WideRowCount} {WideRowCount / 2} {WideRowCount / 2}");
-    }
-
-    [TestMethod]
-    public async Task WithStatistics_CountUsesTheGeneralIndexWithoutReadingRows()
+    public async Task WithoutStatistics_CountUsesTheGeneralIndexWithoutReadingRows()
     {
         var dbFile = await SeedIndexedStore();
 
@@ -347,38 +230,6 @@ public class PlannerStatisticsTests
         plan.ShouldNotContain(GeneralIndexName, Case.Sensitive);
     }
 
-    /// <summary>The index has a full statistics row: the type's true row count, not a 400-row sample.</summary>
-    private static void AssertFullStatistics(string dbFile, string indexName)
-    {
-        var physicalName = ReadPhysicalIndexName(dbFile, indexName);
-        var row = ReadStatRows(dbFile).SingleOrDefault(r => r.StartsWith($"JsonValue {physicalName} ", StringComparison.Ordinal));
-
-        row.ShouldNotBeNull($"no statistics row for {physicalName}");
-        row.ShouldStartWith($"JsonValue {physicalName} {WideRowCount} ");
-    }
-
-    private static long ReadUserVersion(string dbFile) => ReadPragma(dbFile, "user_version");
-
-    private static long ReadSchemaVersion(string dbFile) => ReadPragma(dbFile, "schema_version");
-
-    private static long ReadPragma(string dbFile, string pragma)
-    {
-        using var conn = OpenInspection(dbFile);
-        using var command = conn.CreateCommand();
-#pragma warning disable CA2100 // Pragma name is a test constant.
-        command.CommandText = "PRAGMA " + pragma;
-#pragma warning restore CA2100
-        return (long)command.ExecuteScalar();
-    }
-
-    private static bool StatisticsTableExists(string dbFile)
-    {
-        using var conn = OpenInspection(dbFile);
-        using var command = conn.CreateCommand();
-        command.CommandText = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_stat1'";
-        return command.ExecuteScalar() is not null;
-    }
-
     private static FilterBuilder<WideModel> GroupFilter()
         => FilterBuilder<WideModel>.Create().Filter(FilterType.Equals, x => x.GroupId, LookupGroup);
 
@@ -388,8 +239,7 @@ public class PlannerStatisticsTests
         FilterBuilder<WideModel> filter = null,
         SortBuilder<WideModel> sort = null,
         int? top = null,
-        bool count = false,
-        string fullTypeName = null)
+        bool count = false)
     {
         var sb = new StringBuilder(count ? Queries.SelectCountFromJsonValueWithFullTypeName : Queries.SelectDataFromJsonValueWithFullTypeName);
         var parameters = new FilterParameters();
@@ -409,7 +259,7 @@ public class PlannerStatisticsTests
         command.CommandText = "EXPLAIN QUERY PLAN " + sb;
 #pragma warning restore CA2100
 
-        command.Parameters.AddWithValue("$fullTypeName", fullTypeName ?? typeof(WideModel).FullName);
+        command.Parameters.AddWithValue("$fullTypeName", typeof(WideModel).FullName);
         command.Parameters.AddWithValue("$partition", string.Empty);
         for (int i = 0; i < parameters.Count; i++)
         {
@@ -437,7 +287,7 @@ public class PlannerStatisticsTests
         return (string)command.ExecuteScalar();
     }
 
-    /// <summary>Every statistics row in the store, as "tbl idx stat".</summary>
+    /// <summary>Every statistics row in the store; connecting leaves sqlite_stat1 behind, empty.</summary>
     private static List<string> ReadStatRows(string dbFile)
     {
         var rows = new List<string>();
@@ -463,26 +313,15 @@ public class PlannerStatisticsTests
     // ---------- seeding ----------
 
     /// <summary>A store with the wide type indexed on GroupId and Seq, and the small types ahead of it.</summary>
-    private static async Task<string> SeedIndexedStore(bool seqIndexFirst = false)
+    private static async Task<string> SeedIndexedStore()
     {
         var (path, dbName) = NewDbPath();
 
         using (var db = await BuildDb(path, dbName).ConnectAsync())
         {
             await db.WriteObjectsAsync(WideRows(), x => x.Key);
-
-            if (seqIndexFirst)
-            {
-                await db.CreateIndexAsync<WideModel>(x => x.Seq, SeqIndexName);
-                await db.CreateIndexAsync<WideModel>(x => x.GroupId, GroupIndexName);
-            }
-            else
-            {
-                await db.CreateIndexAsync<WideModel>(x => x.GroupId, GroupIndexName);
-                await db.CreateIndexAsync<WideModel>(x => x.Seq, SeqIndexName);
-            }
-
-            await db.CreateIndexAsync<WideModel>(x => x.Bucket, BucketIndexName);
+            await db.CreateIndexAsync<WideModel>(x => x.GroupId, GroupIndexName);
+            await db.CreateIndexAsync<WideModel>(x => x.Seq, SeqIndexName);
         }
 
         var dbFile = Path.Combine(path, dbName);
@@ -490,15 +329,12 @@ public class PlannerStatisticsTests
         return dbFile;
     }
 
-    /// <summary>
-    /// Leaves what 5.3.1 left: statistics sampled at 400 rows per index, and no
-    /// user_version stamp.
-    /// </summary>
+    /// <summary>Leaves what 5.3.1 left: statistics sampled at 400 rows per index.</summary>
     private static void LeaveSampledStatistics(string dbFile)
     {
         using var conn = OpenInspection(dbFile);
         using var command = conn.CreateCommand();
-        command.CommandText = "PRAGMA analysis_limit = 400; ANALYZE; PRAGMA user_version = 0;";
+        command.CommandText = "PRAGMA analysis_limit = 400; ANALYZE;";
         command.ExecuteNonQuery();
     }
 
@@ -507,7 +343,7 @@ public class PlannerStatisticsTests
         var rows = new List<WideModel>(WideRowCount);
         for (int i = 0; i < WideRowCount; i++)
         {
-            rows.Add(new WideModel { Key = $"wide-{i}", GroupId = GroupId(i), Seq = i, Bucket = i % BucketCount, Label = $"row {i}" });
+            rows.Add(new WideModel { Key = $"wide-{i}", GroupId = GroupId(i), Seq = i, Label = $"row {i}" });
         }
 
         return rows;
@@ -515,9 +351,6 @@ public class PlannerStatisticsTests
 
     private static string GroupId(int i)
         => "G" + (i % GroupCount).ToString("D4", System.Globalization.CultureInfo.InvariantCulture);
-
-    private static string SmallTypeName(int t)
-        => "Aaa.Small" + t.ToString("D2", System.Globalization.CultureInfo.InvariantCulture);
 
     private static void SeedSmallTypes(string dbFile)
     {
@@ -534,7 +367,7 @@ public class PlannerStatisticsTests
 
         for (int t = 0; t < SmallTypeCount; t++)
         {
-            fullTypeName.Value = SmallTypeName(t);
+            fullTypeName.Value = "Aaa.Small" + t.ToString("D2", System.Globalization.CultureInfo.InvariantCulture);
             for (int i = 0; i < RowsPerSmallType; i++)
             {
                 key.Value = "small-" + i.ToString(System.Globalization.CultureInfo.InvariantCulture);

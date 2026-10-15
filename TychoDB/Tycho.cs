@@ -42,8 +42,11 @@ public class Tycho : IDisposable
     private readonly Lock _connectionLock = new();
     private readonly string _dbConnectionString;
 
-    // Per-connection setup script (profile PRAGMAs + schema DDL), built once.
+    // Per-connection setup scripts (profile PRAGMAs + schema DDL), built once: one for
+    // opening an existing file and one, with the creation-only pragma, for a new one.
     private readonly string _connectionScript;
+    private readonly string _creationScript;
+    private readonly string _databasePath;
     private readonly IJsonSerializer _jsonSerializer;
     private readonly bool _persistConnection;
     private readonly bool _requireTypeRegistration;
@@ -161,7 +164,9 @@ public class Tycho : IDisposable
         _dbConnectionString = connectionStringBuilder.ToString();
         _persistConnection = persistConnection;
         _requireTypeRegistration = requireTypeRegistration;
-        _connectionScript = Queries.BuildConnectionScript(performanceProfile, cacheSizeKb, mmapSizeBytes, autoOptimize);
+        _databasePath = databasePath;
+        _connectionScript = Queries.BuildConnectionScript(performanceProfile, cacheSizeKb, mmapSizeBytes, autoOptimize, newDatabase: false);
+        _creationScript = Queries.BuildConnectionScript(performanceProfile, cacheSizeKb, mmapSizeBytes, autoOptimize, newDatabase: true);
     }
 
     /// <summary>
@@ -2978,7 +2983,7 @@ public class Tycho : IDisposable
         connection
             .WithConnectionBlock(
                 _connectionGate,
-                _connectionScript,
+                ConnectionScript(),
                 static (conn, script) =>
                 {
                     conn.Open();
@@ -3007,6 +3012,7 @@ public class Tycho : IDisposable
 
         try
         {
+            var script = ConnectionScript();
             var connection = new SqliteConnection(_dbConnectionString);
 
             connection.Open();
@@ -3020,7 +3026,7 @@ public class Tycho : IDisposable
             // Profile PRAGMAs + idempotent schema/index creation. Composed from
             // library constants and numeric profile values only (no user input).
 #pragma warning disable CA2100
-            command.CommandText = _connectionScript;
+            command.CommandText = script;
 #pragma warning restore CA2100
 
             command.ExecuteNonQuery();
@@ -3031,6 +3037,17 @@ public class Tycho : IDisposable
         {
             _connectionGate.Release();
         }
+    }
+
+    /// <summary>
+    /// The setup script for the file as it is now: a new or empty file gets the
+    /// creation-only auto_vacuum pragma, an existing one is opened without it.
+    /// </summary>
+    private string ConnectionScript()
+    {
+        var file = new FileInfo(_databasePath);
+
+        return file.Exists && file.Length > 0 ? _connectionScript : _creationScript;
     }
 
     // 0 = not yet verified this process, 1 = verified as supported.

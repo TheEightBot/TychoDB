@@ -9,18 +9,23 @@ internal static class Queries
     public const string KeyColumn = "Key";
     public const string DataColumn = "Data";
 
-    // PRAGMAs shared by every profile. These are single-user / single-connection
-    // choices: WAL journaling with EXCLUSIVE locking (one persistent connection),
-    // NORMAL synchronous (safe under WAL), in-memory temp store, and incremental
-    // auto-vacuum.
-    //
-    // auto_vacuum MUST be the first statement: it can only be applied when the
-    // database is first created, and switching to WAL writes the database header —
-    // so if auto_vacuum is set after journal_mode = WAL it silently stays at the
-    // default (NONE) even on a brand-new file, leaving incremental_vacuum a no-op.
-    private const string SharedPragmas =
+    // Incremental auto-vacuum, for a database being created. It MUST be the first
+    // statement: the mode can only be applied when the database is first created, and
+    // switching to WAL writes the database header — so if auto_vacuum is set after
+    // journal_mode = WAL it silently stays at the default (NONE) even on a brand-new
+    // file, leaving incremental_vacuum a no-op. It is left out when opening an existing
+    // file: there it either does nothing (a NONE store, until a VACUUM converts it) or
+    // rewrites page 1 at every connect to store the mode the file already has.
+    private const string CreationPragma =
         """
         PRAGMA auto_vacuum = INCREMENTAL;
+        """;
+
+    // PRAGMAs shared by every profile. These are single-user / single-connection
+    // choices: WAL journaling with EXCLUSIVE locking (one persistent connection),
+    // NORMAL synchronous (safe under WAL), and an in-memory temp store.
+    private const string SharedPragmas =
+        """
         PRAGMA journal_mode = WAL;
         PRAGMA locking_mode = EXCLUSIVE;
         PRAGMA synchronous = NORMAL;
@@ -109,13 +114,15 @@ internal static class Queries
     /// <summary>
     /// Builds the full per-connection setup script (PRAGMAs + schema DDL) for the
     /// given performance profile, honoring optional cache-size / mmap overrides, and
-    /// shedding the indexes earlier versions created unless told not to.
+    /// shedding the indexes earlier versions created unless told not to. The pragma
+    /// that only applies to a database being created is included for a new file only.
     /// </summary>
     public static string BuildConnectionScript(
         TychoPerformanceProfile profile,
         int? cacheSizeKbOverride = null,
         long? mmapSizeBytesOverride = null,
-        bool dropLegacyIndexes = true)
+        bool dropLegacyIndexes = true,
+        bool newDatabase = true)
     {
         bool desktop = profile == TychoPerformanceProfile.Desktop;
 
@@ -124,8 +131,13 @@ internal static class Queries
         int walAutocheckpoint = desktop ? DesktopWalAutocheckpoint : MobileWalAutocheckpoint;
         long journalSizeLimit = desktop ? DesktopJournalSizeLimitBytes : MobileJournalSizeLimitBytes;
 
-        var sb = new System.Text.StringBuilder(SharedPragmas.Length + SchemaDdl.Length + DropLegacyIndexes.Length + 160);
+        var sb = new System.Text.StringBuilder(CreationPragma.Length + SharedPragmas.Length + SchemaDdl.Length + DropLegacyIndexes.Length + 160);
         var ic = System.Globalization.CultureInfo.InvariantCulture;
+
+        if (newDatabase)
+        {
+            sb.Append(CreationPragma).Append('\n');
+        }
 
         sb.Append(SharedPragmas).Append('\n')
           .Append("PRAGMA cache_size = -").Append(cacheSizeKb.ToString(ic)).Append(";\n")

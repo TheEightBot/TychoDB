@@ -9,18 +9,23 @@ internal static class Queries
     public const string KeyColumn = "Key";
     public const string DataColumn = "Data";
 
-    // PRAGMAs shared by every profile. These are single-user / single-connection
-    // choices: WAL journaling with EXCLUSIVE locking (one persistent connection),
-    // NORMAL synchronous (safe under WAL), in-memory temp store, and incremental
-    // auto-vacuum.
-    //
-    // auto_vacuum MUST be the first statement: it can only be applied when the
-    // database is first created, and switching to WAL writes the database header —
-    // so if auto_vacuum is set after journal_mode = WAL it silently stays at the
-    // default (NONE) even on a brand-new file, leaving incremental_vacuum a no-op.
-    private const string SharedPragmas =
+    // Incremental auto-vacuum, for a database being created. It MUST be the first
+    // statement: the mode can only be applied when the database is first created, and
+    // switching to WAL writes the database header — so if auto_vacuum is set after
+    // journal_mode = WAL it silently stays at the default (NONE) even on a brand-new
+    // file, leaving incremental_vacuum a no-op. It is left out when opening an existing
+    // file: there it either does nothing (a NONE store, until a VACUUM converts it) or
+    // rewrites page 1 at every connect to store the mode the file already has.
+    private const string CreationPragma =
         """
         PRAGMA auto_vacuum = INCREMENTAL;
+        """;
+
+    // PRAGMAs shared by every profile. These are single-user / single-connection
+    // choices: WAL journaling with EXCLUSIVE locking (one persistent connection),
+    // NORMAL synchronous (safe under WAL), and an in-memory temp store.
+    private const string SharedPragmas =
+        """
         PRAGMA journal_mode = WAL;
         PRAGMA locking_mode = EXCLUSIVE;
         PRAGMA synchronous = NORMAL;
@@ -46,15 +51,6 @@ internal static class Queries
         CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename_partition
         ON JsonValue (FullTypeName, Partition);
 
-        -- Shed indexes that earlier versions created and that duplicate either the
-        -- primary-key autoindex or a prefix of the index above. Each one cost a
-        -- full b-tree of write maintenance on every insert, update and delete while
-        -- serving no query the remaining indexes cannot. Idempotent and cheap.
-        DROP INDEX IF EXISTS idx_jsonvalue_fulltypename;
-        DROP INDEX IF EXISTS idx_jsonvalue_key_fulltypename;
-        DROP INDEX IF EXISTS idx_jsonvalue_key_fulltypename_partition;
-        DROP INDEX IF EXISTS idx_streamvalue_key_partition;
-
         CREATE TABLE IF NOT EXISTS StreamValue
         (
             Key             TEXT NOT NULL,
@@ -63,6 +59,9 @@ internal static class Queries
             PRIMARY KEY (Key, Partition)
         );
 
+        -- ShapeVersion is the generated index shape the row was built in, or 0 for a
+        -- definition recorded under autoOptimize:false and not built yet (see
+        -- Tycho.PendingIndexShapeVersion).
         CREATE TABLE IF NOT EXISTS TychoIndex
         (
             IndexName       TEXT NOT NULL,
@@ -72,6 +71,21 @@ internal static class Queries
             ShapeVersion    INTEGER NOT NULL,
             PRIMARY KEY (IndexName, FullTypeName)
         );
+        """;
+
+    // Indexes earlier versions created that duplicate either the primary-key autoindex
+    // or a prefix of idx_jsonvalue_fulltypename_partition. Each one costs a full b-tree
+    // of write maintenance on every insert, update and delete while serving no query
+    // the remaining indexes cannot. Idempotent, and a no-op once they are gone; but
+    // freeing their pages on an upgraded store takes time proportional to their size,
+    // so the connect script includes this only when autoOptimize is on (see
+    // Tycho.Optimize).
+    public const string DropLegacyIndexes =
+        """
+        DROP INDEX IF EXISTS idx_jsonvalue_fulltypename;
+        DROP INDEX IF EXISTS idx_jsonvalue_key_fulltypename;
+        DROP INDEX IF EXISTS idx_jsonvalue_key_fulltypename_partition;
+        DROP INDEX IF EXISTS idx_streamvalue_key_partition;
         """;
 
     // Profile defaults. cache_size is in KiB (negative = KiB, not pages);
@@ -91,12 +105,16 @@ internal static class Queries
 
     /// <summary>
     /// Builds the full per-connection setup script (PRAGMAs + schema DDL) for the
-    /// given performance profile, honoring optional cache-size / mmap overrides.
+    /// given performance profile, honoring optional cache-size / mmap overrides, and
+    /// shedding the indexes earlier versions created unless told not to. The pragma
+    /// that only applies to a database being created is included for a new file only.
     /// </summary>
     public static string BuildConnectionScript(
         TychoPerformanceProfile profile,
         int? cacheSizeKbOverride = null,
-        long? mmapSizeBytesOverride = null)
+        long? mmapSizeBytesOverride = null,
+        bool dropLegacyIndexes = true,
+        bool newDatabase = true)
     {
         bool desktop = profile == TychoPerformanceProfile.Desktop;
 
@@ -105,8 +123,13 @@ internal static class Queries
         int walAutocheckpoint = desktop ? DesktopWalAutocheckpoint : MobileWalAutocheckpoint;
         long journalSizeLimit = desktop ? DesktopJournalSizeLimitBytes : MobileJournalSizeLimitBytes;
 
-        var sb = new System.Text.StringBuilder(SharedPragmas.Length + SchemaDdl.Length + 160);
+        var sb = new System.Text.StringBuilder(CreationPragma.Length + SharedPragmas.Length + SchemaDdl.Length + DropLegacyIndexes.Length + 160);
         var ic = System.Globalization.CultureInfo.InvariantCulture;
+
+        if (newDatabase)
+        {
+            sb.Append(CreationPragma).Append('\n');
+        }
 
         sb.Append(SharedPragmas).Append('\n')
           .Append("PRAGMA cache_size = -").Append(cacheSizeKb.ToString(ic)).Append(";\n")
@@ -114,6 +137,11 @@ internal static class Queries
           .Append("PRAGMA wal_autocheckpoint = ").Append(walAutocheckpoint.ToString(ic)).Append(";\n")
           .Append("PRAGMA journal_size_limit = ").Append(journalSizeLimit.ToString(ic)).Append(";\n\n")
           .Append(SchemaDdl);
+
+        if (dropLegacyIndexes)
+        {
+            sb.Append('\n').Append(DropLegacyIndexes);
+        }
 
         return sb.ToString();
     }
@@ -561,10 +589,6 @@ internal static class Queries
     public static string DropIndex(string fullIndexName)
         => string.Concat(DropIndexPrefix, fullIndexName, ";");
 
-    // Bounded ANALYZE: refreshes sqlite_stat1 so a newly created index is usable by
-    // the very next query. analysis_limit caps the work so this stays cheap on mobile.
-    public const string AnalyzeBounded = "PRAGMA analysis_limit = 400; ANALYZE;";
-
     public const string SelectIndexMetadata =
         """
         SELECT PhysicalName, Definition, ShapeVersion
@@ -593,6 +617,69 @@ internal static class Queries
 
     public const string SelectPhysicalIndexExists =
         "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = $physicalName;";
+
+    public const string SelectIndexSql =
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = $physicalName;";
+
+    public const string SelectIndexNames =
+        "SELECT name FROM sqlite_master WHERE type = 'index';";
+
+    /// <summary>
+    /// The text sqlite_master keeps for an index this class's DDL created: SQLite stores
+    /// "CREATE INDEX " and then the statement from the index name on, verbatim, so the
+    /// IF NOT EXISTS and the closing semicolon are not part of it.
+    /// </summary>
+    public static string StoredIndexSql(string createIndexStatement)
+        => string.Concat("CREATE INDEX ".AsSpan(), createIndexStatement.AsSpan(CreateIndexPrefix.Length).TrimEnd(';'));
+
+    /// <summary>Whether <paramref name="definition"/> is a statement this class built for the index named.</summary>
+    public static bool IsIndexDefinitionFor(string definition, string physicalName)
+    {
+        int nameEnd = CreateIndexPrefix.Length + physicalName.Length;
+
+        return definition.Length > nameEnd
+            && definition.StartsWith(CreateIndexPrefix, StringComparison.Ordinal)
+            && string.CompareOrdinal(definition, CreateIndexPrefix.Length, physicalName, 0, physicalName.Length) == 0
+            && definition[nameEnd] == '\n';
+    }
+
+    // Planner statistics. TychoDB gathers none — SQLite's default heuristics choose the
+    // right index for every query it emits, and sampled statistics made the planner read
+    // every row of a type on each indexed lookup (5.3.0, 5.3.1) — and deletes what an
+    // earlier release or an external ANALYZE left, reloading so the open connection
+    // forgets them. Only the rows go: dropping the table is pointless, since ANALYZE
+    // sqlite_master recreates it, and a store with no rows is not written to.
+    public const string SelectStatisticsTableExists =
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_stat1';";
+
+    public const string SelectStatisticsRowExists =
+        "SELECT 1 FROM sqlite_stat1 LIMIT 1;";
+
+    public const string DeleteStatistics =
+        """
+        DELETE FROM sqlite_stat1;
+        ANALYZE sqlite_master;
+        """;
+
+    public const string ShrinkMemory = "PRAGMA shrink_memory;";
+
+    public const string AutoVacuumMode = "PRAGMA auto_vacuum;";
+
+    public const string FreelistCount = "PRAGMA freelist_count;";
+
+    public const string PageCount = "PRAGMA page_count;";
+
+    // In-place reclamation of free pages, then a WAL truncation so that space returns to
+    // disk too. Only effective in INCREMENTAL auto-vacuum mode.
+    public const string IncrementalVacuum =
+        "PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);";
+
+    // A store without incremental auto-vacuum can only shrink through a full VACUUM,
+    // which also converts it. The rebuild uses a file-backed temp store so a large
+    // database does not spike memory (VACUUM would otherwise honor temp_store = MEMORY
+    // and build the whole copy in RAM); the in-memory temp store is restored afterwards.
+    public const string FullVacuum =
+        "PRAGMA temp_store = FILE; PRAGMA auto_vacuum = INCREMENTAL; VACUUM; PRAGMA temp_store = MEMORY; PRAGMA wal_checkpoint(TRUNCATE);";
 
     // Cache common LIMIT values using FrozenDictionary for O(1) lookup
     private static readonly FrozenDictionary<int, string> CachedLimits = new Dictionary<int, string>

@@ -322,6 +322,81 @@ public class OptimizeTests
     }
 
     [TestMethod]
+    public async Task LegacyStore_Optimize_SwapsInTheCompactedCopy_AndKeepsServingOnIt()
+    {
+        var dbFile = await SeedLegacyStore();
+        var (path, dbName) = Split(dbFile);
+        var compactedFile = dbFile + Queries.CompactedFileSuffix;
+
+        // A copy an interrupted run left behind is replaced, not reused.
+        File.WriteAllText(compactedFile, "not a database");
+
+        using (var db = await BuildDb2(path, dbName, autoOptimize: false).ConnectAsync())
+        {
+            await db.CreateIndexAsync<Item>(x => x.Seq, IndexName);
+            db.Optimize();
+
+            // The instance works on the swapped-in file without reconnecting: the
+            // lookup, a write, and a read of that write all go through it.
+            await AssertLookup(db);
+            await db.WriteObjectAsync(new Item { Key = "item-new", Group = "G0", Seq = 1000 }, x => x.Key);
+            (await db.ReadObjectAsync<Item>("item-new")).ShouldNotBeNull().Seq.ShouldBe(1000);
+            (await db.CountObjectsAsync<Item>()).ShouldBe(101);
+        }
+
+        File.Exists(compactedFile).ShouldBeFalse();
+        ReadPragma(dbFile, "auto_vacuum").ShouldBe(2);
+        ReadPragma(dbFile, "freelist_count").ShouldBe(0);
+        ReadText(dbFile, "PRAGMA journal_mode").ShouldBe("wal");
+        ReadScalar(dbFile, "SELECT COUNT(*) FROM JsonValue").ShouldBe(101);
+        ReadMetadata(dbFile).ShouldHaveSingleItem().ShapeVersion.ShouldBe(2);
+
+        // Reopened from scratch, the store is the compacted one.
+        using (var db = await BuildDb2(path, dbName, autoOptimize: false).ConnectAsync())
+        {
+            await AssertLookup(db);
+            (await db.CountObjectsAsync<Item>()).ShouldBe(101);
+        }
+    }
+
+    [TestMethod]
+    public async Task LegacyStore_Optimize_WithoutAPersistentConnection_Compacts()
+    {
+        var dbFile = await SeedLegacyStore();
+        var (path, dbName) = Split(dbFile);
+
+        using (var db = await BuildDb2(path, dbName, autoOptimize: false, persistConnection: false).ConnectAsync())
+        {
+            await db.CreateIndexAsync<Item>(x => x.Seq, IndexName);
+            db.Optimize();
+            await AssertLookup(db);
+            (await db.CountObjectsAsync<Item>()).ShouldBe(100);
+        }
+
+        File.Exists(dbFile + Queries.CompactedFileSuffix).ShouldBeFalse();
+        ReadPragma(dbFile, "auto_vacuum").ShouldBe(2);
+        ReadMetadata(dbFile).ShouldHaveSingleItem().ShapeVersion.ShouldBe(2);
+    }
+
+    [TestMethod]
+    public async Task LegacyStore_Cleanup_CompactsThroughTheSameSwap()
+    {
+        var dbFile = await SeedLegacyStore();
+        var (path, dbName) = Split(dbFile);
+
+        using (var db = await BuildDb2(path, dbName, autoOptimize: false).ConnectAsync())
+        {
+            db.Cleanup(shrinkMemory: true, vacuum: true);
+            (await db.CountObjectsAsync<Item>()).ShouldBe(100);
+        }
+
+        File.Exists(dbFile + Queries.CompactedFileSuffix).ShouldBeFalse();
+        ReadPragma(dbFile, "auto_vacuum").ShouldBe(2);
+        ReadText(dbFile, "PRAGMA journal_mode").ShouldBe("wal");
+        ReadIndexDdl(dbFile).ShouldContainKey(LegacyIndexName);
+    }
+
+    [TestMethod]
     public async Task Connect_DeletesLeftoverStatisticsOnce_ThenLeavesTheEmptyTableAlone()
     {
         var (path, dbName) = NewDbPath();
@@ -612,6 +687,18 @@ public class OptimizeTests
         return command.ExecuteScalar() is long value ? value : -1;
     }
 
+    private static string ReadText(string dbFile, string sql)
+    {
+        using var conn = OpenInspection(dbFile);
+        using var command = conn.CreateCommand();
+
+#pragma warning disable CA2100 // Test-local SQL.
+        command.CommandText = sql;
+#pragma warning restore CA2100
+
+        return command.ExecuteScalar() as string ?? string.Empty;
+    }
+
     private static void Execute(string dbFile, string sql)
     {
         using var conn = OpenInspection(dbFile);
@@ -664,13 +751,13 @@ public class OptimizeTests
     }
 
     /// <summary>Reopens an existing database without rebuilding it.</summary>
-    private static Tycho BuildDb2(string path, string dbName, bool autoOptimize = true)
+    private static Tycho BuildDb2(string path, string dbName, bool autoOptimize = true, bool persistConnection = true)
     {
         SqliteConnection.ClearAllPools();
 #if ENCRYPTED
-        return new Tycho(path, Serializer, dbName, DbPassword, rebuildCache: false, requireTypeRegistration: false, autoOptimize: autoOptimize);
+        return new Tycho(path, Serializer, dbName, DbPassword, persistConnection: persistConnection, rebuildCache: false, requireTypeRegistration: false, autoOptimize: autoOptimize);
 #else
-        return new Tycho(path, Serializer, dbName, rebuildCache: false, requireTypeRegistration: false, autoOptimize: autoOptimize);
+        return new Tycho(path, Serializer, dbName, persistConnection: persistConnection, rebuildCache: false, requireTypeRegistration: false, autoOptimize: autoOptimize);
 #endif
     }
 

@@ -44,6 +44,10 @@ public class Tycho : IDisposable
     /// </summary>
     private const int PendingIndexShapeVersion = 0;
 
+    // SQLITE_FULL: the result code SQLite reports when the volume has no room for a
+    // write, which is the one failure the compaction skips rather than raises.
+    private const int SqliteFull = 13;
+
     // Parameter cache - reuse parameter objects to reduce allocations
     private readonly ConcurrentDictionary<string, SqliteParameter> _parameterCache = new();
 
@@ -2746,17 +2750,19 @@ public class Tycho : IDisposable
     /// the index the previous release built for it; drops the per-type indexes a 4.x
     /// rollback recreated next to their replacements; deletes planner statistics an
     /// external <c>ANALYZE</c> left; and returns the pages all of that freed to the file
-    /// system — through a full <c>VACUUM</c> when the store was created without
-    /// incremental auto-vacuum (every 4.x store), which also converts it, or an in-place
+    /// system — by rewriting the store into a compacted copy and swapping it in when the
+    /// store was created without incremental auto-vacuum (every 4.x store), which also
+    /// converts it (see <see cref="CompactStore"/>), or by an in-place
     /// <c>incremental_vacuum</c> when at least a tenth of the file is free. Idempotent:
     /// with nothing pending it reads the schema and writes nothing, so calling it on
     /// every launch is fine.
     /// <para>
     /// Holds the database's single connection for the duration, so every other
     /// operation on this instance waits: on a 1.8M-row, 3 GB store upgraded from 4.x the
-    /// drops, the rebuilds and the <c>VACUUM</c> took about 9, 9 and 5 s, 26 s in all, and
-    /// the <c>VACUUM</c> needs free disk space for a copy of the file. The work runs on the
-    /// calling thread — Microsoft.Data.Sqlite executes synchronously, so
+    /// drops and the rebuilds took about 9 s each, and the compaction needs free disk
+    /// space for the compacted copy — the live pages, about a third of that file — and is
+    /// skipped, to be retried by the next call, when the space is not there. The work
+    /// runs on the calling thread — Microsoft.Data.Sqlite executes synchronously, so
     /// <see cref="OptimizeAsync"/> does not move it off the caller by itself — and must
     /// not be called from a UI thread.
     /// </para>
@@ -2765,11 +2771,16 @@ public class Tycho : IDisposable
     {
         ArgumentNullException.ThrowIfNull(_connection);
 
-        _connection
-            .WithConnectionBlock(
-                _connectionGate,
-                static conn => OptimizeStore(conn),
-                _persistConnection);
+        _connectionGate.Wait();
+
+        try
+        {
+            OptimizeStore();
+        }
+        finally
+        {
+            _connectionGate.Release();
+        }
     }
 
     /// <summary>
@@ -2780,33 +2791,199 @@ public class Tycho : IDisposable
     /// </summary>
     /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
     /// <returns>A ValueTask containing true when the store was optimized.</returns>
-    public ValueTask<bool> OptimizeAsync(CancellationToken cancellationToken = default)
+    public async ValueTask<bool> OptimizeAsync(CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(_connection);
 
-        return _connection
-            .WithConnectionBlockAsync(
-                _connectionGate,
-                static conn => OptimizeStore(conn),
-                _persistConnection,
-                cancellationToken);
-    }
+        await _connectionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-    private static bool OptimizeStore(SqliteConnection conn)
-    {
         try
         {
-            ExecuteNonQuery(conn, Queries.DropLegacyIndexes);
-            RebuildPendingIndexes(conn);
-            RemoveLeftoverStatistics(conn);
-            ReclaimFreeSpace(conn);
+            OptimizeStore();
         }
-        catch (Exception ex) when (ex is not TychoException)
+        finally
         {
-            throw new TychoException("Failed to optimize database", ex);
+            _connectionGate.Release();
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Runs under the gate. The compaction replaces the connection, so nothing here
+    /// keeps the object the gate was entered with past that point.
+    /// </summary>
+    private void OptimizeStore()
+    {
+        var conn = GatedConnection();
+
+        try
+        {
+            bool compact = ReadPragma(conn, Queries.AutoVacuumMode) == 0;
+            long secureDelete = compact ? ReadPragma(conn, Queries.SecureDelete) : 0;
+
+            try
+            {
+                if (secureDelete != 0)
+                {
+                    ExecuteNonQuery(conn, Queries.SecureDeleteOff);
+                }
+
+                try
+                {
+                    ExecuteNonQuery(conn, Queries.DropLegacyIndexes);
+                    RebuildPendingIndexes(conn);
+                    RemoveLeftoverStatistics(conn);
+                }
+                finally
+                {
+                    if (secureDelete != 0)
+                    {
+                        ExecuteNonQuery(conn, Queries.RestoreSecureDelete(secureDelete));
+                    }
+                }
+
+                if (!compact)
+                {
+                    ReclaimFreePages(conn);
+                }
+            }
+            catch (Exception ex) when (ex is not TychoException)
+            {
+                throw new TychoException("Failed to optimize database", ex);
+            }
+
+            if (compact)
+            {
+                CompactStore();
+            }
+        }
+        finally
+        {
+            ReleaseGatedConnection();
+        }
+    }
+
+    private SqliteConnection GatedConnection()
+    {
+        var conn = _connection ?? throw new TychoException("Please call 'Connect' before performing an operation");
+
+        if (!_persistConnection)
+        {
+            conn.Open();
+        }
+
+        return conn;
+    }
+
+    private void ReleaseGatedConnection()
+    {
+        if (!_persistConnection)
+        {
+            _connection?.Close();
+        }
+    }
+
+    /// <summary>
+    /// Rewrites a store that has no incremental auto-vacuum (every 4.x store) into a
+    /// compacted copy next to the file, with <c>VACUUM INTO</c>, and swaps the copy in:
+    /// the connection closes, which checkpoints the WAL into the file; the <c>-wal</c> and
+    /// <c>-shm</c> files are deleted; the copy is renamed over the database; and the
+    /// connection reopens on it. Only the live pages are written, once, into the
+    /// database's own directory — no temp copy, nothing back through the WAL — so the free
+    /// space needed is the compacted size. The WAL goes before the rename because SQLite
+    /// checks a WAL only against its own header, so one left next to the new file would be
+    /// replayed into it. The connection holds the file exclusively, so a WAL still on disk
+    /// with frames after the close means the close could not checkpoint it and the file
+    /// may lack commits only the WAL holds; the copy is discarded instead. The database is
+    /// untouched until the rename, which is atomic: an interruption leaves the old file
+    /// working and at most a leftover copy, which the next call removes. Skipped, to be
+    /// retried by the next call, when the volume lacks the space, SQLite reports it full,
+    /// or such a WAL remains. Runs under the gate.
+    /// </summary>
+    private void CompactStore()
+    {
+        var connection = _connection!;
+        string compactedPath = _databasePath + Queries.CompactedFileSuffix;
+
+        long liveBytes =
+            (ReadPragma(connection, Queries.PageCount) - ReadPragma(connection, Queries.FreelistCount))
+            * ReadPragma(connection, Queries.PageSize);
+
+        if (!HasFreeSpaceFor(liveBytes))
+        {
+            return;
+        }
+
+        File.Delete(compactedPath);
+
+        try
+        {
+            ExecuteNonQuery(connection, Queries.SetIncrementalAutoVacuum);
+
+            using var vacuum = connection.CreateCommand();
+            vacuum.CommandText = Queries.VacuumInto;
+            vacuum.Parameters.Add(new SqliteParameter("$path", SqliteType.Text) { Value = compactedPath });
+            vacuum.ExecuteNonQuery();
+        }
+        catch (SqliteException ex) when (ex.SqliteErrorCode == SqliteFull)
+        {
+            File.Delete(compactedPath);
+            return;
+        }
+        catch (Exception ex)
+        {
+            File.Delete(compactedPath);
+            throw new TychoException("Failed to compact database", ex);
+        }
+
+        connection.Dispose();
+        SqliteConnection.ClearPool(connection);
+        _connection = null;
+
+        string walPath = _databasePath + "-wal";
+
+        if (new FileInfo(walPath) is { Exists: true, Length: > 0 })
+        {
+            File.Delete(compactedPath);
+            _connection = OpenConnection(_connectionScript);
+            return;
+        }
+
+        try
+        {
+            File.Delete(walPath);
+            File.Delete(_databasePath + "-shm");
+            File.Move(compactedPath, _databasePath, overwrite: true);
+        }
+        catch (Exception ex)
+        {
+            File.Delete(compactedPath);
+            _connection = OpenConnection(_connectionScript);
+            throw new TychoException("Failed to compact database", ex);
+        }
+
+        _connection = OpenConnection(_connectionScript);
+    }
+
+    /// <summary>
+    /// Whether the volume holding the database has room for <paramref name="bytes"/> and
+    /// an eighth more. True when the volume cannot be asked: the compaction then relies
+    /// on SQLite reporting a full disk, which leaves the database untouched.
+    /// </summary>
+    private bool HasFreeSpaceFor(long bytes)
+    {
+        try
+        {
+            string fullPath = Path.GetFullPath(_databasePath);
+            string directory = Path.GetDirectoryName(fullPath) ?? fullPath;
+
+            return new DriveInfo(directory).AvailableFreeSpace >= bytes + (bytes / 8);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return true;
+        }
     }
 
     /// <summary>
@@ -2904,24 +3081,16 @@ public class Tycho : IDisposable
     }
 
     /// <summary>
-    /// Returns freed pages to the file system. A store created without incremental
-    /// auto-vacuum — every 4.x store: its connect script set the pragma after
-    /// <c>journal_mode = WAL</c>, which fixed the mode at NONE — can only shrink through
-    /// a full <c>VACUUM</c>, which rewrites the file and converts it, so later calls take
-    /// the in-place path; that path runs when at least a tenth of the file is free, so a
-    /// store with a little churn is left alone.
+    /// Returns freed pages to the file system in place, on a store with incremental
+    /// auto-vacuum, when at least a tenth of the file is free, so a store with a little
+    /// churn is left alone. A store created without it — every 4.x store: its connect
+    /// script set the pragma after <c>journal_mode = WAL</c>, which fixed the mode at
+    /// NONE — is converted by <see cref="CompactStore"/> instead, after which later
+    /// calls take this path.
     /// </summary>
-    private static void ReclaimFreeSpace(SqliteConnection conn)
+    private static void ReclaimFreePages(SqliteConnection conn)
     {
-        long autoVacuumMode = ReadPragma(conn, Queries.AutoVacuumMode);
-
-        if (autoVacuumMode == 0)
-        {
-            ExecuteNonQuery(conn, Queries.FullVacuum);
-            return;
-        }
-
-        if (autoVacuumMode != 2)
+        if (ReadPragma(conn, Queries.AutoVacuumMode) != 2)
         {
             return;
         }
@@ -2957,44 +3126,61 @@ public class Tycho : IDisposable
     /// auto-vacuum mode this runs a cheap in-place <c>incremental_vacuum</c>. On a
     /// legacy database that was created without incremental auto-vacuum (e.g. by an
     /// older version, or before the auto_vacuum ordering fix), <c>incremental_vacuum</c>
-    /// is a no-op, so this instead runs a one-time full <c>VACUUM</c> that both reclaims
-    /// the space and converts the database to incremental auto-vacuum for the future.
+    /// is a no-op, so this instead rewrites the database into a compacted copy and swaps
+    /// it in, which both reclaims the space and converts the database to incremental
+    /// auto-vacuum for the future; that needs free disk space for the compacted copy and
+    /// is skipped when the space is not there (see <see cref="CompactStore"/>).
     /// </param>
     public void Cleanup(bool shrinkMemory = true, bool vacuum = false)
     {
         ArgumentNullException.ThrowIfNull(_connection);
 
-        _connection
-            .WithConnectionBlock(
-                _connectionGate,
-                (shrinkMemory, vacuum),
-                static (conn, state) =>
+        _connectionGate.Wait();
+
+        try
+        {
+            var conn = GatedConnection();
+
+            try
+            {
+                bool compact = false;
+
+                try
                 {
-                    try
+                    if (shrinkMemory)
                     {
-                        if (state.shrinkMemory)
-                        {
-                            ExecuteNonQuery(conn, Queries.ShrinkMemory);
-                        }
-
-                        if (!state.vacuum)
-                        {
-                            return;
-                        }
-
-                        // incremental_vacuum only reclaims space when the database is in
-                        // INCREMENTAL (2) auto-vacuum mode; a legacy/NONE database needs
-                        // the full VACUUM, which also converts it.
-                        ExecuteNonQuery(
-                            conn,
-                            ReadPragma(conn, Queries.AutoVacuumMode) == 2 ? Queries.IncrementalVacuum : Queries.FullVacuum);
+                        ExecuteNonQuery(conn, Queries.ShrinkMemory);
                     }
-                    catch (Exception ex)
+
+                    if (vacuum)
                     {
-                        throw new TychoException("Failed to clean up database", ex);
+                        compact = ReadPragma(conn, Queries.AutoVacuumMode) == 0;
+
+                        if (!compact)
+                        {
+                            ExecuteNonQuery(conn, Queries.IncrementalVacuum);
+                        }
                     }
-                },
-                _persistConnection);
+                }
+                catch (Exception ex)
+                {
+                    throw new TychoException("Failed to clean up database", ex);
+                }
+
+                if (compact)
+                {
+                    CompactStore();
+                }
+            }
+            finally
+            {
+                ReleaseGatedConnection();
+            }
+        }
+        finally
+        {
+            _connectionGate.Release();
+        }
     }
 
     /// <summary>
@@ -3239,34 +3425,23 @@ public class Tycho : IDisposable
 
     private SqliteConnection BuildConnection()
     {
-        var connection = new SqliteConnection(_dbConnectionString);
+        _connectionGate.Wait();
 
-        connection
-            .WithConnectionBlock(
-                _connectionGate,
-                ConnectionScript(),
-                static (conn, script) =>
-                {
-                    conn.Open();
+        try
+        {
+            var connection = OpenConnection(ConnectionScript());
 
-                    // Verified once per process (see EnsureJsonSupport).
-                    EnsureJsonSupport(conn);
+            if (!_persistConnection)
+            {
+                connection.Close();
+            }
 
-                    using var command = conn.CreateCommand();
-
-                    // Profile PRAGMAs + idempotent schema/index creation. Composed from
-                    // library constants and numeric profile values only (no user input).
-#pragma warning disable CA2100
-                    command.CommandText = script;
-#pragma warning restore CA2100
-
-                    command.ExecuteNonQuery();
-
-                    RemoveLeftoverStatistics(conn);
-                },
-                _persistConnection);
-
-        return connection;
+            return connection;
+        }
+        finally
+        {
+            _connectionGate.Release();
+        }
     }
 
     private async ValueTask<SqliteConnection> BuildConnectionAsync(CancellationToken cancellationToken = default)
@@ -3275,16 +3450,33 @@ public class Tycho : IDisposable
 
         try
         {
-            var script = ConnectionScript();
-            var connection = new SqliteConnection(_dbConnectionString);
+            return OpenConnection(ConnectionScript());
+        }
+        finally
+        {
+            _connectionGate.Release();
+        }
+    }
 
+    /// <summary>
+    /// Opens a connection on the file and runs <paramref name="script"/> on it. Called
+    /// under the gate: by Connect, and by <see cref="CompactStore"/> to reopen the store
+    /// it swapped in. A connection whose setup fails is disposed before the failure
+    /// propagates, so it does not keep the file's lock until the finalizer runs.
+    /// </summary>
+    private SqliteConnection OpenConnection(string script)
+    {
+        var connection = new SqliteConnection(_dbConnectionString);
+
+        try
+        {
             connection.Open();
 
             // JSON support depends only on the process-wide native SQLite build, so
             // it is verified once and cached rather than re-queried on every connect.
             EnsureJsonSupport(connection);
 
-            await using var command = connection.CreateCommand();
+            using var command = connection.CreateCommand();
 
             // Profile PRAGMAs + idempotent schema/index creation. Composed from
             // library constants and numeric profile values only (no user input).
@@ -3298,9 +3490,10 @@ public class Tycho : IDisposable
 
             return connection;
         }
-        finally
+        catch
         {
-            _connectionGate.Release();
+            connection.Dispose();
+            throw;
         }
     }
 

@@ -20,8 +20,8 @@ namespace TychoDB.UnitTests;
 /// same-named 4.x index is recognised as stale instead of kept; the index a 4.x rollback
 /// leaves next to a current one is dropped, while one another declaration records as its
 /// own is kept; a current store is never written to by connect, by a declaration, or by
-/// <c>Optimize</c>; and a pending definition that is not the statement Tycho built is
-/// refused rather than run.
+/// <c>Optimize</c>; a store on a read-only file still connects; and a pending definition
+/// that is not the statement Tycho built is refused rather than run.
 /// </summary>
 [TestClass]
 public class OptimizeTests
@@ -490,6 +490,67 @@ public class OptimizeTests
     }
 
     [TestMethod]
+    public async Task Connect_OnAReadOnlyFile_LeavesTheStatisticsAndSucceeds()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("Unix file modes are used to make the file read-only.");
+        }
+
+        var (path, dbName) = NewDbPath();
+        var dbFile = Path.Combine(path, dbName);
+
+        using (var db = await BuildDb(path, dbName).ConnectAsync())
+        {
+            await db.WriteObjectsAsync(Items(), x => x.Key);
+            await db.CreateIndexAsync<Item>(x => x.Seq, IndexName);
+        }
+
+        Execute(dbFile, "ANALYZE;");
+        long statisticsRows = ReadScalar(dbFile, "SELECT COUNT(*) FROM sqlite_stat1");
+        statisticsRows.ShouldBeGreaterThan(0);
+
+        SqliteConnection.ClearAllPools();
+        var mode = File.GetUnixFileMode(dbFile);
+        File.SetUnixFileMode(dbFile, UnixFileMode.UserRead | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+
+        try
+        {
+            if (CanOpenForWriting(dbFile))
+            {
+                Assert.Inconclusive("The file stays writable for this user, so the read-only connect cannot be exercised.");
+            }
+
+            foreach (var autoOptimize in new[] { true, false })
+            {
+                using var db = await BuildDb2(path, dbName, autoOptimize).ConnectAsync();
+                await db.CreateIndexAsync<Item>(x => x.Seq, IndexName);
+                await AssertLookup(db);
+                (await db.CountObjectsAsync<Item>()).ShouldBe(100);
+            }
+        }
+        finally
+        {
+            // SQLite gives the -wal and -shm it creates the database file's mode.
+            SqliteConnection.ClearAllPools();
+
+            foreach (var file in new[] { dbFile, dbFile + "-wal", dbFile + "-shm" }.Where(File.Exists))
+            {
+                File.SetUnixFileMode(file, mode);
+            }
+        }
+
+        ReadScalar(dbFile, "SELECT COUNT(*) FROM sqlite_stat1").ShouldBe(statisticsRows);
+
+        // Writable again, the next connect deletes them.
+        using (await BuildDb2(path, dbName).ConnectAsync())
+        {
+        }
+
+        ReadScalar(dbFile, "SELECT COUNT(*) FROM sqlite_stat1").ShouldBe(0);
+    }
+
+    [TestMethod]
     public async Task Optimize_RefusesATamperedPendingDefinition()
     {
         var dbFile = await SeedLegacyStore();
@@ -719,6 +780,19 @@ public class OptimizeTests
         command.CommandText = "UPDATE TychoIndex SET Definition = $definition";
         command.Parameters.AddWithValue("$definition", definition);
         command.ExecuteNonQuery().ShouldBe(1);
+    }
+
+    private static bool CanOpenForWriting(string dbFile)
+    {
+        try
+        {
+            using var stream = new FileStream(dbFile, FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     /// <summary>The main file's bytes, once every pooled connection has closed and checkpointed.</summary>

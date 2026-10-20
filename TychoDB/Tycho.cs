@@ -3462,7 +3462,10 @@ public class Tycho : IDisposable
     /// Opens a connection on the file and runs <paramref name="script"/> on it. Called
     /// under the gate: by Connect, and by <see cref="CompactStore"/> to reopen the store
     /// it swapped in. A connection whose setup fails is disposed before the failure
-    /// propagates, so it does not keep the file's lock until the finalizer runs.
+    /// propagates, so it does not keep the file's lock until the finalizer runs. The
+    /// statistics delete is best-effort here, as the <c>PRAGMA optimize</c> it replaced
+    /// was: a store on a read-only file or a full volume connects, and the planner stays
+    /// misled until a connect that can write; <see cref="Optimize"/> reports the failure.
     /// </summary>
     private SqliteConnection OpenConnection(string script)
     {
@@ -3486,7 +3489,13 @@ public class Tycho : IDisposable
 
             command.ExecuteNonQuery();
 
-            RemoveLeftoverStatistics(connection);
+            try
+            {
+                RemoveLeftoverStatistics(connection);
+            }
+            catch (SqliteException)
+            {
+            }
 
             return connection;
         }

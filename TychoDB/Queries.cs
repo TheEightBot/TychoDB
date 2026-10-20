@@ -640,15 +640,105 @@ internal static class Queries
     public static string StoredIndexSql(string createIndexStatement)
         => string.Concat("CREATE INDEX ".AsSpan(), createIndexStatement.AsSpan(CreateIndexPrefix.Length).TrimEnd(';'));
 
-    /// <summary>Whether <paramref name="definition"/> is a statement this class built for the index named.</summary>
+    /// <summary>
+    /// Whether <paramref name="definition"/> is, byte for byte, a statement
+    /// <see cref="CreateIndexForJsonValue(string, ValueTuple{string, bool}[], string?)"/>
+    /// builds for the index named. The text is taken apart into the paths and the type it
+    /// indexes, each path is checked as a declaration's is, and the statement is built
+    /// again from them and compared. The value is read back out of the TychoIndex table
+    /// and executed as it stands, so it is re-checked rather than trusted: anything added
+    /// to it — a second statement, an expression this class never emits — does not survive
+    /// the round trip.
+    /// </summary>
     public static bool IsIndexDefinitionFor(string definition, string physicalName)
-    {
-        int nameEnd = CreateIndexPrefix.Length + physicalName.Length;
+        => TryParseIndexDefinition(definition, physicalName, out var propertyPaths, out var fullTypeName)
+           && string.Equals(definition, CreateIndexForJsonValue(physicalName, propertyPaths, fullTypeName), StringComparison.Ordinal);
 
-        return definition.Length > nameEnd
-            && definition.StartsWith(CreateIndexPrefix, StringComparison.Ordinal)
-            && string.CompareOrdinal(definition, CreateIndexPrefix.Length, physicalName, 0, physicalName.Length) == 0
-            && definition[nameEnd] == '\n';
+    private static bool TryParseIndexDefinition(
+        string definition,
+        string physicalName,
+        out (string PropertyPathString, bool IsNumeric)[] propertyPaths,
+        out string? fullTypeName)
+    {
+        propertyPaths = Array.Empty<(string PropertyPathString, bool IsNumeric)>();
+        fullTypeName = null;
+
+        var rest = definition.AsSpan();
+
+        if (!Consume(ref rest, CreateIndexPrefix) || !Consume(ref rest, physicalName))
+        {
+            return false;
+        }
+
+        bool partial = Consume(ref rest, PartialIndexOnJsonValue);
+
+        if (!partial && !(Consume(ref rest, MultiIndexOnJsonValue) && Consume(ref rest, PartitionColumnSegment)))
+        {
+            return false;
+        }
+
+        var paths = new List<(string PropertyPathString, bool IsNumeric)>();
+
+        while (true)
+        {
+            bool numeric = Consume(ref rest, MultiIndexCastPrefix);
+
+            if (!numeric && !Consume(ref rest, MultiIndexJsonExtractPrefix))
+            {
+                break;
+            }
+
+            int pathEnd = rest.IndexOf('\'');
+
+            if (pathEnd < 0)
+            {
+                return false;
+            }
+
+            string path = rest[..pathEnd].ToString();
+            rest = rest[pathEnd..];
+
+            if (!QueryPropertyPath.IsValidPath(path)
+                || !Consume(ref rest, numeric ? MultiIndexCastSuffix : MultiIndexJsonExtractSuffix))
+            {
+                return false;
+            }
+
+            paths.Add((path, numeric));
+        }
+
+        if (paths.Count == 0)
+        {
+            return false;
+        }
+
+        propertyPaths = paths.ToArray();
+
+        if (!partial)
+        {
+            return rest.SequenceEqual(MultiIndexClose.AsSpan());
+        }
+
+        if (!Consume(ref rest, ")")
+            || !Consume(ref rest, PartialIndexWherePrefix)
+            || !rest.EndsWith(PartialIndexWhereSuffix.AsSpan(), StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        fullTypeName = rest[..^PartialIndexWhereSuffix.Length].ToString().Replace("''", "'", StringComparison.Ordinal);
+        return true;
+    }
+
+    private static bool Consume(ref ReadOnlySpan<char> text, string token)
+    {
+        if (!text.StartsWith(token.AsSpan(), StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        text = text[token.Length..];
+        return true;
     }
 
     // Planner statistics. TychoDB gathers none — SQLite's default heuristics choose the

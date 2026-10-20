@@ -19,8 +19,9 @@ namespace TychoDB.UnitTests;
 /// and served by that index until <c>Optimize</c> rebuilds it; the string overload's
 /// same-named 4.x index is recognised as stale instead of kept; the index a 4.x rollback
 /// leaves next to a current one is dropped, while one another declaration records as its
-/// own is kept; and a current store is never written to by connect, by a declaration, or
-/// by <c>Optimize</c>.
+/// own is kept; a current store is never written to by connect, by a declaration, or by
+/// <c>Optimize</c>; and a pending definition that is not the statement Tycho built is
+/// refused rather than run.
 /// </summary>
 [TestClass]
 public class OptimizeTests
@@ -413,6 +414,61 @@ public class OptimizeTests
         ReadMetadata(dbFile).ShouldHaveSingleItem().ShouldBe(manual);
     }
 
+    [TestMethod]
+    public async Task Optimize_RefusesATamperedPendingDefinition()
+    {
+        var dbFile = await SeedLegacyStore();
+        var (path, dbName) = Split(dbFile);
+
+        using (var db = await BuildDb2(path, dbName, autoOptimize: false).ConnectAsync())
+        {
+            await db.CreateIndexAsync<Item>(x => x.Seq, IndexName);
+        }
+
+        var pending = ReadMetadata(dbFile).ShouldHaveSingleItem();
+        pending.ShapeVersion.ShouldBe(0);
+
+        // Each keeps the prefix and the name Tycho wrote and carries a second statement:
+        // after the column list, and inside the type literal of the WHERE clause.
+        var tampered = new[]
+        {
+            $"CREATE INDEX IF NOT EXISTS {pending.PhysicalName}\nON JsonValue(Partition); DROP TABLE StreamValue; --",
+            pending.Definition.Replace("WHERE FullTypeName = '", "WHERE FullTypeName = ''; DROP TABLE StreamValue; --", StringComparison.Ordinal),
+        };
+
+        foreach (var definition in tampered)
+        {
+            definition.ShouldContain("DROP TABLE", Case.Sensitive);
+            WriteDefinition(dbFile, definition);
+
+            using (var db = await BuildDb2(path, dbName, autoOptimize: false).ConnectAsync())
+            {
+                Should.Throw<TychoException>(() => db.Optimize()).Message.ShouldContain(IndexName, Case.Sensitive);
+                await AssertLookup(db);
+            }
+
+            ReadScalar(dbFile, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'StreamValue'").ShouldBe(1);
+            ReadIndexDdl(dbFile).ShouldContainKey(LegacyIndexName);
+            ReadIndexDdl(dbFile).ShouldNotContainKey(pending.PhysicalName);
+
+            var row = ReadMetadata(dbFile).ShouldHaveSingleItem();
+            row.ShapeVersion.ShouldBe(0);
+            row.Definition.ShouldBe(definition);
+        }
+
+        // The definition as Tycho wrote it is built.
+        WriteDefinition(dbFile, pending.Definition);
+
+        using (var db = await BuildDb2(path, dbName, autoOptimize: false).ConnectAsync())
+        {
+            db.Optimize();
+            await AssertLookup(db);
+        }
+
+        ReadIndexDdl(dbFile).ShouldContainKey(pending.PhysicalName);
+        ReadMetadata(dbFile).ShouldHaveSingleItem().ShapeVersion.ShouldBe(2);
+    }
+
     // ---------- seeding ----------
 
     /// <summary>
@@ -566,6 +622,16 @@ public class OptimizeTests
 #pragma warning restore CA2100
 
         command.ExecuteNonQuery();
+    }
+
+    /// <summary>Overwrites the one recorded index's definition, as a tampered file would carry it.</summary>
+    private static void WriteDefinition(string dbFile, string definition)
+    {
+        using var conn = OpenInspection(dbFile);
+        using var command = conn.CreateCommand();
+        command.CommandText = "UPDATE TychoIndex SET Definition = $definition";
+        command.Parameters.AddWithValue("$definition", definition);
+        command.ExecuteNonQuery().ShouldBe(1);
     }
 
     /// <summary>The main file's bytes, once every pooled connection has closed and checkpointed.</summary>

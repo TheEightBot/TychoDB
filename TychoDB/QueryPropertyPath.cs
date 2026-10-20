@@ -249,7 +249,7 @@ internal static class QueryPropertyPath
 
         foreach (var c in path)
         {
-            if (!(char.IsLetterOrDigit(c) || c is '$' or '.' or '_' or '[' or ']'))
+            if (!IsPathChar(c))
             {
                 throw new ArgumentException(
                     $"Property path contains an invalid character '{c}'. Only letters, digits, '_', '.', '$', '[' and ']' are permitted.",
@@ -257,6 +257,31 @@ internal static class QueryPropertyPath
             }
         }
     }
+
+    /// <summary>
+    /// Whether <paramref name="path"/> would pass <see cref="ValidatePath"/>: the check for
+    /// a path read back out of the database rather than supplied by a caller.
+    /// </summary>
+    public static bool IsValidPath(string path)
+    {
+        if (string.IsNullOrEmpty(path))
+        {
+            return false;
+        }
+
+        foreach (var c in path)
+        {
+            if (!IsPathChar(c))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsPathChar(char c)
+        => char.IsLetterOrDigit(c) || c is '$' or '.' or '_' or '[' or ']';
 
     /// <summary>
     /// Validates a caller-supplied SQL identifier (e.g. an index name). Identifiers

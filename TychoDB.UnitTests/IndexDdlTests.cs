@@ -687,6 +687,32 @@ public class IndexDdlTests
     /// Physical index names carry a hash suffix of the full type name, so tests
     /// locate an index by its logical name prefix rather than an exact key.
     /// </summary>
+    [TestMethod]
+    public void IndexDefinition_IsAcceptedOnlyAsBuilt()
+    {
+        const string name = "idx_seq_idx_Item_0a1b2c3d";
+        var paths = new[] { ("$.Seq", true), ("$.Nested.Name", false), ("$.Tags[0]", false) };
+
+        var partial = Queries.CreateIndexForJsonValue(name, paths, typeof(IndexTestModel).FullName);
+        var quoted = Queries.CreateIndexForJsonValue(name, paths, "Ns.O'Brien+Item");
+        var manual = Queries.CreateIndexForJsonValue(name, paths);
+
+        Queries.IsIndexDefinitionFor(partial, name).ShouldBeTrue();
+        Queries.IsIndexDefinitionFor(quoted, name).ShouldBeTrue();
+        Queries.IsIndexDefinitionFor(manual, name).ShouldBeTrue();
+
+        Queries.IsIndexDefinitionFor(partial, "idx_seq_idx_Item").ShouldBeFalse();
+        Queries.IsIndexDefinitionFor(partial + " DROP TABLE StreamValue;", name).ShouldBeFalse();
+        Queries.IsIndexDefinitionFor(partial.TrimEnd(';'), name).ShouldBeFalse();
+        Queries.IsIndexDefinitionFor(manual + " DROP TABLE StreamValue;", name).ShouldBeFalse();
+        Queries.IsIndexDefinitionFor(manual.Replace(");", "); DROP TABLE StreamValue; --", StringComparison.Ordinal), name).ShouldBeFalse();
+        Queries.IsIndexDefinitionFor(partial.Replace("WHERE FullTypeName = '", "WHERE FullTypeName = ''; DROP TABLE StreamValue; --", StringComparison.Ordinal), name).ShouldBeFalse();
+        Queries.IsIndexDefinitionFor(partial.Replace("$.Seq", "$.Seq') as NUMERIC)); DROP TABLE StreamValue; --", StringComparison.Ordinal), name).ShouldBeFalse();
+        Queries.IsIndexDefinitionFor(partial.Replace("JsonValue(", "StreamValue(", StringComparison.Ordinal), name).ShouldBeFalse();
+        Queries.IsIndexDefinitionFor(partial.Replace("JSON_EXTRACT(Data, '$.Nested.Name')", "lower(JSON_EXTRACT(Data, '$.Nested.Name'))", StringComparison.Ordinal), name).ShouldBeFalse();
+        Queries.IsIndexDefinitionFor($"CREATE INDEX IF NOT EXISTS {name}\nON JsonValue(Partition)\nWHERE FullTypeName = 'X';", name).ShouldBeFalse();
+    }
+
     private static string Find(Dictionary<string, string> ddl, string logicalIndexName)
     {
         var prefix = $"idx_{logicalIndexName}_";

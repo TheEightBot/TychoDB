@@ -516,8 +516,11 @@ This matters for how they behave:
   `autoOptimize: false` to defer both: connect and the declarations then cost about
   140 ms, `CreateIndex` records each declaration as pending while queries keep using the
   index 4.x built, and `Optimize()` / `OptimizeAsync()` — called from a background
-  thread — do the drops, the rebuilds, and a `VACUUM` that returns the freed pages to the
-  file system (3.06 GB to 1.03 GB in 5 s; 26 s for the whole call). A declaration no
+  thread — do the drops, the rebuilds, and a compaction that returns the freed pages to
+  the file system (3.06 GB to 1.03 GB on that store): the live pages are written into a
+  copy next to the database with `VACUUM INTO` and the copy is swapped in, so the free
+  space needed is the compacted copy, the file is untouched until an atomic rename, and
+  the step is skipped and retried next time when the space is not there. A declaration no
   existing index serves is built at once either way.
 - **The upgrade pays back on every write.** With the whole-table 4.x indexes gone,
   50,000-row bulk writes on that store ran 2.1x faster for an indexed type (38k to 80k
@@ -631,9 +634,10 @@ db.Cleanup(shrinkMemory: true, vacuum: true);
 
 // Do the one-time work an upgraded store needs: drop the indexes 4.x created, build the
 // indexes declared under autoOptimize: false, drop what a 4.x rollback left behind, and
-// VACUUM. A no-op once done. Holds the connection for the duration — every other
-// operation on this instance waits; 26 s on a 1.8M-row, 3 GB store upgraded from 4.x — and
-// runs on the calling thread, so call it from a background thread, never the UI thread.
+// compact the file (skipped when the disk lacks room for the compacted copy). A no-op once
+// done. Holds the connection for the duration — every other operation on this instance
+// waits; tens of seconds on a 1.8M-row, 3 GB store upgraded from 4.x — and runs on the
+// calling thread, so call it from a background thread, never the UI thread.
 await Task.Run(() => db.Optimize());
 ```
 

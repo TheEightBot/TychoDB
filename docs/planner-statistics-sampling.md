@@ -113,10 +113,12 @@ statistics, and that finding is reversed.
 - `TychoDB.UnitTests/OptimizeTests.cs` — the upgrade path from 4.4.2 through Tycho's own
   API: a store with 4.4.2's per-type and built-in indexes and no incremental auto-vacuum,
   declared under `autoOptimize: false` (pending, served by the 4.4.2 index) and then
-  optimized (rebuilt, drops done, `VACUUM` run, store converted, nothing written on the
+  optimized (rebuilt, drops done, store compacted and converted, nothing written on the
   next launch); the same store under `autoOptimize: true`; the string overload's
-  same-named 4.4.2 index; the orphan a rollback leaves; and a current store that connect,
-  the declarations and `Optimize` leave byte-identical.
+  same-named 4.4.2 index; the orphan a rollback leaves; a current store that connect, the
+  declarations and `Optimize` leave byte-identical; and the compaction itself — the
+  instance keeps serving on the swapped-in file, a leftover copy is replaced, it works
+  without a persistent connection, and `Cleanup(vacuum: true)` takes the same path.
 
 Bound parameters are fine in the library: SQLite re-plans when a bound value touches a
 partial-index `WHERE`, so `EXPLAIN QUERY PLAN` on an unbound statement shows the generic
@@ -144,13 +146,29 @@ six whole-table per-type indexes go too (table below).
 `autoOptimize: false` connects without the drops and records each `CreateIndex` whose
 index 4.x built as pending, leaving that index to serve queries — about 140 ms for the
 connect and six declarations on that store; `Optimize`/`OptimizeAsync` then do the drops,
-the rebuilds, the orphan sweep a 4.x rollback needs, the statistics delete, and a full
-`VACUUM` that returns the freed pages — 2 GB on that store, in 5 s; 26 s for the whole
-call — since a 4.x store has no incremental auto-vacuum and nothing else can. The numbers
-are in the table below. Both hold the single connection for the
-duration and run on the calling thread — Microsoft.Data.Sqlite executes synchronously, so
-the async form alone does not move the work off the caller — so apps call them from a
-background thread.
+the rebuilds, the orphan sweep a 4.x rollback needs, the statistics delete, and a
+compaction that returns the freed pages — 2 GB on that store — since a 4.x store has no
+incremental auto-vacuum and nothing else can. The numbers are in the table below. Both
+hold the single connection for the duration and run on the calling thread —
+Microsoft.Data.Sqlite executes synchronously, so the async form alone does not move the
+work off the caller — so apps call them from a background thread.
+
+The compaction is `VACUUM INTO` a copy next to the database, then a swap: the connection
+closes, the copy is renamed over the file, and the connection reopens on it. A full
+`VACUUM` writes the data twice — into a temp copy, then back into the file through the
+WAL, which grew to 1.04 GB on the 2.37 GB store — so it needs free space for about two
+compacted copies and, on a 49 MB store with 75 MB free, failed with `database or disk is
+full`, left `temp_store = FILE` on the connection, and was retried on every call. `VACUUM
+INTO` writes the live pages once, needs free space for one compacted copy, uses no temp
+directory, and leaves the database untouched until the rename, which is atomic: the same
+store compacted on the same volume. The `-wal` and `-shm` are deleted before the rename,
+not after: SQLite checks a WAL only against its own header, so a WAL an interruption left
+next to the new file would be replayed into it. `Optimize` checks the volume first and skips the
+compaction, to retry on the next call, when the space is not there or SQLite reports the
+disk full, and discards the copy when the WAL survives the close, which happens only
+when the close could not checkpoint it. Under SQLCipher, whose `secure_delete` default zeroes every freed page through
+the WAL — dropping a 528 KB index wrote 544 KB of WAL, against 12 KB with the setting off
+— the drops run with it off when a compaction follows, and the setting is restored after.
 
 ## Measured on the real store
 
@@ -164,7 +182,7 @@ brand, origin and load date; a distance by SPLC pair; a zip3; a zip.
 | Connect | 72 ms |
 | Six `CreateIndex`, all recorded pending, no DDL | 69 ms (67 of it the first call's JIT) |
 | Lookups while pending, on the 4.4.2 indexes | pricing 5.3 ms, SPLC 0.2 ms, zip3 and zip 0.05 ms |
-| `Optimize()`: four drops, six rebuilds, `VACUUM`, conversion | 26.3 s |
+| `Optimize()`: four drops, six rebuilds, full `VACUUM` (before the compaction below), conversion | 26.3 s |
 | Lookups after | pricing 0.64 ms, the others 0.05 ms |
 | File | 3,063 MB → 1,030 MB, `auto_vacuum` 2, freelist 0 |
 | Next launch: Connect, six `CreateIndex`, `Optimize()` | 44 ms, 34 ms, 1 ms |
@@ -174,10 +192,22 @@ brand, origin and load date; a distance by SPLC pair; a zip3; a zip.
 | Connect, the four drops | 9.2 s |
 | Six `CreateIndex` inline, drop the 4.4.2 index and build | 9.0 s (0.7–4.7 s each) |
 | File after launch | 2,922 MB, 476,124 free pages, still NONE |
-| `Optimize()` on the next launch, the `VACUUM` alone | 5.4 s → 1,030 MB; a further call 1 ms |
+| `Optimize()` on the next launch, the full `VACUUM` alone | 5.4 s → 1,030 MB; a further call 1 ms |
 
 The string overload's same-named 4.4.2 index on a 5,000-row store: 4 ms to detect the
 mismatch and record it pending, 15 ms for `Optimize()` to rebuild it, 9 ms inline.
+
+The compaction that replaced the full `VACUUM`, measured through the library on a copy of
+another 4.4.2 pricing store (1,763,583 rows, 2,374 MB, the same eleven indexes, e_sqlite3
+3.50.3, NVMe, warm): `Optimize()` under `autoOptimize: false` — the four drops, six
+rebuilds, `VACUUM INTO` and the swap — 19.0 s, against 22.4 s with the full `VACUUM` on
+the same store, the file 2,374 MB → 1,037 MB with
+the WAL never above 12 MB where the full `VACUUM` had taken it to 1,043 MB; lookups on
+the swapped-in file 0.56 / 0.05 / 0.04 / 0.04 ms without reconnecting; the next launch's
+`Optimize()` 1.5 ms. The same 49 MB store on a volume with 75 MB free: the full `VACUUM`
+failed with the disk full, the compaction took 153 ms; with 16 MB free it was skipped in
+2.5 ms, the store untouched and in use. Through SQLCipher with a key, the compaction of
+that store took 1.4 s and the copy opened under the same key with `secure_delete` back on.
 
 Cold: the same runs with the file copied without caching (`F_NOCACHE`; a system purge
 needs root), verified cold by a first sequential read at half the cached speed. Every phase

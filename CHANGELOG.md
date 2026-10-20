@@ -24,9 +24,11 @@
   delete the `sqlite_stat1` rows an earlier release or an external `ANALYZE` left and
   reload, so an upgraded store is repaired on its first connect whether or not
   `autoOptimize` is on; nothing is written when there are no rows, and the table is never
-  dropped, since `ANALYZE sqlite_master` would recreate it. The one thing statistics could
-  add — ranking two single-property indexes when a filter ANDs both — is what a composite
-  index is for.
+  dropped, since `ANALYZE sqlite_master` would recreate it. At connect the delete is
+  best-effort, as the `PRAGMA optimize` it replaces was: a store on a read-only file or a
+  full volume still connects, with the planner misled until a connect that can write, while
+  `Optimize()` reports the failure. The one thing statistics could add — ranking two
+  single-property indexes when a filter ANDs both — is what a composite index is for.
 - **The string overload of `CreateIndex` silently kept the index 4.x built.** It names its
   index exactly as 4.x did, so its `CREATE INDEX IF NOT EXISTS` met the 4.x index and did
   nothing, while the metadata recorded the new definition as built: queries still matched
@@ -41,7 +43,10 @@
   were maintained on every write and the planner could prefer the wider one. `CreateIndex`
   now probes the legacy name on the current path and drops it (left to `Optimize()` under
   `autoOptimize: false`), `Optimize()` sweeps it for every recorded index, and `DropIndex`
-  drops it together with the index.
+  drops it together with the index. A legacy name that another declaration records as its
+  own index is left alone by all three: the string overload names its index exactly as 4.x
+  did, so an app declaring one name through both overloads keeps both indexes instead of
+  dropping and rebuilding the string overload's on every launch.
 - **Connecting to an existing store wrote page 1 every time.** `PRAGMA auto_vacuum =
   INCREMENTAL` only takes effect on a database being created, but on an auto-vacuum store
   it stores the mode the file already has, in a write transaction that bumps the change
@@ -64,21 +69,38 @@
   existing index serves is built at once either way. `Optimize()` / `OptimizeAsync()`
   then do, in one hold of the connection: the four drops, every pending rebuild (each in a
   transaction of its own, so an interruption leaves either the old index or the new one),
-  the orphan drops a rollback needs, the statistics delete, and a full `VACUUM` when the
+  the orphan drops a rollback needs, the statistics delete, and a compaction when the
   store has no incremental auto-vacuum — every 4.x store, whose connect script set the
-  pragma too late — which returns the freed pages to the file system (3.06 GB → 1.03 GB in
-  5 s on that store; the whole call took 26 s) and converts the store, or an in-place
-  `incremental_vacuum` when at least a tenth of the file is free. None of these timings
-  changed with the file cold on disk. With the whole-table 4.x indexes gone, 50,000-row
-  bulk writes on that store ran 2.1x faster for an indexed type (38k → 80k rows/s) and 3x
-  for an unindexed one (62k → 190k rows/s), and partition deletes 2.2–2.7x. Idempotent:
-  with nothing pending they read the schema and write nothing, so calling them on every
-  launch is fine. They hold the single connection for
-  the duration, so every other operation on the instance waits, and run on the calling
-  thread — Microsoft.Data.Sqlite executes synchronously, so `OptimizeAsync` alone does not
-  move the work off the caller — so call them from a background thread; the `VACUUM` needs
-  free disk space for a copy of the file. `ListIndexes()` lists a pending index with the
-  definition it will get.
+  pragma too late — or an in-place `incremental_vacuum` when at least a tenth of the file
+  is free. The compaction rewrites the live pages into a copy next to the database with
+  `VACUUM INTO`, closes the connection, renames the copy over the file and reopens on it:
+  it converts the store, returns the freed pages to the file system (3.06 GB → 1.03 GB on
+  that store, 2.37 GB → 1.04 GB on a 1.76M-row one), needs free disk space for the
+  compacted copy only — a full `VACUUM` writes the data twice, to a temp copy and back
+  through the WAL, and failed with the disk full where this succeeds — and leaves the
+  database untouched until the rename, which is atomic; the WAL is deleted before the
+  rename, since SQLite checks a WAL only against its own header and would replay a leftover
+  one into the new file, so an interruption costs at most a leftover copy the next call
+  removes. It is skipped, to be retried by the next call, when
+  the volume lacks the space, SQLite reports it full, or the WAL survives the close
+  because the close could not checkpoint it; under SQLCipher the drops run with
+  `secure_delete` off when a compaction follows, since the setting otherwise zeroes every
+  freed page through the WAL and the drops need free space equal to the index. With the
+  whole-table 4.x indexes gone, 50,000-row bulk writes on that store ran 2.1x faster for
+  an indexed type (38k → 80k rows/s) and 3x for an unindexed one (62k → 190k rows/s), and
+  partition deletes 2.2–2.7x; none of the timings changed with the file cold on disk.
+  Idempotent: with nothing pending they read the schema and write nothing, so calling them
+  on every launch is fine. They hold the single connection for the duration, so every
+  other operation on the instance waits, and run on the calling thread —
+  Microsoft.Data.Sqlite executes synchronously, so `OptimizeAsync` alone does not move the
+  work off the caller — so call them from a background thread. `Cleanup(vacuum: true)`
+  compacts a store without incremental auto-vacuum the same way. `ListIndexes()` lists a
+  pending index with the definition it will get. A pending definition is read back out of
+  the file before it runs, so `Optimize()` re-checks it rather than trusting it: the
+  statement is taken apart into the paths and type it indexes and must build again byte
+  for byte, and one that does not — a second statement appended, an expression TychoDB
+  never emits — is refused with a `TychoException` naming the index, the store left as it
+  was.
 
 ## 5.3.1 — 2026-10-05
 

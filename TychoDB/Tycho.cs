@@ -2241,6 +2241,12 @@ public class Tycho : IDisposable
     /// queries until <see cref="Optimize"/> replaces it; a declaration nothing in the
     /// schema serves is built here either way, because no index is the slower outcome.
     /// </para>
+    /// <para>
+    /// The index under the legacy name goes once the current one serves — unless another
+    /// TychoIndex row records that name as its own index, as the string overload's does
+    /// when an app declares one name through both overloads; that index is left alone,
+    /// as <see cref="RebuildPendingIndexes"/> and <see cref="ExecuteDropIndex"/> leave it.
+    /// </para>
     /// </summary>
     private static bool ExecuteCreateIndex(SqliteConnection conn, IndexDefinition definition, bool migrateInline)
     {
@@ -2254,6 +2260,8 @@ public class Tycho : IDisposable
             bool legacyPresent = hasLegacyName
                 ? IndexExists(conn, definition.LegacyPhysicalName)
                 : physicalSql is not null;
+            bool legacyOrphan = hasLegacyName && legacyPresent
+                && !IsRecordedByAnotherIndex(conn, definition.LegacyPhysicalName, definition.IndexName, definition.MetadataTypeName);
 
             if (string.Equals(physicalSql, Queries.StoredIndexSql(definition.CommandText), StringComparison.Ordinal))
             {
@@ -2262,7 +2270,7 @@ public class Tycho : IDisposable
                     UpsertIndexMetadata(conn, definition, IndexShapeVersion);
                 }
 
-                if (hasLegacyName && legacyPresent && migrateInline)
+                if (legacyOrphan && migrateInline)
                 {
                     ExecuteNonQuery(conn, Queries.DropIndex(definition.LegacyPhysicalName));
                 }
@@ -2292,7 +2300,7 @@ public class Tycho : IDisposable
                 ExecuteNonQuery(conn, Queries.DropIndex(definition.PhysicalName));
             }
 
-            if (hasLegacyName && legacyPresent)
+            if (legacyOrphan)
             {
                 ExecuteNonQuery(conn, Queries.DropIndex(definition.LegacyPhysicalName));
             }
@@ -2353,6 +2361,20 @@ public class Tycho : IDisposable
         exists.CommandText = Queries.SelectPhysicalIndexExists;
         exists.Parameters.Add(new SqliteParameter("$physicalName", SqliteType.Text) { Value = physicalName });
         return exists.ExecuteScalar() is not null;
+    }
+
+    /// <summary>
+    /// Whether a TychoIndex row other than the one identified records
+    /// <paramref name="physicalName"/> as its own index.
+    /// </summary>
+    private static bool IsRecordedByAnotherIndex(SqliteConnection conn, string physicalName, string indexName, string fullTypeName)
+    {
+        using var lookup = conn.CreateCommand();
+        lookup.CommandText = Queries.SelectIndexRecordedByAnother;
+        lookup.Parameters.Add(new SqliteParameter("$physicalName", SqliteType.Text) { Value = physicalName });
+        lookup.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = indexName });
+        lookup.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = fullTypeName });
+        return lookup.ExecuteScalar() is not null;
     }
 
     private static void UpsertIndexMetadata(SqliteConnection conn, IndexDefinition definition, int shapeVersion)
@@ -2626,7 +2648,8 @@ public class Tycho : IDisposable
 
             ExecuteNonQuery(conn, Queries.DropIndex(ValidateStoredIndexName(physicalName)));
 
-            if (LegacyPhysicalNameOf(physicalName, typeName) is { } legacyName)
+            if (LegacyPhysicalNameOf(physicalName, typeName) is { } legacyName
+                && !IsRecordedByAnotherIndex(conn, legacyName, indexName, typeName))
             {
                 ExecuteNonQuery(conn, Queries.DropIndex(legacyName));
             }

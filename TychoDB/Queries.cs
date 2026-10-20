@@ -618,6 +618,14 @@ internal static class Queries
     public const string SelectPhysicalIndexExists =
         "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = $physicalName;";
 
+    public const string SelectIndexRecordedByAnother =
+        """
+        SELECT 1
+        FROM TychoIndex
+        WHERE PhysicalName = $physicalName
+        AND NOT (IndexName = $indexName AND FullTypeName = $fullTypeName);
+        """;
+
     public const string SelectIndexSql =
         "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = $physicalName;";
 

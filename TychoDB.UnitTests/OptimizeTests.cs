@@ -18,8 +18,9 @@ namespace TychoDB.UnitTests;
 /// under <c>autoOptimize: false</c> a declaration whose index 4.x built is recorded as pending
 /// and served by that index until <c>Optimize</c> rebuilds it; the string overload's
 /// same-named 4.x index is recognised as stale instead of kept; the index a 4.x rollback
-/// leaves next to a current one is dropped; and a current store is never written to by
-/// connect, by a declaration, or by <c>Optimize</c>.
+/// leaves next to a current one is dropped, while one another declaration records as its
+/// own is kept; and a current store is never written to by connect, by a declaration, or
+/// by <c>Optimize</c>.
 /// </summary>
 [TestClass]
 public class OptimizeTests
@@ -350,6 +351,66 @@ public class OptimizeTests
         }
 
         FileHash(dbFile).ShouldBe(hash);
+    }
+
+    [TestMethod]
+    public async Task BothOverloads_UnderOneName_LeaveEachOthersIndexAlone()
+    {
+        var (path, dbName) = NewDbPath();
+        var dbFile = Path.Combine(path, dbName);
+
+        // The string overload names its index exactly as 4.x did: the generic overload's
+        // legacy name. Declared second, the generic index must not take it for an orphan.
+        using (var db = await BuildDb(path, dbName).ConnectAsync())
+        {
+            await db.WriteObjectsAsync(Items(), x => x.Key);
+            await db.CreateIndexAsync("$.Seq", isNumeric: true, "Item", IndexName);
+            await db.CreateIndexAsync<Item>(x => x.Seq, IndexName);
+        }
+
+        var rows = ReadMetadata(dbFile);
+        rows.Count.ShouldBe(2);
+        rows.ShouldAllBe(r => r.ShapeVersion == 2);
+
+        var manual = rows.Single(r => r.PhysicalName == LegacyIndexName);
+        var generic = rows.Single(r => r.PhysicalName != LegacyIndexName);
+        manual.FullTypeName.ShouldBe("Item");
+        generic.FullTypeName.ShouldBe(typeof(Item).FullName);
+        generic.PhysicalName.ShouldStartWith(LegacyIndexName + "_");
+
+        var ddl = ReadIndexDdl(dbFile);
+        ddl[LegacyIndexName].ShouldContain("ON JsonValue(FullTypeName, Partition, CAST", Case.Sensitive);
+        ddl[generic.PhysicalName].ShouldContain("WHERE FullTypeName", Case.Sensitive);
+
+        // Every later launch finds both current and touches nothing, in either order.
+        var hash = FileHash(dbFile);
+        long schemaVersion = ReadPragma(dbFile, "schema_version");
+
+        foreach (var autoOptimize in new[] { true, false })
+        {
+            using (var db = await BuildDb2(path, dbName, autoOptimize).ConnectAsync())
+            {
+                await db.CreateIndexAsync<Item>(x => x.Seq, IndexName);
+                await db.CreateIndexAsync("$.Seq", isNumeric: true, "Item", IndexName);
+                db.Optimize();
+                await AssertLookup(db);
+            }
+
+            FileHash(dbFile).ShouldBe(hash);
+            ReadPragma(dbFile, "schema_version").ShouldBe(schemaVersion);
+        }
+
+        // Dropping the generic declaration leaves the string overload's index and row.
+        using (var db = await BuildDb2(path, dbName).ConnectAsync())
+        {
+            db.DropIndex<Item>(IndexName).ShouldBeTrue();
+            await AssertLookup(db);
+        }
+
+        ddl = ReadIndexDdl(dbFile);
+        ddl.ShouldContainKey(LegacyIndexName);
+        ddl.ShouldNotContainKey(generic.PhysicalName);
+        ReadMetadata(dbFile).ShouldHaveSingleItem().ShouldBe(manual);
     }
 
     // ---------- seeding ----------

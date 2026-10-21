@@ -215,7 +215,7 @@ public class IndexDdlTests
     }
 
     [TestMethod]
-    public async Task CreateIndex_RefreshesPlannerStatistics()
+    public async Task CreateIndex_GathersNoPlannerStatistics()
     {
         var (path, dbName) = NewDbPath();
 
@@ -225,12 +225,13 @@ public class IndexDdlTests
             await db.CreateIndexAsync<IndexTestModel>(x => x.LongProperty, "long_idx");
         }
 
-        // Before this bucket sqlite_stat1 did not exist at all, so the planner ran
-        // on default heuristics for the life of the process.
+        // The planner runs on default heuristics, which favor the partial indexes; see
+        // PlannerStatisticsTests for why statistics would only mislead it. A store only
+        // TychoDB has written has no statistics table at all.
         using var conn = OpenInspection(Path.Combine(path, dbName));
         using var command = conn.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_stat1'";
-        Convert.ToInt32(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture).ShouldBe(1);
+        command.CommandText = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_stat1'";
+        command.ExecuteScalar().ShouldBeNull();
     }
 
     [TestMethod]
@@ -426,12 +427,9 @@ public class IndexDdlTests
         // bare SCAN/SEARCH assertion cannot (on a small single-type table a scan is
         // genuinely the cheaper plan).
         //
-        // Both sides of the comparison have to run on freshly gathered statistics, so
-        // gather them here rather than inheriting whatever the connection's advisory
-        // PRAGMA optimize happened to do: that pragma's heuristics are version
-        // dependent, and SQLCipher's older SQLite leaves sqlite_stat1 unpopulated
-        // where the plain build fills it in. Without this the baseline would be a
-        // no-statistics plan and the comparison would not be like for like.
+        // Both sides of the comparison have to run on the same full statistics, which
+        // Tycho never gathers, so gather them here; the redundant indexes below are
+        // then analyzed too, and the comparison is like for like.
         Analyze(dbFile);
 
         var planBefore = CorePlans(dbFile);
@@ -508,6 +506,50 @@ public class IndexDdlTests
         after.ShouldNotContainKey("idx_jsonvalue_fulltypename");
         after.ShouldNotContainKey("idx_jsonvalue_key_fulltypename");
         after.ShouldNotContainKey("idx_streamvalue_key_partition");
+    }
+
+    [TestMethod]
+    public async Task LegacyDatabase_WithAutoOptimizeOff_KeepsRedundantIndexesUntilOptimize()
+    {
+        var (path, dbName) = NewDbPath();
+        var dbFile = Path.Combine(path, dbName);
+
+        using (var db = await BuildDb(path, dbName).ConnectAsync())
+        {
+            await db.WriteObjectsAsync(SeedData(), x => x.StringProperty);
+        }
+
+        using (var conn = OpenInspection(dbFile))
+        {
+            using var command = conn.CreateCommand();
+            command.CommandText =
+                "CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename ON JsonValue (FullTypeName);" +
+                "CREATE INDEX IF NOT EXISTS idx_jsonvalue_key_fulltypename ON JsonValue (Key, FullTypeName);" +
+                "CREATE INDEX IF NOT EXISTS idx_streamvalue_key_partition ON StreamValue (Key, Partition);";
+            command.ExecuteNonQuery();
+        }
+
+        // With autoOptimize off, connect leaves the legacy indexes in place; freeing
+        // their pages is Optimize's job.
+        using (await BuildDb2(path, dbName, autoOptimize: false).ConnectAsync())
+        {
+        }
+
+        var kept = ReadIndexDdl(dbFile);
+        kept.ShouldContainKey("idx_jsonvalue_fulltypename");
+        kept.ShouldContainKey("idx_jsonvalue_key_fulltypename");
+        kept.ShouldContainKey("idx_streamvalue_key_partition");
+
+        using (var db = await BuildDb2(path, dbName, autoOptimize: false).ConnectAsync())
+        {
+            db.Optimize();
+        }
+
+        var after = ReadIndexDdl(dbFile);
+        after.ShouldNotContainKey("idx_jsonvalue_fulltypename");
+        after.ShouldNotContainKey("idx_jsonvalue_key_fulltypename");
+        after.ShouldNotContainKey("idx_streamvalue_key_partition");
+        after.ShouldContainKey("idx_jsonvalue_fulltypename_partition");
     }
 
     [TestMethod]
@@ -645,6 +687,32 @@ public class IndexDdlTests
     /// Physical index names carry a hash suffix of the full type name, so tests
     /// locate an index by its logical name prefix rather than an exact key.
     /// </summary>
+    [TestMethod]
+    public void IndexDefinition_IsAcceptedOnlyAsBuilt()
+    {
+        const string name = "idx_seq_idx_Item_0a1b2c3d";
+        var paths = new[] { ("$.Seq", true), ("$.Nested.Name", false), ("$.Tags[0]", false) };
+
+        var partial = Queries.CreateIndexForJsonValue(name, paths, typeof(IndexTestModel).FullName);
+        var quoted = Queries.CreateIndexForJsonValue(name, paths, "Ns.O'Brien+Item");
+        var manual = Queries.CreateIndexForJsonValue(name, paths);
+
+        Queries.IsIndexDefinitionFor(partial, name).ShouldBeTrue();
+        Queries.IsIndexDefinitionFor(quoted, name).ShouldBeTrue();
+        Queries.IsIndexDefinitionFor(manual, name).ShouldBeTrue();
+
+        Queries.IsIndexDefinitionFor(partial, "idx_seq_idx_Item").ShouldBeFalse();
+        Queries.IsIndexDefinitionFor(partial + " DROP TABLE StreamValue;", name).ShouldBeFalse();
+        Queries.IsIndexDefinitionFor(partial.TrimEnd(';'), name).ShouldBeFalse();
+        Queries.IsIndexDefinitionFor(manual + " DROP TABLE StreamValue;", name).ShouldBeFalse();
+        Queries.IsIndexDefinitionFor(manual.Replace(");", "); DROP TABLE StreamValue; --", StringComparison.Ordinal), name).ShouldBeFalse();
+        Queries.IsIndexDefinitionFor(partial.Replace("WHERE FullTypeName = '", "WHERE FullTypeName = ''; DROP TABLE StreamValue; --", StringComparison.Ordinal), name).ShouldBeFalse();
+        Queries.IsIndexDefinitionFor(partial.Replace("$.Seq", "$.Seq') as NUMERIC)); DROP TABLE StreamValue; --", StringComparison.Ordinal), name).ShouldBeFalse();
+        Queries.IsIndexDefinitionFor(partial.Replace("JsonValue(", "StreamValue(", StringComparison.Ordinal), name).ShouldBeFalse();
+        Queries.IsIndexDefinitionFor(partial.Replace("JSON_EXTRACT(Data, '$.Nested.Name')", "lower(JSON_EXTRACT(Data, '$.Nested.Name'))", StringComparison.Ordinal), name).ShouldBeFalse();
+        Queries.IsIndexDefinitionFor($"CREATE INDEX IF NOT EXISTS {name}\nON JsonValue(Partition)\nWHERE FullTypeName = 'X';", name).ShouldBeFalse();
+    }
+
     private static string Find(Dictionary<string, string> ddl, string logicalIndexName)
     {
         var prefix = $"idx_{logicalIndexName}_";
@@ -714,13 +782,13 @@ public class IndexDdlTests
     }
 
     /// <summary>Reopens an existing database without rebuilding it.</summary>
-    private static Tycho BuildDb2(string path, string dbName)
+    private static Tycho BuildDb2(string path, string dbName, bool autoOptimize = true)
     {
         SqliteConnection.ClearAllPools();
 #if ENCRYPTED
-        return new Tycho(path, Serializer, dbName, DbPassword, rebuildCache: false, requireTypeRegistration: false);
+        return new Tycho(path, Serializer, dbName, DbPassword, rebuildCache: false, requireTypeRegistration: false, autoOptimize: autoOptimize);
 #else
-        return new Tycho(path, Serializer, dbName, rebuildCache: false, requireTypeRegistration: false);
+        return new Tycho(path, Serializer, dbName, rebuildCache: false, requireTypeRegistration: false, autoOptimize: autoOptimize);
 #endif
     }
 

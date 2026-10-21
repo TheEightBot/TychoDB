@@ -1,5 +1,107 @@
 # Changelog
 
+## 5.4.0 (unreleased)
+
+### Fixed
+
+- **Indexed lookups on a large type read and parsed every row of the type, because
+  planner statistics were sampled.** The `PRAGMA optimize` run on connect and disconnect
+  and the `ANALYZE` run after `CreateIndex` set `analysis_limit = 400`, so SQLite read only
+  the first ~400 entries of each index. The general `(FullTypeName, Partition)` index is
+  ordered by type name, and the types that sort first are typically tiny, so its sample
+  credited every type with a handful of rows (`81` on a 1.68M-row store whose largest type
+  held 586,986 rows), while the sample of a per-type partial index sat inside a single key
+  and credited every key with hundreds (`401`, against a true 542). The planner therefore
+  preferred the general index over the partial one: 82–366 ms per lookup, 310 ms for a
+  missing key, against 0–1 ms with full statistics or none at all. Results were identical
+  throughout; only speed changed. TychoDB no longer gathers statistics at all: SQLite's
+  default heuristics choose the right index for every query shape it emits (equality,
+  range, sort with a limit, two indexed filters, an unindexed filter, a whole type, a
+  count — verified on both bundled engines, and on a 1.8M-row, 3 GB production store the
+  plans and timings with and without statistics were identical), while keeping statistics
+  correct would have cost a full `ANALYZE` of 3.2 s on the 1.68M-row store and 17.5 s on a
+  2.2 GB store, plus a way to tell when they had gone stale. Connect and `Optimize()`
+  delete the `sqlite_stat1` rows an earlier release or an external `ANALYZE` left and
+  reload, so an upgraded store is repaired on its first connect whether or not
+  `autoOptimize` is on; nothing is written when there are no rows, and the table is never
+  dropped, since `ANALYZE sqlite_master` would recreate it. At connect the delete is
+  best-effort, as the `PRAGMA optimize` it replaces was: a store on a read-only file or a
+  full volume still connects, with the planner misled until a connect that can write, while
+  `Optimize()` reports the failure. The one thing statistics could add — ranking two
+  single-property indexes when a filter ANDs both — is what a composite index is for.
+- **The string overload of `CreateIndex` silently kept the index 4.x built.** It names its
+  index exactly as 4.x did, so its `CREATE INDEX IF NOT EXISTS` met the 4.x index and did
+  nothing, while the metadata recorded the new definition as built: queries still matched
+  the old `(FullTypeName, expr)` shape, but the index carried every type's rows and the
+  metadata lied for good. `CreateIndex` now compares the stored DDL of a same-named index
+  with the definition it wants and rebuilds on a mismatch — on the spot, or through
+  `Optimize()` under `autoOptimize: false` — which also repairs the stores earlier 5.x
+  releases recorded that way.
+- **A 4.x rollback left its per-type indexes behind for good.** After 5.x → 4.x → 5.x,
+  4.x had recreated `idx_<name>_<Type>` next to the 5.x `idx_<name>_<Type>_<hash>`, and the
+  re-declaration found its own index current and never looked at the legacy name, so both
+  were maintained on every write and the planner could prefer the wider one. `CreateIndex`
+  now probes the legacy name on the current path and drops it (left to `Optimize()` under
+  `autoOptimize: false`), `Optimize()` sweeps it for every recorded index, and `DropIndex`
+  drops it together with the index. A legacy name that another declaration records as its
+  own index is left alone by all three: the string overload names its index exactly as 4.x
+  did, so an app declaring one name through both overloads keeps both indexes instead of
+  dropping and rebuilding the string overload's on every launch.
+- **Connecting to an existing store wrote page 1 every time.** `PRAGMA auto_vacuum =
+  INCREMENTAL` only takes effect on a database being created, but on an auto-vacuum store
+  it stores the mode the file already has, in a write transaction that bumps the change
+  counter. It now runs only for a new or empty file, so connecting to a current store
+  writes nothing: the file is byte-identical afterwards.
+
+### Added
+
+- **`autoOptimize` constructor parameter (default `true`), `Optimize()` and
+  `OptimizeAsync()`.** A store written by 4.x needs one-time work that runs on the calling
+  thread: connecting drops the four redundant indexes 4.x created — 9 s on a 1.8M-row,
+  3 GB store, and most of a 10–30 s first launch measured in an app on device, since
+  freeing an index's pages takes time proportional to its size and SQLCipher's default
+  `secure_delete` writes every freed page back — and the first `CreateIndex` for each
+  declaration drops the whole-table index 4.x built for it and builds the partial one
+  (0.7–4.7 s each on that store, 9 s for six). Pass `autoOptimize: false` to defer both:
+  connect leaves the indexes in place, and `CreateIndex` records the declaration as
+  pending (`ShapeVersion 0` in `TychoIndex`) while queries keep using the index 4.x built
+  — connect and six declarations then take about 140 ms on that store; a declaration no
+  existing index serves is built at once either way. `Optimize()` / `OptimizeAsync()`
+  then do, in one hold of the connection: the four drops, every pending rebuild (each in a
+  transaction of its own, so an interruption leaves either the old index or the new one),
+  the orphan drops a rollback needs, the statistics delete, and a compaction when the
+  store has no incremental auto-vacuum — every 4.x store, whose connect script set the
+  pragma too late — or an in-place `incremental_vacuum` when at least a tenth of the file
+  is free. The compaction rewrites the live pages into a copy next to the database with
+  `VACUUM INTO`, closes the connection, renames the copy over the file and reopens on it:
+  it converts the store, returns the freed pages to the file system (3.06 GB → 1.03 GB on
+  that store, 2.37 GB → 1.04 GB on a 1.76M-row one), needs free disk space for the
+  compacted copy only — a full `VACUUM` writes the data twice, to a temp copy and back
+  through the WAL, and failed with the disk full where this succeeds — and leaves the
+  database untouched until the rename, which is atomic; the WAL is deleted before the
+  rename, since SQLite checks a WAL only against its own header and would replay a leftover
+  one into the new file, so an interruption costs at most a leftover copy the next call
+  removes. It is skipped, to be retried by the next call, when
+  the volume lacks the space, SQLite reports it full, or the WAL survives the close
+  because the close could not checkpoint it; under SQLCipher the drops run with
+  `secure_delete` off when a compaction follows, since the setting otherwise zeroes every
+  freed page through the WAL and the drops need free space equal to the index. With the
+  whole-table 4.x indexes gone, 50,000-row bulk writes on that store ran 2.1x faster for
+  an indexed type (38k → 80k rows/s) and 3x for an unindexed one (62k → 190k rows/s), and
+  partition deletes 2.2–2.7x; none of the timings changed with the file cold on disk.
+  Idempotent: with nothing pending they read the schema and write nothing, so calling them
+  on every launch is fine. They hold the single connection for the duration, so every
+  other operation on the instance waits, and run on the calling thread —
+  Microsoft.Data.Sqlite executes synchronously, so `OptimizeAsync` alone does not move the
+  work off the caller — so call them from a background thread. `Cleanup(vacuum: true)`
+  compacts a store without incremental auto-vacuum the same way. `ListIndexes()` lists a
+  pending index with the definition it will get. A pending definition is read back out of
+  the file before it runs, so `Optimize()` re-checks it rather than trusting it: the
+  statement is taken apart into the paths and type it indexes and must build again byte
+  for byte, and one that does not — a second statement appended, an expression TychoDB
+  never emits — is refused with a `TychoException` naming the index, the store left as it
+  was.
+
 ## 5.3.1 — 2026-10-05
 
 ### Fixed

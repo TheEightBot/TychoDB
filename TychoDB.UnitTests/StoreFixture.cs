@@ -260,13 +260,13 @@ internal static class StoreFixture
     }
 
     /// <summary>Reopens an existing database without rebuilding it.</summary>
-    public static Tycho ReopenDb(string path, string dbName, bool persistConnection = true, bool useConnectionPooling = true)
+    public static Tycho ReopenDb(string path, string dbName, bool persistConnection = true, bool useConnectionPooling = true, bool autoOptimize = true)
     {
         SqliteConnection.ClearAllPools();
 #if ENCRYPTED
-        return new Tycho(path, Serializer, dbName, DbPassword, persistConnection: persistConnection, rebuildCache: false, requireTypeRegistration: false, useConnectionPooling: useConnectionPooling);
+        return new Tycho(path, Serializer, dbName, DbPassword, persistConnection: persistConnection, rebuildCache: false, requireTypeRegistration: false, useConnectionPooling: useConnectionPooling, autoOptimize: autoOptimize);
 #else
-        return new Tycho(path, Serializer, dbName, persistConnection: persistConnection, rebuildCache: false, requireTypeRegistration: false, useConnectionPooling: useConnectionPooling);
+        return new Tycho(path, Serializer, dbName, persistConnection: persistConnection, rebuildCache: false, requireTypeRegistration: false, useConnectionPooling: useConnectionPooling, autoOptimize: autoOptimize);
 #endif
     }
 

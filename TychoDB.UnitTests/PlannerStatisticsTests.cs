@@ -117,19 +117,22 @@ public class PlannerStatisticsTests
     [TestMethod]
     public async Task Connect_RemovesStatisticsLeftByAnEarlierRelease()
     {
-        var dbFile = await SeedIndexedStore();
-        var (path, dbName) = (Path.GetDirectoryName(dbFile), Path.GetFileName(dbFile));
-
-        LeaveSampledStatistics(dbFile);
-        Explain(dbFile, filter: GroupFilter()).ShouldContain(GeneralIndexName, Case.Sensitive);
-
-        using (var db = await BuildDb2(path, dbName).ConnectAsync())
+        foreach (var autoOptimize in new[] { true, false })
         {
-            (await db.ReadObjectsAsync<WideModel>(filter: GroupFilter())).Count().ShouldBe(RowsPerGroup);
-        }
+            var dbFile = await SeedIndexedStore();
+            var (path, dbName) = (Path.GetDirectoryName(dbFile), Path.GetFileName(dbFile));
 
-        ReadStatRows(dbFile).ShouldBeEmpty();
-        AssertGroupLookupUsesPartialIndex(dbFile);
+            LeaveSampledStatistics(dbFile);
+            Explain(dbFile, filter: GroupFilter()).ShouldContain(GeneralIndexName, Case.Sensitive);
+
+            using (var db = await BuildDb2(path, dbName, autoOptimize).ConnectAsync())
+            {
+                (await db.ReadObjectsAsync<WideModel>(filter: GroupFilter())).Count().ShouldBe(RowsPerGroup);
+            }
+
+            ReadStatRows(dbFile).ShouldBeEmpty();
+            AssertGroupLookupUsesPartialIndex(dbFile);
+        }
     }
 
     [TestMethod]
@@ -197,10 +200,13 @@ public class PlannerStatisticsTests
                 Assert.Inconclusive("The file stays writable for this user, so the read-only connect cannot be exercised.");
             }
 
-            using var db = await StoreFixture.ReopenDb(path, dbName).ConnectAsync();
-            await db.CreateIndexAsync<StoreFixture.Item>(x => x.Seq, StoreFixture.IndexName);
-            await StoreFixture.AssertLookup(db);
-            (await db.CountObjectsAsync<StoreFixture.Item>()).ShouldBe(100);
+            foreach (var autoOptimize in new[] { true, false })
+            {
+                using var db = await StoreFixture.ReopenDb(path, dbName, autoOptimize: autoOptimize).ConnectAsync();
+                await db.CreateIndexAsync<StoreFixture.Item>(x => x.Seq, StoreFixture.IndexName);
+                await StoreFixture.AssertLookup(db);
+                (await db.CountObjectsAsync<StoreFixture.Item>()).ShouldBe(100);
+            }
         }
         finally
         {
@@ -487,13 +493,13 @@ public class PlannerStatisticsTests
     }
 
     /// <summary>Reopens an existing database without rebuilding it.</summary>
-    private static Tycho BuildDb2(string path, string dbName)
+    private static Tycho BuildDb2(string path, string dbName, bool autoOptimize = true)
     {
         SqliteConnection.ClearAllPools();
 #if ENCRYPTED
-        return new Tycho(path, Serializer, dbName, DbPassword, rebuildCache: false, requireTypeRegistration: false);
+        return new Tycho(path, Serializer, dbName, DbPassword, rebuildCache: false, requireTypeRegistration: false, autoOptimize: autoOptimize);
 #else
-        return new Tycho(path, Serializer, dbName, rebuildCache: false, requireTypeRegistration: false);
+        return new Tycho(path, Serializer, dbName, rebuildCache: false, requireTypeRegistration: false, autoOptimize: autoOptimize);
 #endif
     }
 

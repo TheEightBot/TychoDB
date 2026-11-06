@@ -51,15 +51,6 @@ internal static class Queries
         CREATE INDEX IF NOT EXISTS idx_jsonvalue_fulltypename_partition
         ON JsonValue (FullTypeName, Partition);
 
-        -- Shed indexes that earlier versions created and that duplicate either the
-        -- primary-key autoindex or a prefix of the index above. Each one cost a
-        -- full b-tree of write maintenance on every insert, update and delete while
-        -- serving no query the remaining indexes cannot. Idempotent and cheap.
-        DROP INDEX IF EXISTS idx_jsonvalue_fulltypename;
-        DROP INDEX IF EXISTS idx_jsonvalue_key_fulltypename;
-        DROP INDEX IF EXISTS idx_jsonvalue_key_fulltypename_partition;
-        DROP INDEX IF EXISTS idx_streamvalue_key_partition;
-
         CREATE TABLE IF NOT EXISTS StreamValue
         (
             Key             TEXT NOT NULL,
@@ -79,6 +70,20 @@ internal static class Queries
         );
         """;
 
+    // Indexes earlier versions created that duplicate either the primary-key autoindex
+    // or a prefix of idx_jsonvalue_fulltypename_partition. Each one costs a full b-tree
+    // of write maintenance on every insert, update and delete while serving no query
+    // the remaining indexes cannot. Freeing their pages on an upgraded store takes time
+    // proportional to their size, so the connect script drops them only when autoOptimize
+    // is on (see Tycho.Optimize).
+    public static readonly string[] LegacyIndexNames =
+    {
+        "idx_jsonvalue_fulltypename",
+        "idx_jsonvalue_key_fulltypename",
+        "idx_jsonvalue_key_fulltypename_partition",
+        "idx_streamvalue_key_partition",
+    };
+
     // Profile defaults. cache_size is in KiB (negative = KiB, not pages);
     // mmap_size is in bytes; wal_autocheckpoint is in pages.
     private const int MobileCacheSizeKb = 8_000;         // ~8 MB page cache
@@ -96,14 +101,15 @@ internal static class Queries
 
     /// <summary>
     /// Builds the full per-connection setup script (PRAGMAs + schema DDL) for the
-    /// given performance profile, honoring optional cache-size / mmap overrides. The
-    /// pragma that only applies to a database being created is included for a new file
-    /// only.
+    /// given performance profile, honoring optional cache-size / mmap overrides, and
+    /// shedding the indexes earlier versions created unless told not to. The pragma
+    /// that only applies to a database being created is included for a new file only.
     /// </summary>
     public static string BuildConnectionScript(
         TychoPerformanceProfile profile,
         int? cacheSizeKbOverride = null,
         long? mmapSizeBytesOverride = null,
+        bool dropLegacyIndexes = true,
         bool newDatabase = true)
     {
         bool desktop = profile == TychoPerformanceProfile.Desktop;
@@ -113,7 +119,7 @@ internal static class Queries
         int walAutocheckpoint = desktop ? DesktopWalAutocheckpoint : MobileWalAutocheckpoint;
         long journalSizeLimit = desktop ? DesktopJournalSizeLimitBytes : MobileJournalSizeLimitBytes;
 
-        var sb = new System.Text.StringBuilder(CreationPragma.Length + SharedPragmas.Length + SchemaDdl.Length + 160);
+        var sb = new System.Text.StringBuilder(CreationPragma.Length + SharedPragmas.Length + SchemaDdl.Length + 320);
         var ic = System.Globalization.CultureInfo.InvariantCulture;
 
         if (newDatabase)
@@ -127,6 +133,16 @@ internal static class Queries
           .Append("PRAGMA wal_autocheckpoint = ").Append(walAutocheckpoint.ToString(ic)).Append(";\n")
           .Append("PRAGMA journal_size_limit = ").Append(journalSizeLimit.ToString(ic)).Append(";\n\n")
           .Append(SchemaDdl);
+
+        if (dropLegacyIndexes)
+        {
+            sb.Append('\n');
+
+            foreach (string indexName in LegacyIndexNames)
+            {
+                sb.Append(DropIndex(indexName)).Append('\n');
+            }
+        }
 
         return sb.ToString();
     }
@@ -468,7 +484,9 @@ internal static class Queries
     private const string MultiIndexJsonExtractSuffix = "')";
     private const string MultiIndexCastPrefix = ", CAST(JSON_EXTRACT(Data, '";
     private const string MultiIndexCastSuffix = "') as NUMERIC)";
-    private const string MultiIndexOnJsonValue = "\nON JsonValue(FullTypeName";
+    private const string WholeDocumentExpression = ", JSON_EXTRACT(Data, '$')";
+    private const string IndexOnFullTypeName = "ON JsonValue(FullTypeName";
+    private const string MultiIndexOnJsonValue = "\n" + IndexOnFullTypeName;
     private const string MultiIndexClose = ");";
 
     // Partial-index shape. Leads with Partition (every read constrains
@@ -619,6 +637,28 @@ internal static class Queries
     /// </summary>
     public static string StoredIndexSql(string createIndexStatement)
         => string.Concat("CREATE INDEX ".AsSpan(), createIndexStatement.AsSpan(CreateIndexPrefix.Length).TrimEnd(';'));
+
+    /// <summary>
+    /// Whether the non-partial index stored as <paramref name="indexSql"/> can stand in for a
+    /// declaration led by <paramref name="firstPath"/> until it is rebuilt. It leads with
+    /// FullTypeName and, in the string overload's shape, Partition, both equality-constrained
+    /// by every query, so it serves a filter on that property when the next column is the
+    /// expression the filter emits, in the form SQLite compares. An index over the whole
+    /// document, which is what 4.x built for a value-type property, serves nothing, but no
+    /// more than it ever did, so nothing is lost by leaving it in place.
+    /// </summary>
+    public static bool IndexStandsInFor(string indexSql, (string PropertyPathString, bool IsNumeric) firstPath)
+    {
+        string expression = firstPath.IsNumeric
+            ? string.Concat(MultiIndexCastPrefix, firstPath.PropertyPathString, MultiIndexCastSuffix)
+            : string.Concat(MultiIndexJsonExtractPrefix, firstPath.PropertyPathString, MultiIndexJsonExtractSuffix);
+
+        return IndexLeadsWith(indexSql, expression) || IndexLeadsWith(indexSql, WholeDocumentExpression);
+    }
+
+    private static bool IndexLeadsWith(string indexSql, string expression)
+        => indexSql.Contains(string.Concat(IndexOnFullTypeName, expression), StringComparison.Ordinal)
+           || indexSql.Contains(string.Concat(IndexOnFullTypeName, PartitionColumnSegment, expression), StringComparison.Ordinal);
 
     // Planner statistics. TychoDB gathers none: SQLite's default heuristics choose the
     // right index for every query it emits. These find and delete rows left in the file,

@@ -37,6 +37,17 @@ public class Tycho : IDisposable
     /// </summary>
     private const int IndexShapeVersion = 2;
 
+    // SQLite result codes for the failures maintenance leaves for a later call instead of
+    // raising: another connection holds the file, a statement or blob stream of this
+    // connection is still open, and the volume has no room for a write.
+    private const int SqliteBusy = 5;
+    private const int SqliteLocked = 6;
+    private const int SqliteFull = 13;
+
+    // How long a maintenance step retries those first two, in seconds. The default command
+    // timeout would hold the gate for 30 s, with every other operation waiting behind it.
+    private const int MaintenanceBusyTimeout = 1;
+
     // Parameter cache - reuse parameter objects to reduce allocations
     private readonly ConcurrentDictionary<string, SqliteParameter> _parameterCache = new();
 
@@ -2675,6 +2686,254 @@ public class Tycho : IDisposable
     }
 
     /// <summary>
+    /// Runs maintenance under the gate, on the connection as it is now. A disconnected
+    /// instance ends the work, and a full volume or a file in use leaves it for a later call;
+    /// neither is a failure.
+    /// </summary>
+    private bool RunMaintenanceStep(Func<SqliteConnection, bool> step)
+    {
+        var connection = _connection;
+
+        if (connection is null)
+        {
+            return false;
+        }
+
+        int defaultTimeout = connection.DefaultTimeout;
+
+        try
+        {
+            connection.DefaultTimeout = MaintenanceBusyTimeout;
+
+            if (!_persistConnection)
+            {
+                connection.Open();
+            }
+
+            return step(connection);
+        }
+        catch (Exception ex) when (_connection is not null && CanWaitForALaterCall(ex))
+        {
+            return false;
+        }
+        catch (Exception ex) when (ex is not TychoException)
+        {
+            throw new TychoException("Failed to optimize database", ex);
+        }
+        finally
+        {
+            connection.DefaultTimeout = defaultTimeout;
+
+            if (!_persistConnection)
+            {
+                connection.Close();
+            }
+        }
+    }
+
+    private static bool CanWaitForALaterCall(Exception ex)
+        => (ex as SqliteException ?? ex.InnerException as SqliteException) is { } sqliteException
+           && (sqliteException.SqliteErrorCode is SqliteBusy or SqliteLocked or SqliteFull
+               || sqliteException.Message.Contains(Queries.StatementsInProgress, StringComparison.Ordinal));
+
+    /// <summary>
+    /// Returns freed pages to the file system. A store created without incremental
+    /// auto-vacuum — every 4.x store: its connect script set the pragma after
+    /// <c>journal_mode = WAL</c>, which fixed the mode at NONE — is converted by
+    /// <see cref="CompactStore"/>. Later calls reclaim in place.
+    /// </summary>
+    private bool ReclaimFreePages(SqliteConnection conn)
+    {
+        if (ReadPragma(conn, Queries.AutoVacuumMode) != 2)
+        {
+            return CompactStore(conn);
+        }
+
+        ExecuteNonQuery(conn, Queries.IncrementalVacuum);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Rewrites a store that has no incremental auto-vacuum (every 4.x store) into a
+    /// compacted copy next to the file, with <c>VACUUM INTO</c>, and swaps the copy in.
+    /// Only the live pages are written, once, into the database's own directory — no temp
+    /// copy, nothing back through the WAL — so the free space needed is the compacted size.
+    /// The copy is flushed to disk, since the SQLite of the SQLCipher build writes it without
+    /// syncing, and takes the file's permissions. The connection then closes, which
+    /// checkpoints the WAL into the file; the <c>-wal</c> and <c>-shm</c> files are deleted;
+    /// the copy is renamed over the database; and the same connection object reopens on it,
+    /// so operations already waiting on the gate with that object run on the new file.
+    /// <para>
+    /// The WAL goes before the rename because SQLite checks a WAL only against its own
+    /// header, so one left next to the new file would be replayed into it. A WAL still on
+    /// disk with frames after the close means the close could not checkpoint it and the
+    /// file may lack commits only the WAL holds, so the copy is discarded. The database is
+    /// untouched until the rename, which is atomic: an interruption leaves the old file
+    /// working and at most a leftover copy, which the next connect removes.
+    /// </para>
+    /// <para>
+    /// The swap replaces the file, so attributes set on the old one other than its
+    /// permissions — a backup exclusion, a file protection class — do not carry over.
+    /// Skipped, to be retried by the next call, when the volume lacks the space, SQLite
+    /// reports it full, another connection holds a lock on the file, or such a WAL remains.
+    /// A connection that has the file open and holds no lock, as one retrying a busy file
+    /// does, cannot be seen: it would go on with the replaced file and the <c>-wal</c> of the
+    /// new one, which is why a store takes one instance. Runs under the gate.
+    /// </para>
+    /// </summary>
+    /// <returns>True when the store was swapped; false when the compaction was skipped.</returns>
+    private bool CompactStore(SqliteConnection connection)
+    {
+        string databasePath = ResolvedDatabasePath();
+        string compactedPath = databasePath + Queries.CompactedFileSuffix;
+
+        DeleteCompactedCopy();
+
+        long liveBytes =
+            (ReadPragma(connection, Queries.PageCount) - ReadPragma(connection, Queries.FreelistCount))
+            * ReadPragma(connection, Queries.PageSize);
+
+        if (!HasFreeSpaceFor(databasePath, liveBytes))
+        {
+            return false;
+        }
+
+        try
+        {
+            ExecuteNonQuery(connection, Queries.ExclusiveLockingMode);
+            ExecuteNonQuery(connection, Queries.AcquireExclusiveLock);
+            ExecuteNonQuery(connection, Queries.SetIncrementalAutoVacuum);
+
+            using (var vacuum = connection.CreateCommand())
+            {
+                vacuum.CommandText = Queries.VacuumInto;
+                vacuum.Parameters.Add(new SqliteParameter("$path", SqliteType.Text) { Value = compactedPath });
+                vacuum.ExecuteNonQuery();
+            }
+
+            CopyFileMode(databasePath, compactedPath);
+
+            using var copy = new FileStream(compactedPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            copy.Flush(flushToDisk: true);
+        }
+        catch
+        {
+            DeleteCompactedCopy();
+            throw;
+        }
+
+        connection.Close();
+        SqliteConnection.ClearPool(connection);
+
+        bool swapped = false;
+        Exception? swapFailure = null;
+
+        try
+        {
+            string walPath = databasePath + "-wal";
+
+            if (new FileInfo(walPath) is not { Exists: true, Length: > 0 })
+            {
+                File.Delete(walPath);
+                File.Delete(databasePath + "-shm");
+                File.Move(compactedPath, databasePath, overwrite: true);
+                swapped = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            swapFailure = ex;
+        }
+
+        if (!swapped)
+        {
+            DeleteCompactedCopy();
+        }
+
+        try
+        {
+            InitializeConnection(connection, _connectionScript);
+        }
+        catch (Exception ex)
+        {
+            CloseConnection();
+            throw new TychoException("Failed to reopen the database after compacting it; call Connect to retry", swapFailure ?? ex);
+        }
+
+        return swapFailure is null
+            ? swapped
+            : throw new TychoException("Failed to compact database", swapFailure);
+    }
+
+    /// <summary>
+    /// Gives <paramref name="destination"/> the permissions of <paramref name="source"/>.
+    /// Best-effort: a volume without Unix permissions refuses, and has none to keep.
+    /// </summary>
+    private static void CopyFileMode(string source, string destination)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        try
+        {
+            File.SetUnixFileMode(destination, File.GetUnixFileMode(source));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    /// <summary>
+    /// The file SQLite has open: it follows a symbolic link, and keeps the <c>-wal</c> and
+    /// <c>-shm</c> files next to the file the link points at.
+    /// </summary>
+    private string ResolvedDatabasePath()
+        => (File.Exists(_databasePath) ? File.ResolveLinkTarget(_databasePath, returnFinalTarget: true)?.FullName : null)
+           ?? _databasePath;
+
+    /// <summary>
+    /// Deletes the copy an interrupted compaction left, which SQLite would refuse to write
+    /// over, and its journal. Best-effort: nothing depends on this having worked.
+    /// </summary>
+    private void DeleteCompactedCopy()
+    {
+        try
+        {
+            string compactedPath = ResolvedDatabasePath() + Queries.CompactedFileSuffix;
+
+            File.Delete(compactedPath);
+            File.Delete(compactedPath + "-journal");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    /// <summary>
+    /// Whether the volume holding <paramref name="filePath"/> has room for
+    /// <paramref name="bytes"/> and an eighth more. True when the volume cannot be asked: the
+    /// compaction then relies on SQLite reporting a full disk, which leaves the database
+    /// untouched.
+    /// </summary>
+    private static bool HasFreeSpaceFor(string filePath, long bytes)
+    {
+        try
+        {
+            string fullPath = Path.GetFullPath(filePath);
+            string directory = Path.GetDirectoryName(fullPath) ?? fullPath;
+
+            return new DriveInfo(directory).AvailableFreeSpace >= bytes + (bytes / 8);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>
     /// Deletes planner statistics an earlier release or an external <c>ANALYZE</c> left
     /// in the file and reloads them on this connection. TychoDB gathers none: SQLite's
     /// default heuristics choose the right index for every query it emits. Writes nothing
@@ -2714,71 +2973,47 @@ public class Tycho : IDisposable
     /// auto-vacuum mode this runs a cheap in-place <c>incremental_vacuum</c>. On a
     /// legacy database that was created without incremental auto-vacuum (e.g. by an
     /// older version, or before the auto_vacuum ordering fix), <c>incremental_vacuum</c>
-    /// is a no-op, so this instead runs a one-time full <c>VACUUM</c> that both reclaims
-    /// the space and converts the database to incremental auto-vacuum for the future.
+    /// is a no-op, so this instead rewrites the database into a compacted copy and swaps
+    /// it in, which both reclaims the space and converts the database to incremental
+    /// auto-vacuum for the future; that needs free disk space for the compacted copy and
+    /// is skipped when the space is not there (see <see cref="CompactStore"/>).
     /// </param>
     public void Cleanup(bool shrinkMemory = true, bool vacuum = false)
     {
         EnsureConnected();
 
-        _connection
-            .WithConnectionBlock(
-                _connectionGate,
-                (shrinkMemory, vacuum),
-                static (conn, state) =>
-                {
-                    try
+        if (shrinkMemory)
+        {
+            _connection
+                .WithConnectionBlock(
+                    _connectionGate,
+                    static conn =>
                     {
-                        if (state.shrinkMemory)
+                        try
                         {
-                            using var shrinkCommand = conn.CreateCommand();
-                            shrinkCommand.CommandText = "PRAGMA shrink_memory;";
-                            shrinkCommand.ExecuteNonQuery();
+                            ExecuteNonQuery(conn, Queries.ShrinkMemory);
                         }
-
-                        if (!state.vacuum)
+                        catch (Exception ex)
                         {
-                            return;
+                            throw new TychoException("Failed to clean up database", ex);
                         }
+                    },
+                    _persistConnection);
+        }
 
-                        // incremental_vacuum only reclaims space when the database is in
-                        // INCREMENTAL (2) auto-vacuum mode.
-                        long autoVacuumMode;
-                        using (var modeCommand = conn.CreateCommand())
-                        {
-                            modeCommand.CommandText = "PRAGMA auto_vacuum;";
-                            autoVacuumMode = modeCommand.ExecuteScalar() is long mode ? mode : 0L;
-                        }
+        if (vacuum)
+        {
+            _connectionGate.Wait();
 
-                        using var vacuumCommand = conn.CreateCommand();
-
-                        if (autoVacuumMode == 2)
-                        {
-                            // In-place free-page reclamation, then truncate the WAL file so
-                            // its space is returned to disk too.
-                            vacuumCommand.CommandText =
-                                "PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);";
-                        }
-                        else
-                        {
-                            // Legacy/NONE database: a full VACUUM reclaims free space and
-                            // converts to incremental auto-vacuum. Use a file-backed temp
-                            // store for the rebuild so a large database does not spike
-                            // memory (VACUUM would otherwise honor temp_store = MEMORY and
-                            // build the whole copy in RAM), then restore the in-memory
-                            // temp store for normal operation and truncate the WAL.
-                            vacuumCommand.CommandText =
-                                "PRAGMA temp_store = FILE; PRAGMA auto_vacuum = INCREMENTAL; VACUUM; PRAGMA temp_store = MEMORY; PRAGMA wal_checkpoint(TRUNCATE);";
-                        }
-
-                        vacuumCommand.ExecuteNonQuery();
-                    }
-                    catch (Exception ex)
-                    {
-                        throw new TychoException("Failed to clean up database", ex);
-                    }
-                },
-                _persistConnection);
+            try
+            {
+                RunMaintenanceStep(ReclaimFreePages);
+            }
+            finally
+            {
+                _connectionGate.Release();
+            }
+        }
     }
 
     /// <summary>
@@ -3030,9 +3265,10 @@ public class Tycho : IDisposable
     }
 
     /// <summary>
-    /// Opens a connection on the file and sets it up. Runs under the gate. A connection whose
-    /// setup fails is disposed before the failure propagates, so it does not keep the file's
-    /// lock until the finalizer runs.
+    /// Opens a connection on the file and sets it up, removing the copy an interrupted
+    /// compaction left. Runs under the gate. A connection whose setup fails is disposed
+    /// before the failure propagates, so it does not keep the file's lock until the
+    /// finalizer runs.
     /// </summary>
     private SqliteConnection OpenConnection()
     {
@@ -3043,6 +3279,7 @@ public class Tycho : IDisposable
         try
         {
             InitializeConnection(connection, ConnectionScript());
+            DeleteCompactedCopy();
 
             if (!_persistConnection)
             {

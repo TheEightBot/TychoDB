@@ -636,6 +636,44 @@ internal static class Queries
         ANALYZE sqlite_master;
         """;
 
+    public const string ShrinkMemory = "PRAGMA shrink_memory;";
+
+    public const string AutoVacuumMode = "PRAGMA auto_vacuum;";
+
+    public const string FreelistCount = "PRAGMA freelist_count;";
+
+    public const string PageCount = "PRAGMA page_count;";
+
+    public const string PageSize = "PRAGMA page_size;";
+
+    // In-place reclamation of free pages, then a WAL truncation so that space returns to
+    // disk too. Only effective in INCREMENTAL auto-vacuum mode.
+    public const string IncrementalVacuum =
+        "PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);";
+
+    // A store without incremental auto-vacuum can only be converted by rewriting it.
+    // VACUUM INTO writes the live pages, once, into a new file next to the database, in
+    // the mode the pragma sets first — no temp copy, nothing back through the WAL — so
+    // the free space it needs is the compacted size, and the database is untouched until
+    // Tycho.CompactStore renames the copy over it.
+    public const string SetIncrementalAutoVacuum = "PRAGMA auto_vacuum = INCREMENTAL;";
+
+    public const string VacuumInto = "VACUUM INTO $path;";
+
+    public const string CompactedFileSuffix = "-tycho-compact";
+
+    // What SQLite says, under the generic SQLITE_ERROR, when a statement or blob stream of the
+    // connection is still open.
+    public const string StatementsInProgress = "SQL statements in progress";
+
+    // Taking this lock stops the swap when another connection holds a lock on the file. A
+    // persistent connection already holds it; a connection opened per operation may not. Two
+    // commands, because Microsoft.Data.Sqlite swallows an error raised after a statement
+    // that returns a row, as the pragma does.
+    public const string ExclusiveLockingMode = "PRAGMA locking_mode = EXCLUSIVE;";
+
+    public const string AcquireExclusiveLock = "BEGIN IMMEDIATE; COMMIT;";
+
     // Cache common LIMIT values using FrozenDictionary for O(1) lookup
     private static readonly FrozenDictionary<int, string> CachedLimits = new Dictionary<int, string>
     {

@@ -1,5 +1,131 @@
 # Changelog
 
+## 5.4.0 (unreleased)
+
+### Fixed
+
+- **Indexed lookups on a large type read and parsed every row of the type, because
+  planner statistics were sampled.** The `PRAGMA optimize` run on connect and disconnect
+  and the `ANALYZE` run after `CreateIndex` set `analysis_limit = 400`, so SQLite read only
+  the first ~400 entries of each index. The general `(FullTypeName, Partition)` index is
+  ordered by type name, and the types that sort first are typically tiny, so its sample
+  credited every type with a handful of rows (`81` on a 1.68M-row store whose largest type
+  held 586,986 rows), while the sample of a per-type partial index sat inside a single key
+  and credited every key with hundreds (`401`, against a true 542). The planner therefore
+  preferred the general index over the partial one: 82–366 ms per lookup, 310 ms for a
+  missing key, against 0–1 ms with full statistics or none at all. Results were identical
+  throughout; only speed changed. TychoDB no longer gathers statistics at all: SQLite's
+  default heuristics choose the right index for every query shape it emits (equality,
+  range, sort with a limit, two indexed filters, an unindexed filter, a whole type, a
+  count — verified on both bundled engines, and on a 1.8M-row, 3 GB production store the
+  plans and timings with and without statistics were identical), while keeping statistics
+  correct would have cost a full `ANALYZE` of 3.2 s on the 1.68M-row store and 17.5 s on a
+  2.2 GB store, plus a way to tell when they had gone stale. Connect and `Optimize()`
+  delete the `sqlite_stat1` rows an earlier release or an external `ANALYZE` left and
+  reload, so an upgraded store is repaired on its first connect whether or not
+  `autoOptimize` is on; nothing is written when there are no rows, and the table is never
+  dropped, since `ANALYZE sqlite_master` would recreate it. At connect the delete is
+  best-effort: a store on a read-only file or a full volume still connects, with the planner
+  misled until a connect that can write, while `Optimize()` reports the failure. The one
+  thing statistics could add — ranking two single-property indexes when a filter ANDs both —
+  is what a composite index is for.
+- **The string overload of `CreateIndex` silently kept the index 4.x built.** It names its
+  index exactly as 4.x did, so its `CREATE INDEX IF NOT EXISTS` met the 4.x index and did
+  nothing, while the metadata recorded the new definition as built: queries still matched
+  the old `(FullTypeName, expr)` shape, but the index carried every type's rows and the
+  metadata lied for good. `CreateIndex` now compares the stored DDL of a same-named index
+  with the definition it wants and rebuilds on a mismatch — on the spot, or through
+  `Optimize()` under `autoOptimize: false` — which also repairs the stores earlier 5.x
+  releases recorded that way.
+- **A 4.x rollback left its per-type indexes behind for good.** After 5.x → 4.x → 5.x,
+  4.x had recreated `idx_<name>_<Type>` next to the 5.x `idx_<name>_<Type>_<hash>`, and the
+  re-declaration found its own index current and never looked at the legacy name, so both
+  were maintained on every write and the planner could prefer the wider one. `CreateIndex`
+  now probes the legacy name on the current path and drops it (left to `Optimize()` under
+  `autoOptimize: false`), and `DropIndex` drops it together with the index. A legacy name
+  that another declaration records as its own index is left alone by both: the string
+  overload names its index exactly as 4.x did, so an app declaring one name through both
+  overloads keeps both indexes instead of dropping and rebuilding the string overload's on
+  every launch.
+- **Connecting to an existing store wrote page 1 every time.** `PRAGMA auto_vacuum =
+  INCREMENTAL` only takes effect on a database being created, but on an auto-vacuum store
+  it stores the mode the file already has, in a write transaction that bumps the change
+  counter. It now runs only for a new or empty file, so connecting to a current store
+  writes nothing: the file is byte-identical afterwards.
+- **`Cleanup(vacuum: true)` needed room for two copies of a store without incremental
+  auto-vacuum, and failed badly without it.** A full `VACUUM` writes the data twice, to a
+  temp copy and back through the WAL: on a 49 MB store with 75 MB free it failed with
+  `database or disk is full`, left `temp_store = FILE` on the connection, and failed again
+  on every call. It now compacts as `Optimize()` does (see below), and the deferred work
+  runs first so that the indexes it replaces are not copied.
+- **`Connect`, `Disconnect`, `Dispose` and `Backup` ran outside the connection gate.**
+  `Disconnect` or `Dispose` during an operation closed the connection under it, and two
+  racing `Connect` calls opened two connections, the second waiting on the first's lock.
+  All four now take the gate, so they wait for the operation in progress. `Dispose` no longer
+  disposes the gate, on which a waiting operation would never wake; a call after it still
+  throws `ObjectDisposedException`.
+- **A connection whose setup failed kept the file locked** until the finalizer ran, so the
+  retry got `database is locked`. It is disposed before the failure propagates.
+- **`rebuildCache` could leave an instance on the deleted file.** After a `Dispose` in the
+  same process the pool kept the old connection, and the next `Connect` got it back: the
+  instance saw the old rows, and every write it acknowledged went with the deleted file. The
+  pool is now cleared before the delete.
+
+### Added
+
+- **`autoOptimize` constructor parameter (default `true`), `Optimize()` and
+  `OptimizeAsync()`.** A store written by 4.x needs one-time work that runs on the calling
+  thread: connecting drops the four redundant indexes 4.x created — 9 s on a 1.76M-row,
+  2.37 GB store, since freeing an index's pages takes time proportional to its size — and
+  the first `CreateIndex` for each declaration drops the whole-table index 4.x built for it
+  and builds the partial one (15 s for six). Pass `autoOptimize: false` to defer both:
+  connect leaves the indexes in place, and `CreateIndex` leaves a declaration to `Optimize()`
+  while the index an earlier release built for it can still serve a filter on its first
+  property. Nothing is written, and connect and six declarations took 90 ms on that store.
+  An index over the whole document, which is what 4.x built for a value-type property, is
+  left in place the same way: it never served a query, so nothing is lost. A declaration
+  whose old index covers another property is built at once either way. Apps declare their
+  indexes on every launch, so a deferred declaration is kept in memory: call `Optimize()`
+  after declaring them. Without it a 4.x store keeps its old indexes and its size and
+  otherwise behaves as it did.
+
+  `Optimize()` / `OptimizeAsync()` do the work in steps: delete leftover statistics, drop
+  each of the four indexes, build each deferred index and drop what it replaces (in one
+  transaction, so an interruption leaves one or the other), and return the freed pages to
+  the file system. Every other operation runs between steps, so a call waits for the step
+  in progress, never for the whole of it: about 20 s in all on that store, with reads and
+  writes running throughout, none failing, and none waiting more than about 4 s. `Optimize()`
+  runs on the calling thread, so call it from a background thread; `OptimizeAsync()` runs
+  only its first step there, and its token is observed between steps. Both return true when
+  nothing is left to do and false when work remains for a later call: the volume lacks the
+  space, the file or a blob stream of this instance is in use, or the instance was
+  disconnected. Idempotent: with nothing to do they read the schema and write nothing, so
+  calling them on every launch is fine.
+
+  A store with incremental auto-vacuum reclaims in place when at least a tenth of the file
+  is free. One without it — every 4.x store, whose connect script set the pragma too late —
+  is compacted: the live pages are written into a copy next to the database with `VACUUM
+  INTO`, the copy is flushed to disk and takes the file's permissions, the connection closes,
+  the `-wal` and `-shm` are deleted, the copy is renamed over the file, and the same
+  connection object reopens on it, so operations waiting on the gate run on the new file.
+  That converts the store and returned 1.3 GB on that one (2.37 GB to 1.04 GB). It needs
+  free space for the compacted copy only, and leaves the database untouched until the rename,
+  which is atomic: an interruption costs at most a leftover copy, which the next connect
+  removes. It is skipped, to be retried by the next call, when the volume lacks the space,
+  SQLite reports it full, another connection holds a lock on the file, or the WAL survives
+  the close, because the close could not checkpoint it. The swap replaces the file, so
+  attributes an app set on it other than its permissions, such as an iOS backup exclusion or
+  a file protection class, do not carry over. It needs one `Tycho` instance per file, with
+  `persistConnection: false` too: a connection that has the file open without holding a
+  lock, such as one still connecting, cannot be detected, and after the swap it can lose
+  what it writes.
+
+  With the whole-table 4.x indexes gone, 50,000-row bulk writes on a 1.8M-row, 3 GB store ran
+  2.1x faster for an indexed type (38k → 80k rows/s) and 3x for an unindexed one (62k → 190k
+  rows/s), and partition deletes 2.2–2.7x; none of the timings changed with the file cold on
+  disk. The constructor of earlier releases is kept as an overload, so code compiled against
+  5.3 keeps running.
+
 ## 5.3.1 — 2026-10-05
 
 ### Fixed

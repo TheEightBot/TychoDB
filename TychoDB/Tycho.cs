@@ -3,6 +3,7 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
@@ -36,17 +37,41 @@ public class Tycho : IDisposable
     /// </summary>
     private const int IndexShapeVersion = 2;
 
+    // SQLite result codes for the failures maintenance leaves for a later call instead of
+    // raising: another connection holds the file, a statement or blob stream of this
+    // connection is still open, and the volume has no room for a write.
+    private const int SqliteBusy = 5;
+    private const int SqliteLocked = 6;
+    private const int SqliteFull = 13;
+
+    // How long a maintenance step retries those first two, in seconds. The default command
+    // timeout would hold the gate for 30 s, with every other operation waiting behind it.
+    private const int MaintenanceBusyTimeout = 1;
+
+    // Between two maintenance steps the gate stays free this long, because a SemaphoreSlim
+    // is not fair: a thread that releases and at once waits again can beat the synchronous
+    // waiter it just woke, and that waiter would sit out the whole of Optimize.
+    private const int StepPauseMilliseconds = 1;
+
     // Parameter cache - reuse parameter objects to reduce allocations
     private readonly ConcurrentDictionary<string, SqliteParameter> _parameterCache = new();
 
-    private readonly Lock _connectionLock = new();
     private readonly string _dbConnectionString;
 
-    // Per-connection setup script (profile PRAGMAs + schema DDL), built once.
+    // Per-connection setup scripts (profile PRAGMAs + schema DDL), built once: one for
+    // opening an existing file and one, with the creation-only pragma, for a new one.
     private readonly string _connectionScript;
+    private readonly string _creationScript;
+    private readonly string _databasePath;
     private readonly IJsonSerializer _jsonSerializer;
     private readonly bool _persistConnection;
     private readonly bool _requireTypeRegistration;
+    private readonly bool _autoOptimize;
+
+    // Declarations CreateIndex left for Optimize under autoOptimize: false, keyed as
+    // TychoIndex is. Read and written under the gate. Kept in memory because apps declare
+    // their indexes on every launch: a declaration is never read back out of the file.
+    private readonly Dictionary<(string IndexName, string TypeName), IndexDefinition> _deferredIndexes = new();
 
     // One rewrite per type, so its divergence verdict is probed once and reused.
     private readonly ConcurrentDictionary<Type, KeyColumnRewrite> _keyColumnRewrites = new();
@@ -77,7 +102,11 @@ public class Tycho : IDisposable
     // lighter than a rate limiter for this "one operation at a time" gate and,
     // unlike the previous AttemptAcquire path (which ignored whether a permit was
     // actually obtained), its synchronous Wait genuinely serializes sync callers.
+    // Never disposed: an operation waiting on a disposed SemaphoreSlim is never woken, and
+    // Dispose cannot know who is waiting. Without AvailableWaitHandle it holds nothing to free.
+#pragma warning disable CA2213
     private readonly SemaphoreSlim _connectionGate = new(1, 1);
+#pragma warning restore CA2213
 
     private SqliteConnection? _connection;
     private bool _isDisposed;
@@ -104,6 +133,16 @@ public class Tycho : IDisposable
     /// <param name="performanceProfile">Selects device-appropriate SQLite PRAGMA tuning. Default is <see cref="TychoPerformanceProfile.Mobile"/>.</param>
     /// <param name="cacheSizeKb">Optional override for the SQLite page cache size, in KiB. Overrides the profile default.</param>
     /// <param name="mmapSizeBytes">Optional override for the SQLite memory-map size, in bytes (0 disables mmap). Overrides the profile default.</param>
+    /// <param name="autoOptimize">
+    /// Whether the one-time work an upgraded store needs runs inline: connecting drops the
+    /// four redundant indexes 4.x created, and <c>CreateIndex</c> rebuilds an index whose
+    /// stored shape is out of date. Both run on the calling thread and took seconds to
+    /// tens of seconds on a large store upgraded from 4.x. Pass false to skip both —
+    /// connect leaves those indexes in place, and <c>CreateIndex</c> leaves a declaration
+    /// the previous release's index can still serve to <see cref="Optimize"/> — and call
+    /// <see cref="Optimize"/> or <see cref="OptimizeAsync"/> at a convenient time, after
+    /// declaring the indexes. Default is true.
+    /// </param>
     public Tycho(
         string dbPath,
         IJsonSerializer jsonSerializer,
@@ -116,7 +155,8 @@ public class Tycho : IDisposable
         int commandTimeout = 30,
         TychoPerformanceProfile performanceProfile = TychoPerformanceProfile.Mobile,
         int? cacheSizeKb = null,
-        long? mmapSizeBytes = null)
+        long? mmapSizeBytes = null,
+        bool autoOptimize = true)
     {
         SQLitePCL.Batteries_V2.Init();
 
@@ -124,11 +164,6 @@ public class Tycho : IDisposable
         _commandTimeout = commandTimeout;
 
         string databasePath = Path.Join(dbPath, dbName);
-
-        if (rebuildCache && File.Exists(databasePath))
-        {
-            File.Delete(databasePath);
-        }
 
         var connectionStringBuilder =
             new SqliteConnectionStringBuilder
@@ -151,9 +186,53 @@ public class Tycho : IDisposable
         connectionStringBuilder.Pooling = useConnectionPooling;
 
         _dbConnectionString = connectionStringBuilder.ToString();
+
+        if (rebuildCache && File.Exists(databasePath))
+        {
+            using var pooledConnections = new SqliteConnection(_dbConnectionString);
+
+            SqliteConnection.ClearPool(pooledConnections);
+            File.Delete(databasePath);
+        }
+
         _persistConnection = persistConnection;
         _requireTypeRegistration = requireTypeRegistration;
-        _connectionScript = Queries.BuildConnectionScript(performanceProfile, cacheSizeKb, mmapSizeBytes);
+        _autoOptimize = autoOptimize;
+        _databasePath = databasePath;
+        _connectionScript = Queries.BuildConnectionScript(performanceProfile, cacheSizeKb, mmapSizeBytes, autoOptimize, newDatabase: false);
+        _creationScript = Queries.BuildConnectionScript(performanceProfile, cacheSizeKb, mmapSizeBytes, autoOptimize, newDatabase: true);
+    }
+
+    /// <inheritdoc cref="Tycho(string, IJsonSerializer, string, string?, bool, bool, bool, bool, int, TychoPerformanceProfile, int?, long?, bool)"/>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    public Tycho(
+        string dbPath,
+        IJsonSerializer jsonSerializer,
+        string dbName,
+        string? password,
+        bool persistConnection,
+        bool rebuildCache,
+        bool requireTypeRegistration,
+        bool useConnectionPooling,
+        int commandTimeout,
+        TychoPerformanceProfile performanceProfile,
+        int? cacheSizeKb,
+        long? mmapSizeBytes)
+        : this(
+            dbPath,
+            jsonSerializer,
+            dbName,
+            password,
+            persistConnection,
+            rebuildCache,
+            requireTypeRegistration,
+            useConnectionPooling,
+            commandTimeout,
+            performanceProfile,
+            cacheSizeKb,
+            mmapSizeBytes,
+            autoOptimize: true)
+    {
     }
 
     /// <summary>
@@ -240,7 +319,16 @@ public class Tycho : IDisposable
             return this;
         }
 
-        _connection = BuildConnection();
+        _connectionGate.Wait();
+
+        try
+        {
+            _connection ??= OpenConnection();
+        }
+        finally
+        {
+            _connectionGate.Release();
+        }
 
         return this;
     }
@@ -256,76 +344,78 @@ public class Tycho : IDisposable
             return this;
         }
 
-        _connection = await BuildConnectionAsync().ConfigureAwait(false);
+        await _connectionGate.WaitAsync().ConfigureAwait(false);
+
+        try
+        {
+            _connection ??= OpenConnection();
+        }
+        finally
+        {
+            _connectionGate.Release();
+        }
 
         return this;
     }
 
     /// <summary>
-    /// Closes the current database connection.
+    /// Closes the current database connection, once the operation in progress has finished.
     /// </summary>
     public void Disconnect()
     {
-        lock (_connectionLock)
+        _connectionGate.Wait();
+
+        try
         {
-            if (_connection is not null)
-            {
-                RunOptimize(_connection);
-                _connection.Close();
-                _connection.Dispose();
-                _connection = null;
-            }
+            CloseConnection();
+        }
+        finally
+        {
+            _connectionGate.Release();
         }
     }
 
     /// <summary>
-    /// Asynchronously closes the current database connection.
+    /// Asynchronously closes the current database connection, once the operation in
+    /// progress has finished.
     /// </summary>
     /// <returns>A ValueTask representing the asynchronous operation.</returns>
     public async ValueTask DisconnectAsync()
     {
-        if (_connection is null)
-        {
-            return;
-        }
+        await _connectionGate.WaitAsync().ConfigureAwait(false);
 
-        RunOptimize(_connection);
-
-        await _connection.CloseAsync().ConfigureAwait(false);
-        await _connection.DisposeAsync().ConfigureAwait(false);
-
-        _connection = null;
-    }
-
-    /// <summary>
-    /// Runs SQLite's recommended <c>PRAGMA optimize</c> (bounded by
-    /// <c>analysis_limit</c>), refreshing query-planner statistics so indexes —
-    /// including expression indexes over JSON_EXTRACT — keep being chosen.
-    /// <para>
-    /// Called both when opening and when closing a connection. The open-time call is
-    /// what SQLite recommends for long-lived processes: a mobile app that connects
-    /// once and never cleanly disconnects would otherwise run its entire lifetime on
-    /// default planner heuristics.
-    /// </para>
-    /// Best-effort: failures never block connect or teardown.
-    /// </summary>
-    private static void RunOptimize(SqliteConnection connection)
-    {
         try
         {
-            using var command = connection.CreateCommand();
-            command.CommandText = "PRAGMA analysis_limit = 400; PRAGMA optimize;";
-            command.ExecuteNonQuery();
+            CloseConnection();
         }
-        catch
+        finally
         {
-            // Advisory only — ignore failures during teardown.
+            _connectionGate.Release();
         }
+    }
+
+    [MemberNotNull(nameof(_connection))]
+    private void EnsureConnected()
+    {
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
+        ArgumentNullException.ThrowIfNull(_connection);
+    }
+
+    /// <summary>Closes the connection. Runs under the gate.</summary>
+    private void CloseConnection()
+    {
+        _connection?.Close();
+        _connection?.Dispose();
+        _connection = null;
     }
 
     public void Backup(SqliteConnection backupDatabaseConnection)
     {
-        _connection?.BackupDatabase(backupDatabaseConnection);
+        _connection?.WithConnectionBlock(
+            _connectionGate,
+            backupDatabaseConnection,
+            static (conn, destination) => conn.BackupDatabase(destination),
+            _persistConnection);
     }
 
     /// <summary>
@@ -417,7 +507,7 @@ public class Tycho : IDisposable
     {
         ArgumentNullException.ThrowIfNull(objs);
         ArgumentNullException.ThrowIfNull(keySelector);
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         keySelector = GuardAgainstKeyDivergence(keySelector);
 
@@ -618,7 +708,7 @@ public class Tycho : IDisposable
     {
         ArgumentNullException.ThrowIfNull(obj);
         ArgumentNullException.ThrowIfNull(keySelector);
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         keySelector = GuardAgainstKeyDivergence(keySelector);
 
@@ -735,7 +825,7 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<T>();
         }
 
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -826,7 +916,7 @@ public class Tycho : IDisposable
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(key);
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -912,7 +1002,7 @@ public class Tycho : IDisposable
         IProgress<double>? progress = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(key);
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -1159,7 +1249,7 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<T>();
         }
 
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync<IEnumerable<T>, (string? partition, FilterBuilder<T>? filter, SortBuilder<T>? sort, int? top, bool withTransaction, IProgress<double>? progress, StringBuilder commandBuilder, int commandTimeout, IJsonSerializer jsonSerializer, string? keysJson, KeyColumnRewrite? keyRewrite, CancellationToken cancellationToken)>(
@@ -1444,7 +1534,7 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<TIn>();
         }
 
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         string selectionPath = QueryPropertyPath.BuildPath(innerObjectSelection, NameResolver);
 
@@ -1565,7 +1655,7 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<T>();
         }
 
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -1632,7 +1722,7 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<T>();
         }
 
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -1702,7 +1792,7 @@ public class Tycho : IDisposable
     public ValueTask<int> DeleteObjectsAsync(string partition, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -1758,7 +1848,7 @@ public class Tycho : IDisposable
     /// <returns>A ValueTask containing the count of deleted objects.</returns>
     public ValueTask<int> DeleteObjectsAsync(bool withTransaction = true, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -1815,7 +1905,7 @@ public class Tycho : IDisposable
     public ValueTask<bool> WriteBlobAsync(Stream stream, object key, string? partition = null,
         bool withTransaction = true, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -1883,7 +1973,7 @@ public class Tycho : IDisposable
     public ValueTask<bool> BlobExistsAsync(object key, string? partition = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -1935,7 +2025,7 @@ public class Tycho : IDisposable
     public ValueTask<Stream> ReadBlobAsync(object key, string? partition = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -1988,7 +2078,7 @@ public class Tycho : IDisposable
     public ValueTask<bool> DeleteBlobAsync(object key, string? partition = null, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -2047,7 +2137,7 @@ public class Tycho : IDisposable
     public ValueTask<(bool Successful, int Count)> DeleteBlobsAsync(string partition, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -2124,7 +2214,8 @@ public class Tycho : IDisposable
         string MetadataTypeName,
         string PhysicalName,
         string LegacyPhysicalName,
-        string CommandText);
+        string CommandText,
+        (string PropertyPathString, bool IsNumeric)[] PropertyPaths);
 
     /// <summary>
     /// Builds the physical index name and the CREATE INDEX statement for a set of
@@ -2154,7 +2245,8 @@ public class Tycho : IDisposable
             fullTypeName ?? objectTypeName,
             physicalName,
             legacyName,
-            Queries.CreateIndexForJsonValue(physicalName, propertyPaths, fullTypeName));
+            Queries.CreateIndexForJsonValue(physicalName, propertyPaths, fullTypeName),
+            propertyPaths);
     }
 
     /// <summary>
@@ -2228,126 +2320,187 @@ public class Tycho : IDisposable
     }
 
     /// <summary>
-    /// Creates an index if an identical one is not already recorded, migrating away
-    /// from any previous shape or name for the same logical index.
+    /// Brings the schema in line with one index declaration.
     /// <para>
-    /// Mobile apps typically call CreateIndex on every launch, so the already-current
-    /// case must be cheap: it costs one metadata lookup and one sqlite_master probe,
-    /// with no DDL and no ANALYZE.
+    /// Mobile apps declare their indexes on every launch, so the already-current case
+    /// must be cheap: one metadata lookup and two sqlite_master probes, no DDL. The probe
+    /// reads the physical index's stored DDL rather than its mere presence, so a
+    /// same-named index of another shape — the one 4.x built under the name the string
+    /// overload still uses, which <c>CREATE INDEX IF NOT EXISTS</c> would keep without a
+    /// word — counts as stale, and a stale index is rebuilt.
+    /// </para>
+    /// <para>
+    /// With <paramref name="migrateInline"/> every change happens here. Without it, nothing
+    /// is written while the index an earlier release built for this declaration can stand
+    /// in for it, and the work is left to <see cref="Optimize"/>; a declaration with no such
+    /// index is built here either way, because no index is the slower outcome.
+    /// </para>
+    /// <para>
+    /// An index under the legacy name goes once the current one serves — unless another
+    /// TychoIndex row records that name as its own index, as the string overload's does
+    /// when an app declares one name through both overloads; that index is not this
+    /// declaration's, so it neither serves it nor is dropped for it.
     /// </para>
     /// </summary>
-    private static bool ExecuteCreateIndex(SqliteConnection conn, IndexDefinition definition)
+    /// <returns>True when work was left to <see cref="Optimize"/>.</returns>
+    private static bool ExecuteCreateIndex(SqliteConnection conn, IndexDefinition definition, bool migrateInline)
     {
         using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
 
         try
         {
-            if (IsIndexCurrent(conn, definition))
+            var recorded = ReadRecordedIndex(conn, definition.IndexName, definition.MetadataTypeName);
+            string? physicalSql = ReadIndexSql(conn, definition.PhysicalName);
+            bool hasLegacyName = !string.Equals(definition.LegacyPhysicalName, definition.PhysicalName, StringComparison.Ordinal);
+            string? legacySql = hasLegacyName ? ReadIndexSql(conn, definition.LegacyPhysicalName) : null;
+            bool legacyOrphan = legacySql is not null
+                && !IsRecordedByAnotherIndex(conn, definition.LegacyPhysicalName, definition.IndexName, definition.MetadataTypeName);
+
+            if (string.Equals(physicalSql, Queries.StoredIndexSql(definition.CommandText), StringComparison.Ordinal))
+            {
+                if (!IsRecorded(recorded, definition))
+                {
+                    UpsertIndexMetadata(conn, definition);
+                }
+
+                if (legacyOrphan && migrateInline)
+                {
+                    ExecuteNonQuery(conn, Queries.DropIndex(definition.LegacyPhysicalName));
+                }
+
+                transaction.Commit();
+                return legacyOrphan && !migrateInline;
+            }
+
+            string? previousSql = hasLegacyName ? (legacyOrphan ? legacySql : null) : physicalSql;
+
+            if (!migrateInline
+                && previousSql is not null
+                && definition.PropertyPaths.Length > 0
+                && Queries.IndexStandsInFor(previousSql, definition.PropertyPaths[0]))
             {
                 transaction.Commit();
                 return true;
             }
 
-            // Drop the previously recorded physical index (shape or definition
-            // changed) and any pre-metadata index that used the legacy name, so an
-            // upgraded database does not keep maintaining a stale b-tree forever.
-            foreach (var stalePhysicalName in ReadRecordedPhysicalNames(conn, definition))
+            if (recorded is { } stale && !string.Equals(stale.PhysicalName, definition.PhysicalName, StringComparison.Ordinal))
             {
-                ExecuteNonQuery(conn, Queries.DropIndex(ValidateStoredIndexName(stalePhysicalName)));
+                ExecuteNonQuery(conn, Queries.DropIndex(ValidateStoredIndexName(stale.PhysicalName)));
             }
 
-            if (!string.Equals(definition.LegacyPhysicalName, definition.PhysicalName, StringComparison.Ordinal))
+            if (physicalSql is not null)
+            {
+                ExecuteNonQuery(conn, Queries.DropIndex(definition.PhysicalName));
+            }
+
+            if (legacyOrphan)
             {
                 ExecuteNonQuery(conn, Queries.DropIndex(definition.LegacyPhysicalName));
             }
 
             ExecuteNonQuery(conn, definition.CommandText);
-
-            using (var upsert = conn.CreateCommand())
-            {
-                upsert.CommandText = Queries.UpsertIndexMetadata;
-                upsert.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = definition.IndexName });
-                upsert.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = definition.MetadataTypeName });
-                upsert.Parameters.Add(new SqliteParameter("$physicalName", SqliteType.Text) { Value = definition.PhysicalName });
-                upsert.Parameters.Add(new SqliteParameter("$definition", SqliteType.Text) { Value = definition.CommandText });
-                upsert.Parameters.Add(new SqliteParameter("$shapeVersion", SqliteType.Integer) { Value = IndexShapeVersion });
-                upsert.ExecuteNonQuery();
-            }
+            UpsertIndexMetadata(conn, definition);
 
             transaction.Commit();
+            return false;
         }
         catch (Exception ex)
         {
             transaction.Rollback();
             throw new TychoException($"Failed to Create Index: {definition.PhysicalName}", ex);
         }
+    }
 
-        // Refresh planner statistics outside the transaction so the index just
-        // created is usable by the very next query rather than only after a
-        // Disconnect. Advisory: a failure here must not fail index creation.
-        try
+    /// <summary>
+    /// Applies a declaration and notes whether it left work for <see cref="Optimize"/>.
+    /// Runs under the gate.
+    /// </summary>
+    private bool DeclareIndex(SqliteConnection conn, IndexDefinition definition)
+    {
+        var key = (definition.IndexName, definition.MetadataTypeName);
+
+        if (ExecuteCreateIndex(conn, definition, migrateInline: _autoOptimize))
         {
-            ExecuteNonQuery(conn, Queries.AnalyzeBounded);
+            _deferredIndexes[key] = definition;
         }
-        catch
+        else
         {
-            // Statistics are an optimization, not a correctness requirement.
+            _deferredIndexes.Remove(key);
         }
 
         return true;
     }
 
-    /// <summary>
-    /// True when the recorded definition matches what would be created now and the
-    /// physical index is still present in the schema.
-    /// </summary>
-    private static bool IsIndexCurrent(SqliteConnection conn, IndexDefinition definition)
+    /// <summary>One row of the TychoIndex metadata table, as stored.</summary>
+    private readonly record struct IndexMetadataRow(string PhysicalName, string Definition, long ShapeVersion);
+
+    private static IndexMetadataRow? ReadRecordedIndex(SqliteConnection conn, string indexName, string typeName)
     {
         using var lookup = conn.CreateCommand();
         lookup.CommandText = Queries.SelectIndexMetadata;
-        lookup.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = definition.IndexName });
-        lookup.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = definition.MetadataTypeName });
-
-        string? recordedDefinition = null;
-        long recordedVersion = -1;
-
-        using (var reader = lookup.ExecuteReader())
-        {
-            if (reader.Read())
-            {
-                recordedDefinition = reader.GetString(1);
-                recordedVersion = reader.GetInt64(2);
-            }
-        }
-
-        if (recordedVersion != IndexShapeVersion ||
-            !string.Equals(recordedDefinition, definition.CommandText, StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        using var exists = conn.CreateCommand();
-        exists.CommandText = Queries.SelectPhysicalIndexExists;
-        exists.Parameters.Add(new SqliteParameter("$physicalName", SqliteType.Text) { Value = definition.PhysicalName });
-        return exists.ExecuteScalar() is not null;
-    }
-
-    private static List<string> ReadRecordedPhysicalNames(SqliteConnection conn, IndexDefinition definition)
-    {
-        var names = new List<string>(1);
-
-        using var lookup = conn.CreateCommand();
-        lookup.CommandText = Queries.SelectIndexMetadata;
-        lookup.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = definition.IndexName });
-        lookup.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = definition.MetadataTypeName });
+        lookup.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = indexName });
+        lookup.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = typeName });
 
         using var reader = lookup.ExecuteReader();
-        while (reader.Read())
-        {
-            names.Add(reader.GetString(0));
-        }
 
-        return names;
+        return reader.Read()
+            ? new IndexMetadataRow(reader.GetString(0), reader.GetString(1), reader.GetInt64(2))
+            : null;
+    }
+
+    private static bool IsRecorded(IndexMetadataRow? recorded, IndexDefinition definition)
+        => recorded is { } row
+           && row.ShapeVersion == IndexShapeVersion
+           && string.Equals(row.Definition, definition.CommandText, StringComparison.Ordinal);
+
+    /// <summary>The stored DDL of the index named, or null when the schema has no such index.</summary>
+    private static string? ReadIndexSql(SqliteConnection conn, string physicalName)
+    {
+        using var lookup = conn.CreateCommand();
+        lookup.CommandText = Queries.SelectIndexSql;
+        lookup.Parameters.Add(new SqliteParameter("$physicalName", SqliteType.Text) { Value = physicalName });
+        return lookup.ExecuteScalar() as string;
+    }
+
+    /// <summary>
+    /// Whether a TychoIndex row other than the one identified records
+    /// <paramref name="physicalName"/> as its own index.
+    /// </summary>
+    private static bool IsRecordedByAnotherIndex(SqliteConnection conn, string physicalName, string indexName, string fullTypeName)
+    {
+        using var lookup = conn.CreateCommand();
+        lookup.CommandText = Queries.SelectIndexRecordedByAnother;
+        lookup.Parameters.Add(new SqliteParameter("$physicalName", SqliteType.Text) { Value = physicalName });
+        lookup.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = indexName });
+        lookup.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = fullTypeName });
+        return lookup.ExecuteScalar() is not null;
+    }
+
+    private static void UpsertIndexMetadata(SqliteConnection conn, IndexDefinition definition)
+    {
+        using var upsert = conn.CreateCommand();
+        upsert.CommandText = Queries.UpsertIndexMetadata;
+        upsert.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = definition.IndexName });
+        upsert.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = definition.MetadataTypeName });
+        upsert.Parameters.Add(new SqliteParameter("$physicalName", SqliteType.Text) { Value = definition.PhysicalName });
+        upsert.Parameters.Add(new SqliteParameter("$definition", SqliteType.Text) { Value = definition.CommandText });
+        upsert.Parameters.Add(new SqliteParameter("$shapeVersion", SqliteType.Integer) { Value = IndexShapeVersion });
+        upsert.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// The name the same declaration had before physical names carried a hash of the
+    /// type: the name 4.x built it under, and the string overload still does. Null when
+    /// the recorded name carries no hash of the recorded type — the string overload's
+    /// own rows, whose legacy name is their physical name.
+    /// </summary>
+    private static string? LegacyPhysicalNameOf(string physicalName, string fullTypeName)
+    {
+        string suffix = string.Concat("_", StableHashSuffix(fullTypeName));
+
+        return physicalName.Length > suffix.Length && physicalName.EndsWith(suffix, StringComparison.Ordinal)
+            ? physicalName[..^suffix.Length]
+            : null;
     }
 
     private Tycho CreateIndexCore(
@@ -2357,7 +2510,7 @@ public class Tycho : IDisposable
         string? fullTypeName = null,
         string pathParamName = "propertyPaths")
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         var definition = BuildIndexDefinition(
             indexName,
@@ -2368,8 +2521,8 @@ public class Tycho : IDisposable
         _connection
             .WithConnectionBlock(
                 _connectionGate,
-                definition,
-                static (conn, state) => ExecuteCreateIndex(conn, state),
+                (tycho: this, definition),
+                static (conn, state) => state.tycho.DeclareIndex(conn, state.definition),
                 _persistConnection);
 
         return this;
@@ -2383,7 +2536,7 @@ public class Tycho : IDisposable
         string? fullTypeName = null,
         string pathParamName = "propertyPaths")
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         var definition = BuildIndexDefinition(
             indexName,
@@ -2394,8 +2547,8 @@ public class Tycho : IDisposable
         return _connection
             .WithConnectionBlockAsync(
                 _connectionGate,
-                definition,
-                static (conn, state) => ExecuteCreateIndex(conn, state),
+                (tycho: this, definition),
+                static (conn, state) => state.tycho.DeclareIndex(conn, state.definition),
                 _persistConnection,
                 cancellationToken);
     }
@@ -2524,14 +2677,14 @@ public class Tycho : IDisposable
     /// <returns>True if an index was dropped; false if no such index was recorded.</returns>
     public bool DropIndex<TObj>(string indexName)
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
         QueryPropertyPath.ValidateIdentifier(indexName, nameof(indexName));
 
         return _connection
             .WithConnectionBlock(
                 _connectionGate,
-                (indexName, typeName: TypeCache<TObj>.FullName),
-                static (conn, state) => ExecuteDropIndex(conn, state.indexName, state.typeName),
+                (tycho: this, indexName, typeName: TypeCache<TObj>.FullName),
+                static (conn, state) => state.tycho.ExecuteDropIndex(conn, state.indexName, state.typeName),
                 _persistConnection);
     }
 
@@ -2544,37 +2697,29 @@ public class Tycho : IDisposable
     /// <returns>True if an index was dropped; false if no such index was recorded.</returns>
     public ValueTask<bool> DropIndexAsync<TObj>(string indexName, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
         QueryPropertyPath.ValidateIdentifier(indexName, nameof(indexName));
 
         return _connection
             .WithConnectionBlockAsync(
                 _connectionGate,
-                (indexName, typeName: TypeCache<TObj>.FullName),
-                static (conn, state) => ExecuteDropIndex(conn, state.indexName, state.typeName),
+                (tycho: this, indexName, typeName: TypeCache<TObj>.FullName),
+                static (conn, state) => state.tycho.ExecuteDropIndex(conn, state.indexName, state.typeName),
                 _persistConnection,
                 cancellationToken);
     }
 
-    private static bool ExecuteDropIndex(SqliteConnection conn, string indexName, string typeName)
+    private bool ExecuteDropIndex(SqliteConnection conn, string indexName, string typeName)
     {
         using var transaction = conn.BeginTransaction(IsolationLevel.Serializable);
 
         try
         {
-            string? physicalName = null;
+            string? physicalName = ReadRecordedIndex(conn, indexName, typeName)?.PhysicalName;
 
-            using (var lookup = conn.CreateCommand())
+            if (_deferredIndexes.Remove((indexName, typeName), out var deferred))
             {
-                lookup.CommandText = Queries.SelectIndexMetadata;
-                lookup.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = indexName });
-                lookup.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = typeName });
-
-                using var reader = lookup.ExecuteReader();
-                if (reader.Read())
-                {
-                    physicalName = reader.GetString(0);
-                }
+                physicalName ??= deferred.PhysicalName;
             }
 
             if (physicalName is null)
@@ -2584,6 +2729,12 @@ public class Tycho : IDisposable
             }
 
             ExecuteNonQuery(conn, Queries.DropIndex(ValidateStoredIndexName(physicalName)));
+
+            if (LegacyPhysicalNameOf(physicalName, typeName) is { } legacyName
+                && !IsRecordedByAnotherIndex(conn, legacyName, indexName, typeName))
+            {
+                ExecuteNonQuery(conn, Queries.DropIndex(legacyName));
+            }
 
             using (var delete = conn.CreateCommand())
             {
@@ -2605,12 +2756,13 @@ public class Tycho : IDisposable
 
     /// <summary>
     /// Lists the indexes Tycho has created, as recorded in its metadata table.
-    /// Indexes created directly against the database outside Tycho are not listed.
+    /// Indexes created directly against the database outside Tycho are not listed, nor is
+    /// a declaration left to <see cref="Optimize"/> until it has been built.
     /// </summary>
     /// <returns>The recorded indexes, ordered by type then index name.</returns>
     public IReadOnlyList<TychoIndexInfo> ListIndexes()
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlock<IReadOnlyList<TychoIndexInfo>, object?>(
@@ -2639,6 +2791,452 @@ public class Tycho : IDisposable
     }
 
     /// <summary>
+    /// Does the one-time work an upgraded store needs: deletes planner statistics an
+    /// external <c>ANALYZE</c> left; drops the four redundant indexes 4.x created; builds
+    /// every index <c>CreateIndex</c> left for it under <c>autoOptimize: false</c> and drops
+    /// the index the previous release built in its place, along with the per-type index a
+    /// 4.x rollback recreated next to a current one; and returns the pages all of that freed
+    /// to the file system — by rewriting the store into a compacted copy and swapping it in
+    /// when the store was created without incremental auto-vacuum (every 4.x store), which
+    /// also converts it (see <see cref="CompactStore"/>), or by an in-place
+    /// <c>incremental_vacuum</c> when at least a tenth of the file is free. Idempotent:
+    /// with nothing to do it reads the schema and writes nothing, so calling it on every
+    /// launch is fine. Declare the indexes first: only declarations this instance has seen
+    /// are built, and the indexes the others replace would be copied by the compaction.
+    /// <para>
+    /// Each drop and build is one step, and every other operation on this instance runs
+    /// between steps: an operation waits for the step in progress, never for the whole
+    /// call. The compaction is one step, and usually the longest: on a 1.76M-row, 2.37 GB
+    /// store upgraded from 4.x it took 3 to 13 s on a desktop, depending on its load, and
+    /// the call as a whole about 20 s. A phone takes longer. An interruption between or
+    /// during steps leaves a working store, and the next call goes on from there. The work
+    /// runs on the calling thread, which must not be a UI thread. The compaction replaces the
+    /// file, so keep to one instance per file (see <see cref="CompactStore"/>).
+    /// </para>
+    /// </summary>
+    /// <returns>
+    /// True when nothing is left to do. False when work remains for a later call: the
+    /// volume lacks the free space for the compacted copy or for a rebuild, the file or a
+    /// blob stream of this instance is in use, or the instance was disconnected or disposed.
+    /// </returns>
+    public bool Optimize()
+    {
+        EnsureConnected();
+
+        return RunMaintenance(alwaysReclaim: false);
+    }
+
+    /// <summary>
+    /// Asynchronously does what <see cref="Optimize"/> does, with the same cost. Only the
+    /// first step, which reads the schema, runs on the calling thread. The token is observed
+    /// between steps: a step in progress runs to its end.
+    /// </summary>
+    /// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+    /// <returns>A ValueTask containing the value <see cref="Optimize"/> returns.</returns>
+    public async ValueTask<bool> OptimizeAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureConnected();
+
+        bool firstStep = true;
+
+        foreach (var step in MaintenanceSteps(alwaysReclaim: false))
+        {
+            if (!firstStep)
+            {
+                await Task.Delay(StepPauseMilliseconds, cancellationToken).ConfigureAwait(false);
+            }
+
+            firstStep = false;
+
+            await _connectionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+                if (!RunMaintenanceStep(step))
+                {
+                    return false;
+                }
+            }
+            finally
+            {
+                _connectionGate.Release();
+            }
+        }
+
+        return true;
+    }
+
+    private bool RunMaintenance(bool alwaysReclaim)
+    {
+        bool firstStep = true;
+
+        foreach (var step in MaintenanceSteps(alwaysReclaim))
+        {
+            if (!firstStep)
+            {
+                Thread.Sleep(StepPauseMilliseconds);
+            }
+
+            firstStep = false;
+
+            _connectionGate.Wait();
+
+            try
+            {
+                if (!RunMaintenanceStep(step))
+                {
+                    return false;
+                }
+            }
+            finally
+            {
+                _connectionGate.Release();
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// The work of <see cref="Optimize"/> as steps that each take the gate on their own.
+    /// Everything a step needs is read under the gate when the step runs, since any other
+    /// operation can run between two steps. A step that leaves its work for a later call ends
+    /// the run: the compaction, last, would copy whatever the earlier steps did not remove.
+    /// </summary>
+    private IEnumerable<Func<SqliteConnection, bool>> MaintenanceSteps(bool alwaysReclaim)
+    {
+        var legacyIndexes = new List<string>();
+        var deferredIndexes = new List<(string IndexName, string TypeName)>();
+
+        yield return conn =>
+        {
+            RemoveLeftoverStatistics(conn);
+
+            foreach (string indexName in Queries.LegacyIndexNames)
+            {
+                if (ReadIndexSql(conn, indexName) is not null)
+                {
+                    legacyIndexes.Add(indexName);
+                }
+            }
+
+            deferredIndexes.AddRange(_deferredIndexes.Keys);
+            return true;
+        };
+
+        foreach (string indexName in legacyIndexes)
+        {
+            yield return conn =>
+            {
+                ExecuteNonQuery(conn, Queries.DropIndex(indexName));
+                return true;
+            };
+        }
+
+        foreach (var key in deferredIndexes)
+        {
+            yield return conn =>
+            {
+                if (_deferredIndexes.TryGetValue(key, out var definition))
+                {
+                    ExecuteCreateIndex(conn, definition, migrateInline: true);
+                    _deferredIndexes.Remove(key);
+                }
+
+                return true;
+            };
+        }
+
+        yield return conn => ReclaimFreePages(conn, alwaysReclaim);
+    }
+
+    /// <summary>
+    /// Runs one step of <see cref="Optimize"/> under the gate, on the connection as it is
+    /// now. A disconnected instance ends the work, and a full volume or a file in use leaves
+    /// it for a later call; neither is a failure.
+    /// </summary>
+    private bool RunMaintenanceStep(Func<SqliteConnection, bool> step)
+    {
+        var connection = _connection;
+
+        if (connection is null)
+        {
+            return false;
+        }
+
+        int defaultTimeout = connection.DefaultTimeout;
+
+        try
+        {
+            connection.DefaultTimeout = MaintenanceBusyTimeout;
+
+            if (!_persistConnection)
+            {
+                connection.Open();
+            }
+
+            return step(connection);
+        }
+        catch (Exception ex) when (_connection is not null && CanWaitForALaterCall(ex))
+        {
+            return false;
+        }
+        catch (Exception ex) when (ex is not TychoException)
+        {
+            throw new TychoException("Failed to optimize database", ex);
+        }
+        finally
+        {
+            connection.DefaultTimeout = defaultTimeout;
+
+            if (!_persistConnection)
+            {
+                connection.Close();
+            }
+        }
+    }
+
+    private static bool CanWaitForALaterCall(Exception ex)
+        => (ex as SqliteException ?? ex.InnerException as SqliteException) is { } sqliteException
+           && (sqliteException.SqliteErrorCode is SqliteBusy or SqliteLocked or SqliteFull
+               || sqliteException.Message.Contains(Queries.StatementsInProgress, StringComparison.Ordinal));
+
+    /// <summary>
+    /// Returns freed pages to the file system. A store created without incremental
+    /// auto-vacuum — every 4.x store: its connect script set the pragma after
+    /// <c>journal_mode = WAL</c>, which fixed the mode at NONE — is converted by
+    /// <see cref="CompactStore"/>. Later calls reclaim in place, when at least a tenth of the
+    /// file is free so that a store with a little churn is left alone, or whenever
+    /// <paramref name="always"/> asks for it.
+    /// </summary>
+    private bool ReclaimFreePages(SqliteConnection conn, bool always)
+    {
+        if (ReadPragma(conn, Queries.AutoVacuumMode) != 2)
+        {
+            return CompactStore(conn);
+        }
+
+        long freePages = ReadPragma(conn, Queries.FreelistCount);
+
+        if (always || (freePages > 0 && freePages * 10 >= ReadPragma(conn, Queries.PageCount)))
+        {
+            ExecuteNonQuery(conn, Queries.IncrementalVacuum);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Rewrites a store that has no incremental auto-vacuum (every 4.x store) into a
+    /// compacted copy next to the file, with <c>VACUUM INTO</c>, and swaps the copy in.
+    /// Only the live pages are written, once, into the database's own directory — no temp
+    /// copy, nothing back through the WAL — so the free space needed is the compacted size.
+    /// The copy is flushed to disk, since the SQLite of the SQLCipher build writes it without
+    /// syncing, and takes the file's permissions. The connection then closes, which
+    /// checkpoints the WAL into the file; the <c>-wal</c> and <c>-shm</c> files are deleted;
+    /// the copy is renamed over the database; and the same connection object reopens on it,
+    /// so operations already waiting on the gate with that object run on the new file.
+    /// <para>
+    /// The WAL goes before the rename because SQLite checks a WAL only against its own
+    /// header, so one left next to the new file would be replayed into it. A WAL still on
+    /// disk with frames after the close means the close could not checkpoint it and the
+    /// file may lack commits only the WAL holds, so the copy is discarded. The database is
+    /// untouched until the rename, which is atomic: an interruption leaves the old file
+    /// working and at most a leftover copy, which the next connect removes.
+    /// </para>
+    /// <para>
+    /// The swap replaces the file, so attributes set on the old one other than its
+    /// permissions — a backup exclusion, a file protection class — do not carry over.
+    /// Skipped, to be retried by the next call, when the volume lacks the space, SQLite
+    /// reports it full, another connection holds a lock on the file, or such a WAL remains.
+    /// A connection that has the file open and holds no lock, as one retrying a busy file
+    /// does, cannot be seen: it would go on with the replaced file and the <c>-wal</c> of the
+    /// new one, which is why a store takes one instance. Runs under the gate.
+    /// </para>
+    /// </summary>
+    /// <returns>True when the store was swapped; false when the compaction was skipped.</returns>
+    private bool CompactStore(SqliteConnection connection)
+    {
+        string databasePath = ResolvedDatabasePath();
+        string compactedPath = databasePath + Queries.CompactedFileSuffix;
+
+        DeleteCompactedCopy();
+
+        long liveBytes =
+            (ReadPragma(connection, Queries.PageCount) - ReadPragma(connection, Queries.FreelistCount))
+            * ReadPragma(connection, Queries.PageSize);
+
+        if (!HasFreeSpaceFor(databasePath, liveBytes))
+        {
+            return false;
+        }
+
+        try
+        {
+            ExecuteNonQuery(connection, Queries.ExclusiveLockingMode);
+            ExecuteNonQuery(connection, Queries.AcquireExclusiveLock);
+            ExecuteNonQuery(connection, Queries.SetIncrementalAutoVacuum);
+
+            using (var vacuum = connection.CreateCommand())
+            {
+                vacuum.CommandText = Queries.VacuumInto;
+                vacuum.Parameters.Add(new SqliteParameter("$path", SqliteType.Text) { Value = compactedPath });
+                vacuum.ExecuteNonQuery();
+            }
+
+            CopyFileMode(databasePath, compactedPath);
+
+            using var copy = new FileStream(compactedPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            copy.Flush(flushToDisk: true);
+        }
+        catch
+        {
+            DeleteCompactedCopy();
+            throw;
+        }
+
+        connection.Close();
+        SqliteConnection.ClearPool(connection);
+
+        bool swapped = false;
+        Exception? swapFailure = null;
+
+        try
+        {
+            string walPath = databasePath + "-wal";
+
+            if (new FileInfo(walPath) is not { Exists: true, Length: > 0 })
+            {
+                File.Delete(walPath);
+                File.Delete(databasePath + "-shm");
+                File.Move(compactedPath, databasePath, overwrite: true);
+                swapped = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            swapFailure = ex;
+        }
+
+        if (!swapped)
+        {
+            DeleteCompactedCopy();
+        }
+
+        try
+        {
+            InitializeConnection(connection, _connectionScript);
+        }
+        catch (Exception ex)
+        {
+            CloseConnection();
+            throw new TychoException("Failed to reopen the database after compacting it; call Connect to retry", swapFailure ?? ex);
+        }
+
+        return swapFailure is null
+            ? swapped
+            : throw new TychoException("Failed to compact database", swapFailure);
+    }
+
+    /// <summary>
+    /// Gives <paramref name="destination"/> the permissions of <paramref name="source"/>.
+    /// Best-effort: a volume without Unix permissions refuses, and has none to keep.
+    /// </summary>
+    private static void CopyFileMode(string source, string destination)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        try
+        {
+            File.SetUnixFileMode(destination, File.GetUnixFileMode(source));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    /// <summary>
+    /// The file SQLite has open: it follows a symbolic link, and keeps the <c>-wal</c> and
+    /// <c>-shm</c> files next to the file the link points at.
+    /// </summary>
+    private string ResolvedDatabasePath()
+        => (File.Exists(_databasePath) ? File.ResolveLinkTarget(_databasePath, returnFinalTarget: true)?.FullName : null)
+           ?? _databasePath;
+
+    /// <summary>
+    /// Deletes the copy an interrupted compaction left, which SQLite would refuse to write
+    /// over, and its journal. Best-effort: nothing depends on this having worked.
+    /// </summary>
+    private void DeleteCompactedCopy()
+    {
+        try
+        {
+            string compactedPath = ResolvedDatabasePath() + Queries.CompactedFileSuffix;
+
+            File.Delete(compactedPath);
+            File.Delete(compactedPath + "-journal");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    /// <summary>
+    /// Whether the volume holding <paramref name="filePath"/> has room for
+    /// <paramref name="bytes"/> and an eighth more. True when the volume cannot be asked: the
+    /// compaction then relies on SQLite reporting a full disk, which leaves the database
+    /// untouched.
+    /// </summary>
+    private static bool HasFreeSpaceFor(string filePath, long bytes)
+    {
+        try
+        {
+            string fullPath = Path.GetFullPath(filePath);
+            string directory = Path.GetDirectoryName(fullPath) ?? fullPath;
+
+            return new DriveInfo(directory).AvailableFreeSpace >= bytes + (bytes / 8);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Deletes planner statistics an earlier release or an external <c>ANALYZE</c> left
+    /// in the file and reloads them on this connection. TychoDB gathers none: SQLite's
+    /// default heuristics choose the right index for every query it emits. Writes nothing
+    /// when there is nothing to delete, so a current store's connect is read-only.
+    /// </summary>
+    private static void RemoveLeftoverStatistics(SqliteConnection conn)
+    {
+        if (ExecuteScalar(conn, Queries.SelectStatisticsTableExists) is null
+            || ExecuteScalar(conn, Queries.SelectStatisticsRowExists) is null)
+        {
+            return;
+        }
+
+        ExecuteNonQuery(conn, Queries.DeleteStatistics);
+    }
+
+    private static object? ExecuteScalar(SqliteConnection conn, string commandText)
+    {
+        using var command = conn.CreateCommand();
+
+#pragma warning disable CA2100 // Library constants only.
+        command.CommandText = commandText;
+#pragma warning restore CA2100
+
+        return command.ExecuteScalar();
+    }
+
+    private static long ReadPragma(SqliteConnection conn, string pragma)
+        => ExecuteScalar(conn, pragma) is long value ? value : 0L;
+
+    /// <summary>
     /// Performs database cleanup operations to optimize performance and reduce size.
     /// </summary>
     /// <param name="shrinkMemory">Whether to release heap memory held by SQLite.</param>
@@ -2647,71 +3245,40 @@ public class Tycho : IDisposable
     /// auto-vacuum mode this runs a cheap in-place <c>incremental_vacuum</c>. On a
     /// legacy database that was created without incremental auto-vacuum (e.g. by an
     /// older version, or before the auto_vacuum ordering fix), <c>incremental_vacuum</c>
-    /// is a no-op, so this instead runs a one-time full <c>VACUUM</c> that both reclaims
-    /// the space and converts the database to incremental auto-vacuum for the future.
+    /// is a no-op, so this instead rewrites the database into a compacted copy and swaps
+    /// it in, which both reclaims the space and converts the database to incremental
+    /// auto-vacuum for the future; that needs free disk space for the compacted copy and
+    /// is skipped when the space is not there (see <see cref="CompactStore"/>). Either way
+    /// the work <see cref="Optimize"/> does runs first, in the same steps, so that the
+    /// indexes it replaces are not copied.
     /// </param>
     public void Cleanup(bool shrinkMemory = true, bool vacuum = false)
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
-        _connection
-            .WithConnectionBlock(
-                _connectionGate,
-                (shrinkMemory, vacuum),
-                static (conn, state) =>
-                {
-                    try
+        if (shrinkMemory)
+        {
+            _connection
+                .WithConnectionBlock(
+                    _connectionGate,
+                    static conn =>
                     {
-                        if (state.shrinkMemory)
+                        try
                         {
-                            using var shrinkCommand = conn.CreateCommand();
-                            shrinkCommand.CommandText = "PRAGMA shrink_memory;";
-                            shrinkCommand.ExecuteNonQuery();
+                            ExecuteNonQuery(conn, Queries.ShrinkMemory);
                         }
-
-                        if (!state.vacuum)
+                        catch (Exception ex)
                         {
-                            return;
+                            throw new TychoException("Failed to clean up database", ex);
                         }
+                    },
+                    _persistConnection);
+        }
 
-                        // incremental_vacuum only reclaims space when the database is in
-                        // INCREMENTAL (2) auto-vacuum mode.
-                        long autoVacuumMode;
-                        using (var modeCommand = conn.CreateCommand())
-                        {
-                            modeCommand.CommandText = "PRAGMA auto_vacuum;";
-                            autoVacuumMode = modeCommand.ExecuteScalar() is long mode ? mode : 0L;
-                        }
-
-                        using var vacuumCommand = conn.CreateCommand();
-
-                        if (autoVacuumMode == 2)
-                        {
-                            // In-place free-page reclamation, then truncate the WAL file so
-                            // its space is returned to disk too.
-                            vacuumCommand.CommandText =
-                                "PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);";
-                        }
-                        else
-                        {
-                            // Legacy/NONE database: a full VACUUM reclaims free space and
-                            // converts to incremental auto-vacuum. Use a file-backed temp
-                            // store for the rebuild so a large database does not spike
-                            // memory (VACUUM would otherwise honor temp_store = MEMORY and
-                            // build the whole copy in RAM), then restore the in-memory
-                            // temp store for normal operation and truncate the WAL.
-                            vacuumCommand.CommandText =
-                                "PRAGMA temp_store = FILE; PRAGMA auto_vacuum = INCREMENTAL; VACUUM; PRAGMA temp_store = MEMORY; PRAGMA wal_checkpoint(TRUNCATE);";
-                        }
-
-                        vacuumCommand.ExecuteNonQuery();
-                    }
-                    catch (Exception ex)
-                    {
-                        throw new TychoException("Failed to clean up database", ex);
-                    }
-                },
-                _persistConnection);
+        if (vacuum)
+        {
+            RunMaintenance(alwaysReclaim: true);
+        }
     }
 
     /// <summary>
@@ -2898,14 +3465,17 @@ public class Tycho : IDisposable
 
         if (disposing)
         {
-            if (_connection is not null)
-            {
-                RunOptimize(_connection);
-            }
+            _connectionGate.Wait();
 
-            _connectionGate?.Dispose();
-            _connection?.Close();
-            _connection?.Dispose();
+            try
+            {
+                _isDisposed = true;
+                CloseConnection();
+            }
+            finally
+            {
+                _connectionGate.Release();
+            }
         }
 
         _isDisposed = true;
@@ -2959,70 +3529,79 @@ public class Tycho : IDisposable
         return char.IsDigit(buffer[0]) ? string.Concat("_", buffer.ToString()) : buffer.ToString();
     }
 
-    private SqliteConnection BuildConnection()
+    /// <summary>
+    /// Opens a connection on the file and sets it up, removing the copy an interrupted
+    /// compaction left. Runs under the gate. A connection whose setup fails is disposed
+    /// before the failure propagates, so it does not keep the file's lock until the
+    /// finalizer runs.
+    /// </summary>
+    private SqliteConnection OpenConnection()
     {
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
+
         var connection = new SqliteConnection(_dbConnectionString);
-
-        connection
-            .WithConnectionBlock(
-                _connectionGate,
-                _connectionScript,
-                static (conn, script) =>
-                {
-                    conn.Open();
-
-                    // Verified once per process (see EnsureJsonSupport).
-                    EnsureJsonSupport(conn);
-
-                    using var command = conn.CreateCommand();
-
-                    // Profile PRAGMAs + idempotent schema/index creation. Composed from
-                    // library constants and numeric profile values only (no user input).
-#pragma warning disable CA2100
-                    command.CommandText = script;
-#pragma warning restore CA2100
-
-                    command.ExecuteNonQuery();
-
-                    RunOptimize(conn);
-                },
-                _persistConnection);
-
-        return connection;
-    }
-
-    private async ValueTask<SqliteConnection> BuildConnectionAsync(CancellationToken cancellationToken = default)
-    {
-        await _connectionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
-            var connection = new SqliteConnection(_dbConnectionString);
+            InitializeConnection(connection, ConnectionScript());
+            DeleteCompactedCopy();
 
-            connection.Open();
-
-            // JSON support depends only on the process-wide native SQLite build, so
-            // it is verified once and cached rather than re-queried on every connect.
-            EnsureJsonSupport(connection);
-
-            await using var command = connection.CreateCommand();
-
-            // Profile PRAGMAs + idempotent schema/index creation. Composed from
-            // library constants and numeric profile values only (no user input).
-#pragma warning disable CA2100
-            command.CommandText = _connectionScript;
-#pragma warning restore CA2100
-
-            command.ExecuteNonQuery();
-
-            RunOptimize(connection);
+            if (!_persistConnection)
+            {
+                connection.Close();
+            }
 
             return connection;
         }
-        finally
+        catch
         {
-            _connectionGate.Release();
+            connection.Dispose();
+            throw;
         }
+    }
+
+    /// <summary>
+    /// Opens <paramref name="connection"/> and runs <paramref name="script"/> on it. The
+    /// statistics delete is best-effort: a store on a read-only file or a full volume
+    /// connects, and the planner stays misled until a connect that can write;
+    /// <see cref="Optimize"/> reports the failure. Runs under the gate.
+    /// </summary>
+    private static void InitializeConnection(SqliteConnection connection, string script)
+    {
+        connection.Open();
+
+        // JSON support depends only on the process-wide native SQLite build, so
+        // it is verified once and cached rather than re-queried on every connect.
+        EnsureJsonSupport(connection);
+
+        using var command = connection.CreateCommand();
+
+        // Profile PRAGMAs + idempotent schema/index creation. Composed from
+        // library constants and numeric profile values only (no user input).
+#pragma warning disable CA2100
+        command.CommandText = script;
+#pragma warning restore CA2100
+
+        command.ExecuteNonQuery();
+
+        try
+        {
+            RemoveLeftoverStatistics(connection);
+        }
+        catch (SqliteException)
+        {
+        }
+    }
+
+    /// <summary>
+    /// The setup script for the file as it is now: a new or empty file gets the
+    /// creation-only auto_vacuum pragma, an existing one is opened without it.
+    /// </summary>
+    private string ConnectionScript()
+    {
+        var file = new FileInfo(_databasePath);
+
+        return file.Exists && file.Length > 0 ? _connectionScript : _creationScript;
     }
 
     // 0 = not yet verified this process, 1 = verified as supported.

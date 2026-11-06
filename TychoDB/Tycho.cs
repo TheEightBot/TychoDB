@@ -3,6 +3,7 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
@@ -39,7 +40,6 @@ public class Tycho : IDisposable
     // Parameter cache - reuse parameter objects to reduce allocations
     private readonly ConcurrentDictionary<string, SqliteParameter> _parameterCache = new();
 
-    private readonly Lock _connectionLock = new();
     private readonly string _dbConnectionString;
 
     // Per-connection setup scripts (profile PRAGMAs + schema DDL), built once: one for
@@ -80,7 +80,11 @@ public class Tycho : IDisposable
     // lighter than a rate limiter for this "one operation at a time" gate and,
     // unlike the previous AttemptAcquire path (which ignored whether a permit was
     // actually obtained), its synchronous Wait genuinely serializes sync callers.
+    // Never disposed: an operation waiting on a disposed SemaphoreSlim is never woken, and
+    // Dispose cannot know who is waiting. Without AvailableWaitHandle it holds nothing to free.
+#pragma warning disable CA2213
     private readonly SemaphoreSlim _connectionGate = new(1, 1);
+#pragma warning restore CA2213
 
     private SqliteConnection? _connection;
     private bool _isDisposed;
@@ -285,41 +289,63 @@ public class Tycho : IDisposable
     }
 
     /// <summary>
-    /// Closes the current database connection.
+    /// Closes the current database connection, once the operation in progress has finished.
     /// </summary>
     public void Disconnect()
     {
-        lock (_connectionLock)
+        _connectionGate.Wait();
+
+        try
         {
-            if (_connection is not null)
-            {
-                _connection.Close();
-                _connection.Dispose();
-                _connection = null;
-            }
+            CloseConnection();
+        }
+        finally
+        {
+            _connectionGate.Release();
         }
     }
 
     /// <summary>
-    /// Asynchronously closes the current database connection.
+    /// Asynchronously closes the current database connection, once the operation in
+    /// progress has finished.
     /// </summary>
     /// <returns>A ValueTask representing the asynchronous operation.</returns>
     public async ValueTask DisconnectAsync()
     {
-        if (_connection is null)
+        await _connectionGate.WaitAsync().ConfigureAwait(false);
+
+        try
         {
-            return;
+            CloseConnection();
         }
+        finally
+        {
+            _connectionGate.Release();
+        }
+    }
 
-        await _connection.CloseAsync().ConfigureAwait(false);
-        await _connection.DisposeAsync().ConfigureAwait(false);
+    [MemberNotNull(nameof(_connection))]
+    private void EnsureConnected()
+    {
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
+        ArgumentNullException.ThrowIfNull(_connection);
+    }
 
+    /// <summary>Closes the connection. Runs under the gate.</summary>
+    private void CloseConnection()
+    {
+        _connection?.Close();
+        _connection?.Dispose();
         _connection = null;
     }
 
     public void Backup(SqliteConnection backupDatabaseConnection)
     {
-        _connection?.BackupDatabase(backupDatabaseConnection);
+        _connection?.WithConnectionBlock(
+            _connectionGate,
+            backupDatabaseConnection,
+            static (conn, destination) => conn.BackupDatabase(destination),
+            _persistConnection);
     }
 
     /// <summary>
@@ -411,7 +437,7 @@ public class Tycho : IDisposable
     {
         ArgumentNullException.ThrowIfNull(objs);
         ArgumentNullException.ThrowIfNull(keySelector);
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         keySelector = GuardAgainstKeyDivergence(keySelector);
 
@@ -612,7 +638,7 @@ public class Tycho : IDisposable
     {
         ArgumentNullException.ThrowIfNull(obj);
         ArgumentNullException.ThrowIfNull(keySelector);
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         keySelector = GuardAgainstKeyDivergence(keySelector);
 
@@ -729,7 +755,7 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<T>();
         }
 
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -820,7 +846,7 @@ public class Tycho : IDisposable
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(key);
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -906,7 +932,7 @@ public class Tycho : IDisposable
         IProgress<double>? progress = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(key);
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -1153,7 +1179,7 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<T>();
         }
 
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync<IEnumerable<T>, (string? partition, FilterBuilder<T>? filter, SortBuilder<T>? sort, int? top, bool withTransaction, IProgress<double>? progress, StringBuilder commandBuilder, int commandTimeout, IJsonSerializer jsonSerializer, string? keysJson, KeyColumnRewrite? keyRewrite, CancellationToken cancellationToken)>(
@@ -1438,7 +1464,7 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<TIn>();
         }
 
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         string selectionPath = QueryPropertyPath.BuildPath(innerObjectSelection, NameResolver);
 
@@ -1559,7 +1585,7 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<T>();
         }
 
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -1626,7 +1652,7 @@ public class Tycho : IDisposable
             CheckHasRegisteredType<T>();
         }
 
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -1696,7 +1722,7 @@ public class Tycho : IDisposable
     public ValueTask<int> DeleteObjectsAsync(string partition, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -1752,7 +1778,7 @@ public class Tycho : IDisposable
     /// <returns>A ValueTask containing the count of deleted objects.</returns>
     public ValueTask<int> DeleteObjectsAsync(bool withTransaction = true, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -1809,7 +1835,7 @@ public class Tycho : IDisposable
     public ValueTask<bool> WriteBlobAsync(Stream stream, object key, string? partition = null,
         bool withTransaction = true, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -1877,7 +1903,7 @@ public class Tycho : IDisposable
     public ValueTask<bool> BlobExistsAsync(object key, string? partition = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -1929,7 +1955,7 @@ public class Tycho : IDisposable
     public ValueTask<Stream> ReadBlobAsync(object key, string? partition = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -1982,7 +2008,7 @@ public class Tycho : IDisposable
     public ValueTask<bool> DeleteBlobAsync(object key, string? partition = null, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -2041,7 +2067,7 @@ public class Tycho : IDisposable
     public ValueTask<(bool Successful, int Count)> DeleteBlobsAsync(string partition, bool withTransaction = true,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlockAsync(
@@ -2339,7 +2365,7 @@ public class Tycho : IDisposable
         string? fullTypeName = null,
         string pathParamName = "propertyPaths")
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         var definition = BuildIndexDefinition(
             indexName,
@@ -2365,7 +2391,7 @@ public class Tycho : IDisposable
         string? fullTypeName = null,
         string pathParamName = "propertyPaths")
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         var definition = BuildIndexDefinition(
             indexName,
@@ -2506,7 +2532,7 @@ public class Tycho : IDisposable
     /// <returns>True if an index was dropped; false if no such index was recorded.</returns>
     public bool DropIndex<TObj>(string indexName)
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
         QueryPropertyPath.ValidateIdentifier(indexName, nameof(indexName));
 
         return _connection
@@ -2526,7 +2552,7 @@ public class Tycho : IDisposable
     /// <returns>True if an index was dropped; false if no such index was recorded.</returns>
     public ValueTask<bool> DropIndexAsync<TObj>(string indexName, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
         QueryPropertyPath.ValidateIdentifier(indexName, nameof(indexName));
 
         return _connection
@@ -2592,7 +2618,7 @@ public class Tycho : IDisposable
     /// <returns>The recorded indexes, ordered by type then index name.</returns>
     public IReadOnlyList<TychoIndexInfo> ListIndexes()
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         return _connection
             .WithConnectionBlock<IReadOnlyList<TychoIndexInfo>, object?>(
@@ -2665,7 +2691,7 @@ public class Tycho : IDisposable
     /// </param>
     public void Cleanup(bool shrinkMemory = true, bool vacuum = false)
     {
-        ArgumentNullException.ThrowIfNull(_connection);
+        EnsureConnected();
 
         _connection
             .WithConnectionBlock(
@@ -2911,9 +2937,17 @@ public class Tycho : IDisposable
 
         if (disposing)
         {
-            _connectionGate?.Dispose();
-            _connection?.Close();
-            _connection?.Dispose();
+            _connectionGate.Wait();
+
+            try
+            {
+                _isDisposed = true;
+                CloseConnection();
+            }
+            finally
+            {
+                _connectionGate.Release();
+            }
         }
 
         _isDisposed = true;
@@ -2974,6 +3008,8 @@ public class Tycho : IDisposable
     /// </summary>
     private SqliteConnection OpenConnection()
     {
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
+
         var connection = new SqliteConnection(_dbConnectionString);
 
         try

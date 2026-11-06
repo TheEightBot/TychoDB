@@ -165,11 +165,6 @@ public class Tycho : IDisposable
 
         string databasePath = Path.Join(dbPath, dbName);
 
-        if (rebuildCache && File.Exists(databasePath))
-        {
-            File.Delete(databasePath);
-        }
-
         var connectionStringBuilder =
             new SqliteConnectionStringBuilder
             {
@@ -191,6 +186,15 @@ public class Tycho : IDisposable
         connectionStringBuilder.Pooling = useConnectionPooling;
 
         _dbConnectionString = connectionStringBuilder.ToString();
+
+        if (rebuildCache && File.Exists(databasePath))
+        {
+            using var pooledConnections = new SqliteConnection(_dbConnectionString);
+
+            SqliteConnection.ClearPool(pooledConnections);
+            File.Delete(databasePath);
+        }
+
         _persistConnection = persistConnection;
         _requireTypeRegistration = requireTypeRegistration;
         _autoOptimize = autoOptimize;

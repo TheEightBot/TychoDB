@@ -66,6 +66,10 @@
   throws `ObjectDisposedException`.
 - **A connection whose setup failed kept the file locked** until the finalizer ran, so the
   retry got `database is locked`. It is disposed before the failure propagates.
+- **`rebuildCache` could leave an instance on the deleted file.** After a `Dispose` in the
+  same process the pool kept the old connection, and the next `Connect` got it back: the
+  instance saw the old rows, and every write it acknowledged went with the deleted file. The
+  pool is now cleared before the delete.
 
 ### Added
 

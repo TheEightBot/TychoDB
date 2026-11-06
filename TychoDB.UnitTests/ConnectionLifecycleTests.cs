@@ -130,4 +130,37 @@ public class ConnectionLifecycleTests
                 }
             }))
             .ToList();
+
+    [DataTestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task RebuildCache_AfterADispose_WritesToTheNewFile(bool persistConnection)
+    {
+        var (path, dbName) = NewDbPath();
+        var dbFile = Path.Combine(path, dbName);
+
+        using (var db = NewInstance(path, dbName, persistConnection, rebuildCache: false).Connect())
+        {
+            await db.WriteObjectAsync(new Item { Key = "item-old", Group = "G0", Seq = 1 }, x => x.Key);
+        }
+
+        using (var db = NewInstance(path, dbName, persistConnection, rebuildCache: true).Connect())
+        {
+            (await db.CountObjectsAsync<Item>()).ShouldBe(0);
+
+            await db.WriteObjectAsync(new Item { Key = "item-new", Group = "G0", Seq = 2 }, x => x.Key);
+        }
+
+        File.Exists(dbFile).ShouldBeTrue();
+        ReadScalar(dbFile, "SELECT COUNT(*) FROM JsonValue").ShouldBe(1);
+    }
+
+    private static Tycho NewInstance(string path, string dbName, bool persistConnection, bool rebuildCache)
+    {
+#if ENCRYPTED
+        return new Tycho(path, Serializer, dbName, DbPassword, persistConnection: persistConnection, rebuildCache: rebuildCache, requireTypeRegistration: false);
+#else
+        return new Tycho(path, Serializer, dbName, persistConnection: persistConnection, rebuildCache: rebuildCache, requireTypeRegistration: false);
+#endif
+    }
 }

@@ -600,8 +600,25 @@ internal static class Queries
         ORDER BY FullTypeName, IndexName;
         """;
 
-    public const string SelectPhysicalIndexExists =
-        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = $physicalName;";
+    // SQLite index names are case-insensitive, so these compare them that way.
+    public const string SelectIndexRecordedByAnother =
+        """
+        SELECT 1
+        FROM TychoIndex
+        WHERE PhysicalName = $physicalName COLLATE NOCASE
+        AND NOT (IndexName = $indexName AND FullTypeName = $fullTypeName);
+        """;
+
+    public const string SelectIndexSql =
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = $physicalName COLLATE NOCASE;";
+
+    /// <summary>
+    /// The text sqlite_master keeps for an index this class's DDL created: SQLite stores
+    /// "CREATE INDEX " and then the statement from the index name on, verbatim, so the
+    /// IF NOT EXISTS and the closing semicolon are not part of it.
+    /// </summary>
+    public static string StoredIndexSql(string createIndexStatement)
+        => string.Concat("CREATE INDEX ".AsSpan(), createIndexStatement.AsSpan(CreateIndexPrefix.Length).TrimEnd(';'));
 
     // Planner statistics. TychoDB gathers none: SQLite's default heuristics choose the
     // right index for every query it emits. These find and delete rows left in the file,

@@ -2248,12 +2248,20 @@ public class Tycho : IDisposable
     }
 
     /// <summary>
-    /// Creates an index if an identical one is not already recorded, migrating away
-    /// from any previous shape or name for the same logical index.
+    /// Brings the schema in line with one index declaration.
     /// <para>
-    /// Mobile apps typically call CreateIndex on every launch, so the already-current
-    /// case must be cheap: it costs one metadata lookup and one sqlite_master probe,
-    /// with no DDL.
+    /// Mobile apps declare their indexes on every launch, so the already-current case
+    /// must be cheap: one metadata lookup and two sqlite_master probes, no DDL. The probe
+    /// reads the physical index's stored DDL rather than its mere presence, so a
+    /// same-named index of another shape — the one 4.x built under the name the string
+    /// overload still uses, which <c>CREATE INDEX IF NOT EXISTS</c> would keep without a
+    /// word — counts as stale, and a stale index is rebuilt.
+    /// </para>
+    /// <para>
+    /// An index under the legacy name goes once the current one serves — unless another
+    /// TychoIndex row records that name as its own index, as the string overload's does
+    /// when an app declares one name through both overloads; that index is not this
+    /// declaration's to drop.
     /// </para>
     /// </summary>
     private static bool ExecuteCreateIndex(SqliteConnection conn, IndexDefinition definition)
@@ -2262,100 +2270,127 @@ public class Tycho : IDisposable
 
         try
         {
-            if (IsIndexCurrent(conn, definition))
+            var recorded = ReadRecordedIndex(conn, definition.IndexName, definition.MetadataTypeName);
+            string? physicalSql = ReadIndexSql(conn, definition.PhysicalName);
+            bool hasLegacyName = !string.Equals(definition.LegacyPhysicalName, definition.PhysicalName, StringComparison.Ordinal);
+            string? legacySql = hasLegacyName ? ReadIndexSql(conn, definition.LegacyPhysicalName) : null;
+            bool legacyOrphan = legacySql is not null
+                && !IsRecordedByAnotherIndex(conn, definition.LegacyPhysicalName, definition.IndexName, definition.MetadataTypeName);
+
+            if (string.Equals(physicalSql, Queries.StoredIndexSql(definition.CommandText), StringComparison.Ordinal))
             {
+                if (!IsRecorded(recorded, definition))
+                {
+                    UpsertIndexMetadata(conn, definition);
+                }
+
+                if (legacyOrphan)
+                {
+                    ExecuteNonQuery(conn, Queries.DropIndex(definition.LegacyPhysicalName));
+                }
+
                 transaction.Commit();
                 return true;
             }
 
-            // Drop the previously recorded physical index (shape or definition
-            // changed) and any pre-metadata index that used the legacy name, so an
-            // upgraded database does not keep maintaining a stale b-tree forever.
-            foreach (var stalePhysicalName in ReadRecordedPhysicalNames(conn, definition))
+            if (recorded is { } stale && !string.Equals(stale.PhysicalName, definition.PhysicalName, StringComparison.Ordinal))
             {
-                ExecuteNonQuery(conn, Queries.DropIndex(ValidateStoredIndexName(stalePhysicalName)));
+                ExecuteNonQuery(conn, Queries.DropIndex(ValidateStoredIndexName(stale.PhysicalName)));
             }
 
-            if (!string.Equals(definition.LegacyPhysicalName, definition.PhysicalName, StringComparison.Ordinal))
+            if (physicalSql is not null)
+            {
+                ExecuteNonQuery(conn, Queries.DropIndex(definition.PhysicalName));
+            }
+
+            if (legacyOrphan)
             {
                 ExecuteNonQuery(conn, Queries.DropIndex(definition.LegacyPhysicalName));
             }
 
             ExecuteNonQuery(conn, definition.CommandText);
-
-            using (var upsert = conn.CreateCommand())
-            {
-                upsert.CommandText = Queries.UpsertIndexMetadata;
-                upsert.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = definition.IndexName });
-                upsert.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = definition.MetadataTypeName });
-                upsert.Parameters.Add(new SqliteParameter("$physicalName", SqliteType.Text) { Value = definition.PhysicalName });
-                upsert.Parameters.Add(new SqliteParameter("$definition", SqliteType.Text) { Value = definition.CommandText });
-                upsert.Parameters.Add(new SqliteParameter("$shapeVersion", SqliteType.Integer) { Value = IndexShapeVersion });
-                upsert.ExecuteNonQuery();
-            }
+            UpsertIndexMetadata(conn, definition);
 
             transaction.Commit();
+            return true;
         }
         catch (Exception ex)
         {
             transaction.Rollback();
             throw new TychoException($"Failed to Create Index: {definition.PhysicalName}", ex);
         }
+    }
 
-        return true;
+    /// <summary>One row of the TychoIndex metadata table, as stored.</summary>
+    private readonly record struct IndexMetadataRow(string PhysicalName, string Definition, long ShapeVersion);
+
+    private static IndexMetadataRow? ReadRecordedIndex(SqliteConnection conn, string indexName, string typeName)
+    {
+        using var lookup = conn.CreateCommand();
+        lookup.CommandText = Queries.SelectIndexMetadata;
+        lookup.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = indexName });
+        lookup.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = typeName });
+
+        using var reader = lookup.ExecuteReader();
+
+        return reader.Read()
+            ? new IndexMetadataRow(reader.GetString(0), reader.GetString(1), reader.GetInt64(2))
+            : null;
+    }
+
+    private static bool IsRecorded(IndexMetadataRow? recorded, IndexDefinition definition)
+        => recorded is { } row
+           && row.ShapeVersion == IndexShapeVersion
+           && string.Equals(row.Definition, definition.CommandText, StringComparison.Ordinal);
+
+    /// <summary>The stored DDL of the index named, or null when the schema has no such index.</summary>
+    private static string? ReadIndexSql(SqliteConnection conn, string physicalName)
+    {
+        using var lookup = conn.CreateCommand();
+        lookup.CommandText = Queries.SelectIndexSql;
+        lookup.Parameters.Add(new SqliteParameter("$physicalName", SqliteType.Text) { Value = physicalName });
+        return lookup.ExecuteScalar() as string;
     }
 
     /// <summary>
-    /// True when the recorded definition matches what would be created now and the
-    /// physical index is still present in the schema.
+    /// Whether a TychoIndex row other than the one identified records
+    /// <paramref name="physicalName"/> as its own index.
     /// </summary>
-    private static bool IsIndexCurrent(SqliteConnection conn, IndexDefinition definition)
+    private static bool IsRecordedByAnotherIndex(SqliteConnection conn, string physicalName, string indexName, string fullTypeName)
     {
         using var lookup = conn.CreateCommand();
-        lookup.CommandText = Queries.SelectIndexMetadata;
-        lookup.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = definition.IndexName });
-        lookup.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = definition.MetadataTypeName });
-
-        string? recordedDefinition = null;
-        long recordedVersion = -1;
-
-        using (var reader = lookup.ExecuteReader())
-        {
-            if (reader.Read())
-            {
-                recordedDefinition = reader.GetString(1);
-                recordedVersion = reader.GetInt64(2);
-            }
-        }
-
-        if (recordedVersion != IndexShapeVersion ||
-            !string.Equals(recordedDefinition, definition.CommandText, StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        using var exists = conn.CreateCommand();
-        exists.CommandText = Queries.SelectPhysicalIndexExists;
-        exists.Parameters.Add(new SqliteParameter("$physicalName", SqliteType.Text) { Value = definition.PhysicalName });
-        return exists.ExecuteScalar() is not null;
+        lookup.CommandText = Queries.SelectIndexRecordedByAnother;
+        lookup.Parameters.Add(new SqliteParameter("$physicalName", SqliteType.Text) { Value = physicalName });
+        lookup.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = indexName });
+        lookup.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = fullTypeName });
+        return lookup.ExecuteScalar() is not null;
     }
 
-    private static List<string> ReadRecordedPhysicalNames(SqliteConnection conn, IndexDefinition definition)
+    private static void UpsertIndexMetadata(SqliteConnection conn, IndexDefinition definition)
     {
-        var names = new List<string>(1);
+        using var upsert = conn.CreateCommand();
+        upsert.CommandText = Queries.UpsertIndexMetadata;
+        upsert.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = definition.IndexName });
+        upsert.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = definition.MetadataTypeName });
+        upsert.Parameters.Add(new SqliteParameter("$physicalName", SqliteType.Text) { Value = definition.PhysicalName });
+        upsert.Parameters.Add(new SqliteParameter("$definition", SqliteType.Text) { Value = definition.CommandText });
+        upsert.Parameters.Add(new SqliteParameter("$shapeVersion", SqliteType.Integer) { Value = IndexShapeVersion });
+        upsert.ExecuteNonQuery();
+    }
 
-        using var lookup = conn.CreateCommand();
-        lookup.CommandText = Queries.SelectIndexMetadata;
-        lookup.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = definition.IndexName });
-        lookup.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = definition.MetadataTypeName });
+    /// <summary>
+    /// The name the same declaration had before physical names carried a hash of the
+    /// type: the name 4.x built it under, and the string overload still does. Null when
+    /// the recorded name carries no hash of the recorded type — the string overload's
+    /// own rows, whose legacy name is their physical name.
+    /// </summary>
+    private static string? LegacyPhysicalNameOf(string physicalName, string fullTypeName)
+    {
+        string suffix = string.Concat("_", StableHashSuffix(fullTypeName));
 
-        using var reader = lookup.ExecuteReader();
-        while (reader.Read())
-        {
-            names.Add(reader.GetString(0));
-        }
-
-        return names;
+        return physicalName.Length > suffix.Length && physicalName.EndsWith(suffix, StringComparison.Ordinal)
+            ? physicalName[..^suffix.Length]
+            : null;
     }
 
     private Tycho CreateIndexCore(
@@ -2570,20 +2605,7 @@ public class Tycho : IDisposable
 
         try
         {
-            string? physicalName = null;
-
-            using (var lookup = conn.CreateCommand())
-            {
-                lookup.CommandText = Queries.SelectIndexMetadata;
-                lookup.Parameters.Add(new SqliteParameter("$indexName", SqliteType.Text) { Value = indexName });
-                lookup.Parameters.Add(new SqliteParameter("$fullTypeName", SqliteType.Text) { Value = typeName });
-
-                using var reader = lookup.ExecuteReader();
-                if (reader.Read())
-                {
-                    physicalName = reader.GetString(0);
-                }
-            }
+            string? physicalName = ReadRecordedIndex(conn, indexName, typeName)?.PhysicalName;
 
             if (physicalName is null)
             {
@@ -2592,6 +2614,12 @@ public class Tycho : IDisposable
             }
 
             ExecuteNonQuery(conn, Queries.DropIndex(ValidateStoredIndexName(physicalName)));
+
+            if (LegacyPhysicalNameOf(physicalName, typeName) is { } legacyName
+                && !IsRecordedByAnotherIndex(conn, legacyName, indexName, typeName))
+            {
+                ExecuteNonQuery(conn, Queries.DropIndex(legacyName));
+            }
 
             using (var delete = conn.CreateCommand())
             {

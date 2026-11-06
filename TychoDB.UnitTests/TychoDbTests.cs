@@ -13,7 +13,9 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Shouldly;
 using TychoDB;
 
-[assembly: Parallelize(Scope = ExecutionScope.ClassLevel)]
+// SqliteConnection.ClearAllPools, which releases a closed store's EXCLUSIVE lock, can dispose
+// a connection another thread is opening, so no two test classes may run at once.
+[assembly: DoNotParallelize]
 
 namespace TychoDB.UnitTests;
 

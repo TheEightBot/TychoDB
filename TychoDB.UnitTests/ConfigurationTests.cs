@@ -60,6 +60,17 @@ public class ConfigurationTests
     }
 
     [TestMethod]
+    public void ExistingDatabaseScript_OmitsTheCreationOnlyAutoVacuumPragma()
+    {
+        // On an auto-vacuum store the pragma rewrites page 1 at every connect for nothing,
+        // so a file that already exists is opened without it.
+        var script = Queries.BuildConnectionScript(TychoPerformanceProfile.Mobile, newDatabase: false);
+
+        script.ShouldNotContain("PRAGMA auto_vacuum");
+        script.ShouldContain("PRAGMA journal_mode = WAL;");
+    }
+
+    [TestMethod]
     public async Task FreshDatabase_IsCreatedWithIncrementalAutoVacuum()
     {
         var path = System.IO.Path.GetTempPath();
@@ -108,7 +119,7 @@ public class ConfigurationTests
             await db.DeleteObjectsAsync<TestClassA>();
 
             // incremental_vacuum would be a no-op here; Cleanup must detect NONE and
-            // run a full VACUUM to reclaim space and convert to incremental.
+            // compact the store to reclaim space and convert to incremental.
             db.Cleanup(shrinkMemory: true, vacuum: true);
         }
 

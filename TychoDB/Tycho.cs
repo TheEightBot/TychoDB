@@ -42,8 +42,11 @@ public class Tycho : IDisposable
     private readonly Lock _connectionLock = new();
     private readonly string _dbConnectionString;
 
-    // Per-connection setup script (profile PRAGMAs + schema DDL), built once.
+    // Per-connection setup scripts (profile PRAGMAs + schema DDL), built once: one for
+    // opening an existing file and one, with the creation-only pragma, for a new one.
     private readonly string _connectionScript;
+    private readonly string _creationScript;
+    private readonly string _databasePath;
     private readonly IJsonSerializer _jsonSerializer;
     private readonly bool _persistConnection;
     private readonly bool _requireTypeRegistration;
@@ -153,7 +156,9 @@ public class Tycho : IDisposable
         _dbConnectionString = connectionStringBuilder.ToString();
         _persistConnection = persistConnection;
         _requireTypeRegistration = requireTypeRegistration;
-        _connectionScript = Queries.BuildConnectionScript(performanceProfile, cacheSizeKb, mmapSizeBytes);
+        _databasePath = databasePath;
+        _connectionScript = Queries.BuildConnectionScript(performanceProfile, cacheSizeKb, mmapSizeBytes, newDatabase: false);
+        _creationScript = Queries.BuildConnectionScript(performanceProfile, cacheSizeKb, mmapSizeBytes, newDatabase: true);
     }
 
     /// <summary>
@@ -240,7 +245,16 @@ public class Tycho : IDisposable
             return this;
         }
 
-        _connection = BuildConnection();
+        _connectionGate.Wait();
+
+        try
+        {
+            _connection ??= OpenConnection();
+        }
+        finally
+        {
+            _connectionGate.Release();
+        }
 
         return this;
     }
@@ -256,7 +270,16 @@ public class Tycho : IDisposable
             return this;
         }
 
-        _connection = await BuildConnectionAsync().ConfigureAwait(false);
+        await _connectionGate.WaitAsync().ConfigureAwait(false);
+
+        try
+        {
+            _connection ??= OpenConnection();
+        }
+        finally
+        {
+            _connectionGate.Release();
+        }
 
         return this;
     }
@@ -270,7 +293,6 @@ public class Tycho : IDisposable
         {
             if (_connection is not null)
             {
-                RunOptimize(_connection);
                 _connection.Close();
                 _connection.Dispose();
                 _connection = null;
@@ -289,38 +311,10 @@ public class Tycho : IDisposable
             return;
         }
 
-        RunOptimize(_connection);
-
         await _connection.CloseAsync().ConfigureAwait(false);
         await _connection.DisposeAsync().ConfigureAwait(false);
 
         _connection = null;
-    }
-
-    /// <summary>
-    /// Runs SQLite's recommended <c>PRAGMA optimize</c> (bounded by
-    /// <c>analysis_limit</c>), refreshing query-planner statistics so indexes —
-    /// including expression indexes over JSON_EXTRACT — keep being chosen.
-    /// <para>
-    /// Called both when opening and when closing a connection. The open-time call is
-    /// what SQLite recommends for long-lived processes: a mobile app that connects
-    /// once and never cleanly disconnects would otherwise run its entire lifetime on
-    /// default planner heuristics.
-    /// </para>
-    /// Best-effort: failures never block connect or teardown.
-    /// </summary>
-    private static void RunOptimize(SqliteConnection connection)
-    {
-        try
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText = "PRAGMA analysis_limit = 400; PRAGMA optimize;";
-            command.ExecuteNonQuery();
-        }
-        catch
-        {
-            // Advisory only — ignore failures during teardown.
-        }
     }
 
     public void Backup(SqliteConnection backupDatabaseConnection)
@@ -2233,7 +2227,7 @@ public class Tycho : IDisposable
     /// <para>
     /// Mobile apps typically call CreateIndex on every launch, so the already-current
     /// case must be cheap: it costs one metadata lookup and one sqlite_master probe,
-    /// with no DDL and no ANALYZE.
+    /// with no DDL.
     /// </para>
     /// </summary>
     private static bool ExecuteCreateIndex(SqliteConnection conn, IndexDefinition definition)
@@ -2280,18 +2274,6 @@ public class Tycho : IDisposable
         {
             transaction.Rollback();
             throw new TychoException($"Failed to Create Index: {definition.PhysicalName}", ex);
-        }
-
-        // Refresh planner statistics outside the transaction so the index just
-        // created is usable by the very next query rather than only after a
-        // Disconnect. Advisory: a failure here must not fail index creation.
-        try
-        {
-            ExecuteNonQuery(conn, Queries.AnalyzeBounded);
-        }
-        catch
-        {
-            // Statistics are an optimization, not a correctness requirement.
         }
 
         return true;
@@ -2639,6 +2621,37 @@ public class Tycho : IDisposable
     }
 
     /// <summary>
+    /// Deletes planner statistics an earlier release or an external <c>ANALYZE</c> left
+    /// in the file and reloads them on this connection. TychoDB gathers none: SQLite's
+    /// default heuristics choose the right index for every query it emits. Writes nothing
+    /// when there is nothing to delete, so a current store's connect is read-only.
+    /// </summary>
+    private static void RemoveLeftoverStatistics(SqliteConnection conn)
+    {
+        if (ExecuteScalar(conn, Queries.SelectStatisticsTableExists) is null
+            || ExecuteScalar(conn, Queries.SelectStatisticsRowExists) is null)
+        {
+            return;
+        }
+
+        ExecuteNonQuery(conn, Queries.DeleteStatistics);
+    }
+
+    private static object? ExecuteScalar(SqliteConnection conn, string commandText)
+    {
+        using var command = conn.CreateCommand();
+
+#pragma warning disable CA2100 // Library constants only.
+        command.CommandText = commandText;
+#pragma warning restore CA2100
+
+        return command.ExecuteScalar();
+    }
+
+    private static long ReadPragma(SqliteConnection conn, string pragma)
+        => ExecuteScalar(conn, pragma) is long value ? value : 0L;
+
+    /// <summary>
     /// Performs database cleanup operations to optimize performance and reduce size.
     /// </summary>
     /// <param name="shrinkMemory">Whether to release heap memory held by SQLite.</param>
@@ -2898,11 +2911,6 @@ public class Tycho : IDisposable
 
         if (disposing)
         {
-            if (_connection is not null)
-            {
-                RunOptimize(_connection);
-            }
-
             _connectionGate?.Dispose();
             _connection?.Close();
             _connection?.Dispose();
@@ -2959,70 +2967,75 @@ public class Tycho : IDisposable
         return char.IsDigit(buffer[0]) ? string.Concat("_", buffer.ToString()) : buffer.ToString();
     }
 
-    private SqliteConnection BuildConnection()
+    /// <summary>
+    /// Opens a connection on the file and sets it up. Runs under the gate. A connection whose
+    /// setup fails is disposed before the failure propagates, so it does not keep the file's
+    /// lock until the finalizer runs.
+    /// </summary>
+    private SqliteConnection OpenConnection()
     {
         var connection = new SqliteConnection(_dbConnectionString);
 
-        connection
-            .WithConnectionBlock(
-                _connectionGate,
-                _connectionScript,
-                static (conn, script) =>
-                {
-                    conn.Open();
-
-                    // Verified once per process (see EnsureJsonSupport).
-                    EnsureJsonSupport(conn);
-
-                    using var command = conn.CreateCommand();
-
-                    // Profile PRAGMAs + idempotent schema/index creation. Composed from
-                    // library constants and numeric profile values only (no user input).
-#pragma warning disable CA2100
-                    command.CommandText = script;
-#pragma warning restore CA2100
-
-                    command.ExecuteNonQuery();
-
-                    RunOptimize(conn);
-                },
-                _persistConnection);
-
-        return connection;
-    }
-
-    private async ValueTask<SqliteConnection> BuildConnectionAsync(CancellationToken cancellationToken = default)
-    {
-        await _connectionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-
         try
         {
-            var connection = new SqliteConnection(_dbConnectionString);
+            InitializeConnection(connection, ConnectionScript());
 
-            connection.Open();
-
-            // JSON support depends only on the process-wide native SQLite build, so
-            // it is verified once and cached rather than re-queried on every connect.
-            EnsureJsonSupport(connection);
-
-            await using var command = connection.CreateCommand();
-
-            // Profile PRAGMAs + idempotent schema/index creation. Composed from
-            // library constants and numeric profile values only (no user input).
-#pragma warning disable CA2100
-            command.CommandText = _connectionScript;
-#pragma warning restore CA2100
-
-            command.ExecuteNonQuery();
-
-            RunOptimize(connection);
+            if (!_persistConnection)
+            {
+                connection.Close();
+            }
 
             return connection;
         }
-        finally
+        catch
         {
-            _connectionGate.Release();
+            connection.Dispose();
+            throw;
         }
+    }
+
+    /// <summary>
+    /// Opens <paramref name="connection"/> and runs <paramref name="script"/> on it. The
+    /// statistics delete is best-effort: a store on a read-only file or a full volume
+    /// connects, and the planner stays misled until a connect that can write. Runs under the
+    /// gate.
+    /// </summary>
+    private static void InitializeConnection(SqliteConnection connection, string script)
+    {
+        connection.Open();
+
+        // JSON support depends only on the process-wide native SQLite build, so
+        // it is verified once and cached rather than re-queried on every connect.
+        EnsureJsonSupport(connection);
+
+        using var command = connection.CreateCommand();
+
+        // Profile PRAGMAs + idempotent schema/index creation. Composed from
+        // library constants and numeric profile values only (no user input).
+#pragma warning disable CA2100
+        command.CommandText = script;
+#pragma warning restore CA2100
+
+        command.ExecuteNonQuery();
+
+        try
+        {
+            RemoveLeftoverStatistics(connection);
+        }
+        catch (SqliteException)
+        {
+        }
+    }
+
+    /// <summary>
+    /// The setup script for the file as it is now: a new or empty file gets the
+    /// creation-only auto_vacuum pragma, an existing one is opened without it.
+    /// </summary>
+    private string ConnectionScript()
+    {
+        var file = new FileInfo(_databasePath);
+
+        return file.Exists && file.Length > 0 ? _connectionScript : _creationScript;
     }
 
     // 0 = not yet verified this process, 1 = verified as supported.
